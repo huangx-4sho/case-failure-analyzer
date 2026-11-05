@@ -30,21 +30,23 @@ For every failed trial:
 All causal attribution enforces a strict chronological dependency timeline:
 $$\text{Infra (pre-startup)} \longrightarrow \text{Case (assets/setup)} \longrightarrow \text{Verifier (crash/parser/tolerance)} \longrightarrow \text{Agent (positive deviation)}$$
 
-To implement this timeline deterministically, the engine evaluates gates in declared order (the gate sequence `gate0`–`gate6`, 8 decision ids):
+To implement this timeline deterministically, the engine evaluates gates in declared order (the gate sequence `gate0`–`gate6`, 9 decision ids):
 1. **Gate 0: Passed Short-Circuit (`gate0_passed`)**: If the trial passed verification (`verification_status == "passed"` or `reward >= 1.0`), there is no failure to attribute; the engine short-circuits with `category = "none"` and never pollutes a passing trial with job-level errors.
 2. **Gate 1a: Pre-Startup Infrastructure (`gate1a_infra_prestartup`)**: Fatal infra error when `agent_started == false` attributes to `infra`.
 3. **Gate 1b: Pre-Startup Silent (`gate1b_unknown_no_evidence`)**: `agent_started == false` with no logs or errors explaining why attributes conservatively to `unknown`.
-4. **Gate 2: Case Assets & Setup Defect (`gate2_case_definition`)**: Missing prompt assets or broken container setup attributes to `case`.
-5. **Gate 3: Verifier Defect (`gate3_verifier_defect`)**: Internal verifier crashes (`VERIFIER_RECOMPUTE_DEFECT`) or causally bound parser hazards (`failure_binding == "direct"`) attribute to `verifier`.
-6. **Gate 4: Numerical / Tolerance Defect (`gate4_numerical_divergence`)**: Structured numerical divergence with matching ensemble statistics and proven closed loop attributes to `verifier` (`VERIFIER_TOLERANCE_TOO_STRICT`).
-7. **Gate 5: Insufficient Positive Evidence (`gate5_insufficient_positive_evidence`)**: If the trial failed but no positive agent evidence implicates Agent behaviour, abstains conservatively to `unknown` and prevents false agent blame (bare `reward == 0` or `FAIL` is not positive evidence). This is the conservative fallback before any Agent attribution.
-8. **Gate 6: Agent Primary Decision Error (`gate6_agent_primary`)**: Validates all 5 necessary gate conditions and positive behavioral signals before attributing to `agent`. This gate always matches, so it terminates the chain.
+4. **Gate 1c: Pre-Verification Runner / Execution Infra (`gate1c_runner_artifact_collection`)**: A post-agent, pre-verifier harbor fault — `INFRA_ARTIFACT_COLLECTION_CRASH` (`Engine cp failed`), `INFRA_RUNNER_INTERRUPTED` (log ends at `Collecting main service artifacts`), or a causal `INFRA_AGENT_TIMEOUT` — attributes to `infra`. An upstream agent timeout outranks a downstream collection crash; the agent's missing declared deliverable is kept as an explicit contributing factor. The verifier never started in most of these trials, so there was **no scored failure** and `agent`/`AGENT_PREMATURE_TERMINATION` is forbidden.
+5. **Gate 2: Case Assets & Setup Defect (`gate2_case_definition`)**: Missing prompt assets or broken container setup attributes to `case`.
+6. **Gate 3: Verifier Defect (`gate3_verifier_defect`)**: Internal verifier crashes (`VERIFIER_RECOMPUTE_DEFECT`) or causally bound parser hazards (`failure_binding == "direct"`) attribute to `verifier`.
+7. **Gate 4: Numerical / Tolerance Defect (`gate4_numerical_divergence`)**: Structured numerical divergence with matching ensemble statistics and proven closed loop attributes to `verifier` (`VERIFIER_TOLERANCE_TOO_STRICT`).
+8. **Gate 5: Insufficient Positive Evidence (`gate5_insufficient_positive_evidence`)**: If the trial failed but no positive agent evidence implicates Agent behaviour, abstains conservatively to `unknown` and prevents false agent blame (bare `reward == 0` or `FAIL` is not positive evidence). This is the conservative fallback before any Agent attribution.
+9. **Gate 6: Agent Primary Decision Error (`gate6_agent_primary`)**: Validates all 5 necessary gate conditions and positive behavioral signals before attributing to `agent`. A named failing verifier check outranks a generic `premature_completion` heuristic (subcase 5e precedes 5d when checks are localized). This gate always matches, so it terminates the chain.
 
 | Precedence Stage | Gate | Scope / Trigger | Required Category | Forbidden Defaults |
 | :--- | :--- | :--- | :--- | :--- |
 | **Stage 0: Passed Trial** | Gate 0 | `verification_status == "passed"` or `reward >= 1.0` | `none` (no failure to attribute) | No failure attribution |
 | **Stage 1: Pre-Startup Infra** | Gate 1a | `agent_started == false` with fatal infra error | `infra` | Never `agent` |
 | **Stage 1b: Pre-Startup Silent**| Gate 1b | `agent_started == false` with no infra evidence | `unknown` | Never `agent` |
+| **Stage 1c: Pre-Verification Runner** | Gate 1c | Post-agent artifact-collection crash / silent interruption / agent timeout | `infra` | Never `agent`; never a scored `failed` verdict when the verifier did not start |
 | **Stage 2: Case Assets/Setup** | Gate 2 | Missing prompt assets or broken container setup | `case` | Never `agent` |
 | **Stage 3: Verifier Crash / Defect**| Gate 3 | Internal verifier crash or direct-bound parser defect | `verifier` | Never `agent` or `unknown` (isolated crash) |
 | **Stage 4: Numerical Tolerance** | Gate 4 | Instantaneous trajectory drift with matching ensemble | `verifier` (if verified) | Never `agent` (abstain to `unknown` if unproven)|
@@ -65,6 +67,11 @@ You may assign `primary_root_cause.category = "agent"` **ONLY IF ALL FIVE** of t
 > - If `runtime.agent_started == false` AND fatal infrastructure evidence exists (`causal_candidate == true`) -> `primary_root_cause.category` MUST be `infra` (or `case` if the `Dockerfile` itself is broken).
 > - If `runtime.agent_started == false` AND no infrastructure or exception logs exist -> `primary_root_cause.category` MUST be `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`).
 > - Whenever `runtime.agent_started == false`, attributing `primary_root_cause.category = "agent"` (`false-agent-blame`) is **strictly forbidden**.
+
+> **Hard Rule on Verifier-Not-Run Trials (`runtime.verifier_started == false` or `runtime.verdict in ("unknown", "not_run")`)**:
+> - When the verifier never started, a `sig:premature_completion` trajectory heuristic alone is **not** positive agent evidence (`VERIFIER_NOT_RUN_PREMATURE_BLAME`). Attributing `agent` requires a non-completion observation (unrecovered scientific error, `agent_mismatch` contract, `wrong_output_path`, etc.) cited in `evidence_refs`.
+> - Harbor's declared deliverables come from `task.toml` `artifacts`, not a hardcoded `results.json`. A `premature_completion` signal is only valid when a *declared* path is genuinely absent, reconciled against the collected `<trial>/artifacts/app/...` tree.
+> - A runner-side fault in the post-agent / pre-verifier window (Gate 1c) keeps `infra` primary; the agent's incomplete deliverables are a contributing factor, not the root cause. The trial is **not scored** (`reward=None`) and must not be counted as a scored failure in batch pass rates.
 
 ---
 

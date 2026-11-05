@@ -51,7 +51,7 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
             and not dep_search_sigs
         )
         or any(_matches_family(s, CONTINUATION_FAMILIES) for s in unrecovered_sci_obs)
-        or premature_sigs
+        or (premature_sigs and verifier_started)
         or agent_mismatch_contracts
         or (
             (

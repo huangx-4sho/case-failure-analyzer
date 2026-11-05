@@ -77,8 +77,8 @@ check-docs: ## Verify docs/en mirrors match references/ and guide docs (en|zh) i
 	fi; \
 	echo "check-docs: docs/en mirrors match references/ ($(words $(SHARED_DOCS)) shared docs); guide docs (en|zh) intact."
 
-check: lint test check-docs ## Run all checks: lint, tests, and docs mirror sync
-	@echo "check: all checks passed (lint, test, check-docs)."
+check: lint test check-docs format-check ## Run all checks: lint, tests, docs sync, and formatting
+	@echo "check: all checks passed (lint, test, check-docs, format-check)."
 
 smoke: ## End-to-end CLI run against the committed 2-trial fixture
 	$(PYTHON) scripts/analyze_case.py --job $(FIXTURE_JOB) --output $(DEV_OUT)

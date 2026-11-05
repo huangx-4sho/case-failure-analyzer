@@ -93,6 +93,7 @@ SCIENTIFIC_ADAPTERS: List[AdapterEntry] = build_scientific_adapters()
 def extract_scientific_errors(
     trial_dir: Optional[Path],
     normalized_traj: Optional[Dict[str, Any]] = None,
+    verifier_report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     observations: List[Dict[str, Any]] = []
     seen = set()
@@ -273,6 +274,120 @@ def extract_scientific_errors(
                 observations.append(divergence)
                 sci_counter += 1
 
+    # 5. Structured verifier report scan (raw-verifier.json, verify.json, pytest summary).
+    #    Captures named check divergences and software errors directly from structured failed checks
+    #    and messages, ensuring that failures not written to plain verify.log are surfaced.
+    if verifier_report and isinstance(verifier_report, dict):
+        trajectory_steps = _load_trajectory_steps(trial_dir) if trial_dir else []
+        failed_checks = verifier_report.get("failed_checks") or []
+        for fc in failed_checks:
+            if not isinstance(fc, dict):
+                continue
+            detail = (fc.get("detail") or "").strip()
+            name = fc.get("name") or "check"
+            src = fc.get("source") or "verifier_report"
+            source_ref = f"verifier:{src}:{name}" if name else f"verifier:{src}"
+
+            if detail:
+                for sw, family, aliases, pattern, causes, req_ev in SCIENTIFIC_ADAPTERS:
+                    m = pattern.search(detail)
+                    if m:
+                        dedup_key = (sw, family, m.group(0)[:80])
+                        if dedup_key not in seen:
+                            seen.add(dedup_key)
+                            observations.append(
+                                {
+                                    "sci_id": f"sci:{sci_counter}",
+                                    "software": sw,
+                                    "error_family": family,
+                                    "aliases": aliases,
+                                    "reference_anchor": f"references/software/{sw}.md#{family}",
+                                    "matched_text": detail[:240],
+                                    "source_ref": source_ref,
+                                    "candidate_causes": causes,
+                                    "required_discriminating_evidence": req_ev,
+                                }
+                            )
+                            sci_counter += 1
+
+                hit = _match_divergence_line(detail)
+                if hit is not None:
+                    dedup_key = detail
+                    if dedup_key not in seen:
+                        seen.add(dedup_key)
+                        agent_matches, agent_value, agent_ref = _corroborate_agent_reported_value(
+                            hit["metric"],
+                            hit["reported_raw"],
+                            hit["reported_value"],
+                            trajectory_steps,
+                        )
+                        observations.append(
+                            {
+                                "sci_id": f"sci:recompute_divergence:{sci_counter}",
+                                "software": VERIFIER_SOFTWARE_LABEL,
+                                "error_family": VERIFIER_DIVERGENCE_FAMILY,
+                                "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
+                                "reference_anchor": None,
+                                "matched_text": detail,
+                                "source_ref": source_ref,
+                                "metric": hit["metric"],
+                                "reported_value": hit["reported_value"],
+                                "recomputed_value": hit["recomputed_value"],
+                                "tolerance": hit["tolerance"],
+                                "check_kind": hit["check_kind"],
+                                "agent_reported_value": agent_value,
+                                "agent_ref": agent_ref,
+                                "agent_reported_matches": agent_matches,
+                                "discriminating": (
+                                    hit["reported_value"] is not None and hit["recomputed_value"] is not None
+                                ),
+                                "candidate_causes": [],
+                                "required_discriminating_evidence": list(VERIFIER_DIVERGENCE_EVIDENCE),
+                            }
+                        )
+                        sci_counter += 1
+
+        for msg in verifier_report.get("messages") or []:
+            if not isinstance(msg, str):
+                continue
+            msg_str = msg.strip()
+            if not msg_str or msg_str in seen:
+                continue
+            hit = _match_divergence_line(msg_str)
+            if hit is not None:
+                seen.add(msg_str)
+                agent_matches, agent_value, agent_ref = _corroborate_agent_reported_value(
+                    hit["metric"],
+                    hit["reported_raw"],
+                    hit["reported_value"],
+                    trajectory_steps,
+                )
+                observations.append(
+                    {
+                        "sci_id": f"sci:recompute_divergence:{sci_counter}",
+                        "software": VERIFIER_SOFTWARE_LABEL,
+                        "error_family": VERIFIER_DIVERGENCE_FAMILY,
+                        "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
+                        "reference_anchor": None,
+                        "matched_text": msg_str,
+                        "source_ref": "verifier:report:messages",
+                        "metric": hit["metric"],
+                        "reported_value": hit["reported_value"],
+                        "recomputed_value": hit["recomputed_value"],
+                        "tolerance": hit["tolerance"],
+                        "check_kind": hit["check_kind"],
+                        "agent_reported_value": agent_value,
+                        "agent_ref": agent_ref,
+                        "agent_reported_matches": agent_matches,
+                        "discriminating": (
+                            hit["reported_value"] is not None and hit["recomputed_value"] is not None
+                        ),
+                        "candidate_causes": [],
+                        "required_discriminating_evidence": list(VERIFIER_DIVERGENCE_EVIDENCE),
+                    }
+                )
+                sci_counter += 1
+
     return {"scientific_observations": observations}
 
 
@@ -351,6 +466,11 @@ _P2_REFERENCE_MISMATCH = re.compile(
     rf"(?P<metric>[A-Za-z_][A-Za-z0-9_]*) (?P<rep>{_NUMBER})"
     rf"(?:\s+[^\s,;]+)?\s+differs from (?:the )?{_P2_REF_KEYWORDS} (?P<rec>{_NUMBER})"
 )
+# P2B: `<target> <metric> differs from <ref> by <delta>[ <unit>] beyond [its ]bound <tol>`
+_P2B_DELTA_MISMATCH = re.compile(
+    rf"(?P<metric>[A-Za-z_][A-Za-z0-9_]*)\s+differs from (?:the )?[^,;:]+?\s+by\s+"
+    rf"(?P<delta>{_NUMBER})(?:\s+[^\s,;]+)?\s+beyond (?:its )?(?:[a-z_ ]+ )?bound\s+(?P<tol>{_NUMBER})"
+)
 # P3: integer count mismatches (`must be N, got M` / `expected N ..., got M`).
 _P3A_MUST_BE_COUNT = re.compile(rf"must be (?P<rec>{_INT}), got (?P<rep>{_INT})")
 _P3B_EXPECTED_COUNT = re.compile(rf"expected (?P<rec>{_INT})[^,;]*, got (?P<rep>{_INT})")
@@ -360,6 +480,7 @@ _P4_FAIL_INEQUALITY = re.compile(rf"(?P<rep>{_NUMBER})\s*!=\s*(?P<rec>{_NUMBER})
 _DIVERGENCE_PATTERNS: List[Tuple[re.Pattern[str], str, bool]] = [
     (_P1_RECOMPUTE_TOLERANCE, "recompute_divergence", False),
     (_P2_REFERENCE_MISMATCH, "reference_mismatch", False),
+    (_P2B_DELTA_MISMATCH, "reference_mismatch", False),
     (_P3A_MUST_BE_COUNT, "count_mismatch", False),
     (_P3B_EXPECTED_COUNT, "count_mismatch", False),
     (_P4_FAIL_INEQUALITY, "recompute_divergence", True),
@@ -377,14 +498,74 @@ _METRIC_KEYWORD_RE = re.compile(
 _METRIC_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _METRIC_STOPWORDS = frozenset(
     {
-        "fail", "failed", "failure", "reported", "recomputed", "expected", "got", "must",
-        "be", "the", "a", "an", "is", "are", "was", "were", "to", "of", "in", "on", "with",
-        "for", "and", "or", "not", "no", "value", "values", "ref", "reference", "differs",
-        "from", "tol", "tolerance", "pinned", "check", "checked", "verify", "verifier",
-        "verification", "line", "actual", "result", "results", "json", "log", "product",
-        "but", "it", "its", "this", "that", "number", "count", "mismatch", "error",
-        "exception", "traceback", "assert", "assertion", "nan", "inf", "vs", "by", "at",
-        "as", "than", "then",
+        "fail",
+        "failed",
+        "failure",
+        "reported",
+        "recomputed",
+        "expected",
+        "got",
+        "must",
+        "be",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "to",
+        "of",
+        "in",
+        "on",
+        "with",
+        "for",
+        "and",
+        "or",
+        "not",
+        "no",
+        "value",
+        "values",
+        "ref",
+        "reference",
+        "differs",
+        "from",
+        "tol",
+        "tolerance",
+        "pinned",
+        "check",
+        "checked",
+        "verify",
+        "verifier",
+        "verification",
+        "line",
+        "actual",
+        "result",
+        "results",
+        "json",
+        "log",
+        "product",
+        "but",
+        "it",
+        "its",
+        "this",
+        "that",
+        "number",
+        "count",
+        "mismatch",
+        "error",
+        "exception",
+        "traceback",
+        "assert",
+        "assertion",
+        "nan",
+        "inf",
+        "vs",
+        "by",
+        "at",
+        "as",
+        "than",
+        "then",
     }
 )
 
@@ -418,23 +599,35 @@ def _match_divergence_line(line: str) -> Optional[Dict[str, Any]]:
         m = pattern.search(line)
         if not m:
             continue
+        gd = m.groupdict()
         if check_kind == "count_mismatch":
-            reported = _parse_number(m.group("rep"), as_int=True)
-            recomputed = _parse_number(m.group("rec"), as_int=True)
+            reported = _parse_number(gd.get("rep"), as_int=True)
+            recomputed = _parse_number(gd.get("rec"), as_int=True)
             tolerance = None
+            reported_raw = gd.get("rep")
+        elif "delta" in gd:
+            delta = _parse_number(gd.get("delta"))
+            tolerance = _parse_number(gd.get("tol"))
+            reported = delta
+            recomputed = 0.0
+            reported_raw = gd.get("delta")
         else:
-            reported = _parse_number(m.group("rep"))
-            recomputed = _parse_number(m.group("rec"))
-            tolerance = _parse_number(m.groupdict().get("tol"))
-        metric = m.groupdict().get("metric") or _extract_metric_from_line(line)
-        return {
+            reported = _parse_number(gd.get("rep"))
+            recomputed = _parse_number(gd.get("rec"))
+            tolerance = _parse_number(gd.get("tol"))
+            reported_raw = gd.get("rep")
+        metric = gd.get("metric") or _extract_metric_from_line(line)
+        res = {
             "check_kind": check_kind,
             "metric": metric,
-            "reported_raw": m.group("rep"),
+            "reported_raw": reported_raw,
             "reported_value": reported,
             "recomputed_value": recomputed,
             "tolerance": tolerance,
         }
+        if "delta" in gd:
+            res["delta_value"] = delta
+        return res
     return None
 
 

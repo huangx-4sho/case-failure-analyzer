@@ -143,8 +143,15 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                 "evidence_cases": [f"{case_id}:{fud_ref}"],
             }
         }
-    # Subcase 5d: Premature completion / missing output files
-    elif premature_sigs or agent_mismatch_contracts:
+    # Subcase 5d: Premature completion / missing output files.
+    # A named failing verifier check is more specific evidence about what the
+    # task rejected than a generic completion heuristic, so it must not be
+    # preempted by one: when the verifier named a failing check, fall through to
+    # subcase 5e instead. A contract misalignment still binds directly and keeps
+    # priority.
+    elif agent_mismatch_contracts or (
+        premature_sigs and not ctx.named_check_failure and verifier_started
+    ):
         subcase_id = "5d"
         subtype = "task_understanding" if not premature_sigs else "premature_termination"
         code = "AGENT_TASK_UNDERSTANDING" if not premature_sigs else "AGENT_PREMATURE_TERMINATION"
@@ -210,7 +217,9 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             skill_prescription = {
                 "recommended_skill": {
                     "name": "scientific-parameter-selection-protocol",
-                    "trigger": ["Simulation parameter selection for numerical stability or convergence"],
+                    "trigger": [
+                        "Simulation parameter selection for numerical stability or convergence"
+                    ],
                     "capability_gap": [
                         "Agent chose parameters (timestep, k-points, cutoff) outside physical stability boundaries."
                     ],
@@ -295,8 +304,10 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         else:
             subtype = "result_validation"
             code = "AGENT_RESULT_VALIDATION"
+            declared = (ctx.evidence.get("metadata") or {}).get("declared_deliverables") or []
+            target = f"`{declared[0]}`" if declared else "`results.json`"
             summary = (
-                f"Agent wrote results.json without sanity validation, "
+                f"Agent wrote {target} without sanity validation, "
                 f"producing inaccurate physical/numerical values: {fail_text[:200]}"
             )
             skill_prescription = None
@@ -308,7 +319,8 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         )
         return None
 
-    counterfactual_supported = bool(ctx.sole_blocker)
+    # A single failing check does not prove the agent decision is the sole
+    # blocker; no blind counterfactual bonus here.
     cross_source = 1 if (sci_obs or signals or ctx.agent_timeline_events) else 0
 
     prc = attach_confidence_metadata(
@@ -320,7 +332,6 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=cross_source,
-        counterfactual_supported=counterfactual_supported,
         check_localization=ctx.check_localization,
         hypothesis_separation=ctx.hypothesis_separation,
     )
@@ -337,7 +348,6 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=cross_source,
-        counterfactual_supported=counterfactual_supported,
         check_localization=ctx.check_localization,
         hypothesis_separation=ctx.hypothesis_separation,
     )
@@ -350,7 +360,14 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             "evidence_for": [],
             "evidence_against": ["art:trajectory_json"],
             "missing_evidence": [],
-            "counterfactual_test": "Check `runtime.agent_started` and `runtime.verifier_started` (both true).",
+            "counterfactual_test": (
+                "Check `runtime.agent_started` and `runtime.verifier_started` "
+                + (
+                    "(both true)."
+                    if verifier_started
+                    else "(agent started; verifier never ran, so the trial died before scoring)."
+                )
+            ),
         },
         direct_causal_evidence=0,
         contradicting_evidence=2,
@@ -396,7 +413,11 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             {
                 "hypothesis_id": "H2",
                 "category": "infra",
-                "reason": "Container built cleanly, agent executed commands (`runtime.agent_started == true`), and verifier ran to completion.",
+                "reason": (
+                    "Container built cleanly, agent executed commands (`runtime.agent_started == true`), and verifier ran to completion."
+                    if verifier_started
+                    else "Container built cleanly and agent executed commands (`runtime.agent_started == true`)."
+                ),
             }
         ],
         "recommended_actions": [

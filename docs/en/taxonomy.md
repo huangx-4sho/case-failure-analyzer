@@ -123,3 +123,20 @@ flowchart TD
 | Code | Subtype | 中文说明 |
 |---|---|---|
 | `UNKNOWN_INSUFFICIENT_EVIDENCE` | `insufficient_evidence` | 关键日志缺失、无执行轨迹，或竞争假设证据置信度无法区分 |
+
+---
+
+## 3. Harbor Runner-Stage Codes (Post-Agent / Pre-Verifier)
+
+Harbor collects the declared deliverables (`task.toml` → `artifacts`) with `docker cp` after agent execution and before verification. Failures in this window are `failure_stage: "runner"`, `detection_stage: "runner"`, verdict `errored` when the verifier never started. They are **not** `environment_build` / `container_build` failures and **not** agent "premature termination" verdicts.
+
+| Code | Subtype | 中文说明 / Meaning |
+|---|---|---|
+| `INFRA_ARTIFACT_COLLECTION_CRASH` | `artifact_collection_crash` | `RuntimeError: Engine cp failed ('<container>:/app/final' ...): Could not find the file /app/final in container ...` — declared path missing, runner aborts the whole trial |
+| `INFRA_RUNNER_INTERRUPTED` | `runner_interrupted` | Runner log ends at `Collecting main service artifacts` with no verifier output or completion record (silent interruption) |
+| `INFRA_AGENT_TIMEOUT` | `agent_timeout` | `AgentTimeoutError` from `exception_info` / `trial.log`. Harbor killed the agent before declared deliverables were complete; a short timeout is an infra / job-configuration fault, not an agent decision |
+| `AGENT_MISSING_DECLARED_DELIVERABLE` | `deliverable_not_written` | **Contributing factor** (not primary): the agent did not leave a declared deliverable in the container. Gate 1c keeps this explicit while the runner-side fault stays primary |
+
+**Causal priority inside the pre-verification window:** a causal `INFRA_AGENT_TIMEOUT` outranks a downstream `INFRA_ARTIFACT_COLLECTION_CRASH`, because the agent was stopped before it could write the paths. The collection crash is then recorded as a contributing factor. When the verifier did start (e.g. a timeout whose trial still scored `reward=0`), the verdict stays `failed` with `detection_stage: verifier_execution`, but the primary root cause remains `infra`.
+
+**Three-state verdicts:** `passed` and scored `failed` are *scored* states; trials that died in this window are *not scored* (`reward=None`, `verifier_started == false`). A batch board must report both an overall pass rate (`passed / total`) and a scored pass rate (`passed / (passed + scored_failed)`); not-scored trials must not be counted as agent failures.

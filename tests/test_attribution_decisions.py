@@ -241,6 +241,40 @@ DECISION_TABLE: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = [
         },
     ),
     (
+        "gate1c runner artifact collection crash after agent execution",
+        _evidence(
+            runtime=_runtime(
+                agent_started=True,
+                verifier_started=False,
+                verification_status="not_run",
+                reward=None,
+            ),
+            error_observations=[
+                {
+                    "error_id": "err:collection",
+                    "code": "INFRA_ARTIFACT_COLLECTION_CRASH",
+                    "subtype": "artifact_collection_crash",
+                    "stage": "runner",
+                    "matched_text": (
+                        "RuntimeError: Engine cp failed: Could not find the file "
+                        "/app/final in container abc123"
+                    ),
+                    "causal_candidate": True,
+                    "missing_deliverable": "/app/final",
+                }
+            ],
+            missing_deliverables=["/app/final"],
+            behavioral_signals=[_sig("premature_completion")],
+        ),
+        {
+            "gate_id": "gate1c_runner_artifact_collection",
+            "category": "infra",
+            "code": "INFRA_ARTIFACT_COLLECTION_CRASH",
+            "verdict": "errored",
+            "failure_stage": "runner",
+        },
+    ),
+    (
         "gate2 case contract defect",
         _evidence(
             contract_observations=[_contract("case_defect")],
@@ -1364,6 +1398,79 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         )
         self.assertEqual(prc["confidence"], expected)
 
+    # (ii-b) A fail-fast verifier log carries one FAIL line and no PASS lines:
+    # that is a `counterfactual_candidate`, not a proven single-check failure.
+    # It must not add the localization point nor the +2 counterfactual bonus.
+    def test_gate4_lone_fail_fast_log_does_not_enable_counterfactual(self) -> None:
+        ev = self._gate4_agent_evidence()
+        ev["verifier_check_stats"] = build_check_stats(
+            "FAIL: reported max_force 0.02863 != recomputed 0.03666 (tol 0.001)\n"
+        )
+        self.assertFalse(ev["verifier_check_stats"]["single_failure"])
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        prc = an["primary_root_cause"]
+        expected, _, _ = compute_evidence_confidence(
+            direct_causal_evidence=3,
+            cross_source_corroboration=1,
+            counterfactual_supported=False,
+            margin_ratio=self.FIXTURE_MARGIN_RATIO,
+        )
+        self.assertEqual(prc["confidence"], expected)
+        self.assertEqual(prc["confidence"], 0.75)
+
+    def test_gate2_single_fail_line_does_not_add_counterfactual_bonus(self) -> None:
+        ev = _evidence(
+            contract_observations=[
+                _contract(
+                    "case_defect",
+                    contract_id="contract:missing_upf",
+                    item="Ge.UPF",
+                    details="Prompt references asset `Ge.UPF`, which is absent.",
+                )
+            ],
+            verifier_observations=[_fail_log("FAIL: Ge.UPF not found")],
+            verifier_check_stats=build_check_stats("FAIL: Ge.UPF not found\n"),
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        self.assertEqual(an["decision_trace"]["selected"]["gate_id"], "gate2_case_definition")
+        prc = an["primary_root_cause"]
+        self.assertEqual(prc["code"], "CASE_MISSING_ASSET")
+        expected, _, _ = compute_evidence_confidence(
+            direct_causal_evidence=2, cross_source_corroboration=1
+        )
+        self.assertEqual(prc["confidence"], expected)
+        self.assertEqual(prc["confidence"], 0.5)
+
+    def test_gate3_single_fail_line_does_not_add_counterfactual_bonus(self) -> None:
+        fail_line = "FAIL: Expected 5 thermo rows in scf.out, got 32"
+        ev = _evidence(
+            verifier_observations=[_fail_log(fail_line)],
+            verifier_check_stats=build_check_stats(fail_line + "\n"),
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        self.assertEqual(an["decision_trace"]["selected"]["gate_id"], "gate3_verifier_defect")
+        self.assertEqual(an["primary_root_cause"]["code"], "VERIFIER_REGEX_OR_PARSER_DEFECT")
+        expected, _, _ = compute_evidence_confidence(
+            direct_causal_evidence=2, cross_source_corroboration=1
+        )
+        self.assertEqual(an["primary_root_cause"]["confidence"], expected)
+        self.assertEqual(an["primary_root_cause"]["confidence"], 0.5)
+
+    def test_gate6_single_fail_line_does_not_add_counterfactual_bonus(self) -> None:
+        ev = _evidence(
+            scientific_observations=[_sci("scf_convergence_not_achieved")],
+            behavioral_signals=[_sig("repeated_failed_action")],
+            verifier_observations=[_fail_log("FAIL: SCF not converged")],
+            verifier_check_stats=build_check_stats("FAIL: SCF not converged\n"),
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        self.assertEqual(an["decision_trace"]["selected"]["gate_id"], "gate6_agent_primary")
+        expected, _, _ = compute_evidence_confidence(
+            direct_causal_evidence=3, cross_source_corroboration=1
+        )
+        self.assertEqual(an["primary_root_cause"]["confidence"], expected)
+        self.assertEqual(an["primary_root_cause"]["confidence"], 0.67)
+
     # (iii) hypothesis_separation ≥ 0.6 lifts the Gate 6 agent score.
     def test_gate6_hypothesis_separation_raises_confidence(self) -> None:
         ev = _evidence(
@@ -1383,9 +1490,7 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
             ]
         }
         an = run_attribution_engine(ev, hyps)
-        self.assertEqual(
-            an["decision_trace"]["selected"]["gate_id"], "gate6_agent_primary"
-        )
+        self.assertEqual(an["decision_trace"]["selected"]["gate_id"], "gate6_agent_primary")
         expected, kind, _ = compute_evidence_confidence(
             direct_causal_evidence=3,
             cross_source_corroboration=1,
@@ -1424,9 +1529,7 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         expected4, _, _ = compute_evidence_confidence(
             direct_causal_evidence=3, cross_source_corroboration=1
         )
-        self.assertEqual(
-            an4["primary_root_cause"]["code"], "AGENT_SCIENTIFIC_PARAMETER_SELECTION"
-        )
+        self.assertEqual(an4["primary_root_cause"]["code"], "AGENT_SCIENTIFIC_PARAMETER_SELECTION")
         self.assertEqual(an4["primary_root_cause"]["confidence"], expected4)
         self.assertEqual(an4["primary_root_cause"]["confidence"], 0.67)
 
@@ -1438,7 +1541,17 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         an6 = run_attribution_engine(ev6, {"candidate_hypotheses": []})
         self.assertEqual(an6["primary_root_cause"]["confidence"], 0.67)
 
+    def test_gate6_dynamic_deliverable_name(self) -> None:
+        ev = _evidence(
+            behavioral_signals=[_sig("unverified_output")],
+            verifier_observations=[_fail_log("FAIL: mismatch")],
+            metadata={"declared_deliverables": ["charges.csv"]},
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        prc = an["primary_root_cause"]
+        self.assertEqual(prc["code"], "AGENT_RESULT_VALIDATION")
+        self.assertIn("`charges.csv`", prc["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

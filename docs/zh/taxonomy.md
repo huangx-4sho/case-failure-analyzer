@@ -123,3 +123,20 @@ flowchart TD
 | Code | Subtype | 中文说明 |
 |---|---|---|
 | `UNKNOWN_INSUFFICIENT_EVIDENCE` | `insufficient_evidence` | 关键日志缺失、无执行轨迹，或竞争假设证据置信度无法区分 |
+
+---
+
+## 3. Harbor 运行阶段故障码（Post-Agent / Pre-Verifier）(`Harbor Runner-Stage Codes`)
+
+Harbor 在 Agent 执行之后、验证之前，用 `docker cp` 采集已声明交付物（`task.toml` → `artifacts`）。发生在该窗口内的失败为 `failure_stage: "runner"`、`detection_stage: "runner"`，且当验证器从未启动时裁定为 `errored`。它们**不是** `environment_build` / `container_build` 失败，也**不是** Agent 的“过早终止”裁定。
+
+| Code | Subtype | 中文说明 / Meaning |
+|---|---|---|
+| `INFRA_ARTIFACT_COLLECTION_CRASH` | `artifact_collection_crash` | `RuntimeError: Engine cp failed ('<container>:/app/final' ...): Could not find the file /app/final in container ...` —— 已声明路径缺失，Runner 中止整个 Trial |
+| `INFRA_RUNNER_INTERRUPTED` | `runner_interrupted` | Runner 日志止于 `Collecting main service artifacts`，既无验证器输出也无完成记录（静默中断） |
+| `INFRA_AGENT_TIMEOUT` | `agent_timeout` | 来自 `exception_info` / `trial.log` 的 `AgentTimeoutError`。Harbor 在已声明交付物完成前终止了 Agent；短时限属于基础设施 / 作业配置故障，而非 Agent 决策 |
+| `AGENT_MISSING_DECLARED_DELIVERABLE` | `deliverable_not_written` | **伴随因素**（非主根因）：Agent 未在容器内留下某个已声明交付物。Gate 1c 将其显式保留，而 Runner 侧故障仍为主根因 |
+
+**验证前窗口内的因果优先级：** 作为因果项的 `INFRA_AGENT_TIMEOUT` 优先于下游的 `INFRA_ARTIFACT_COLLECTION_CRASH`，因为 Agent 在来得及写出这些路径之前就已被停止；采集崩溃随后记为伴随因素。若验证器确已启动（例如超时但 Trial 仍评分 `reward=0`），裁定仍为 `failed` 且 `detection_stage: verifier_execution`，但主根因依旧是 `infra`。
+
+**三态裁定：** `passed` 与已评分的 `failed` 属于*已评分*状态；在该窗口内中止的 Trial 属于*未评分*（`reward=None`、`verifier_started == false`）。批次看板必须同时给出总体通过率（`passed / total`）与已评分通过率（`passed / (passed + scored_failed)`）；未评分 Trial 绝不能被计为 Agent 失败。

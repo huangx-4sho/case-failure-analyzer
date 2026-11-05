@@ -33,9 +33,9 @@
       "claim": "Software emitted `scf_convergence_not_achieved` (quantum-espresso), but agent failed to diagnose the physical/input cause and repeatedly re-executed the failing setup (`sig:repeated_fail:2:0`).",
       "evidence_for": [
         "sci:1",
-        "sig:asset_mod:1:0",
         "sig:repeated_fail:2:0",
-        "sig:asset_mod:2:0"
+        "sig:missing_log_inspection",
+        "sig:premature_completion"
       ],
       "evidence_against": [],
       "missing_evidence": [],
@@ -80,9 +80,9 @@
   ],
   "evidence_refs": [
     "sci:1",
-    "sig:asset_mod:1:0",
     "sig:repeated_fail:2:0",
-    "sig:asset_mod:2:0"
+    "sig:missing_log_inspection",
+    "sig:premature_completion"
   ],
   "excluded_hypotheses": [
     {

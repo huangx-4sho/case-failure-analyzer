@@ -33,21 +33,23 @@
 所有因果归因严格遵循客观时序与依赖链：
 $$\text{Infra (启动前环境)} \longrightarrow \text{Case (题目资产/配置)} \longrightarrow \text{Verifier (评测器崩溃/解析/容差)} \longrightarrow \text{Agent (正向偏离动作)}$$
 
-为在代码中确定性实现该时序，引擎按声明顺序（gate0–gate6 共 8 个决策 id）依次求值各个 Gate：
+为在代码中确定性实现该时序，引擎按声明顺序（gate0–gate6 共 9 个决策 id）依次求值各个 Gate：
 1. **Gate 0: 通过短路门 (`gate0_passed`)**：若 Trial 已通过验证（`verification_status == "passed"` 或 `reward >= 1.0`），则不存在需要归因的失败；引擎以 `category = "none"` 短路返回，绝不因 Job 级错误统计污染已通过的 Trial。
 2. **Gate 1a: 启动前环境基础设施 (`gate1a_infra_prestartup`)**：`agent_started == false` 且存在致命基础设施故障证据时，归因为 `infra`。
 3. **Gate 1b: 启动前静默 (`gate1b_unknown_no_evidence`)**：`agent_started == false` 且无任何日志或错误可解释原因时，保守归因为 `unknown`。
-4. **Gate 2: 题目资产与配置缺陷 (`gate2_case_definition`)**：题目要求资产缺失或镜像配置损坏，归因为 `case`。
-5. **Gate 3: 评测器缺陷 (`gate3_verifier_defect`)**：评测器自身内部崩溃（`VERIFIER_RECOMPUTE_DEFECT`）或完成直接因果绑定的解析正则缺陷（`failure_binding == "direct"`），归因为 `verifier`。
-6. **Gate 4: 数值漂移与容差缺陷 (`gate4_numerical_divergence`)**：结构化瞬时轨迹发散但系综均值守恒吻合、且三方契约闭环成立时，归因为 `verifier` (`VERIFIER_TOLERANCE_TOO_STRICT`)。
-7. **Gate 5: 正面证据不足门控 (`gate5_insufficient_positive_evidence`)**：若 Trial 失败但缺乏指向 Agent 行为的正面因果证据，保守弃判并退化至 `unknown`，防止误怪 Agent（仅有 `reward == 0` 或 `verify.log` 中的 `FAIL` 不构成正面证据）。这是 Agent 归因前的保守兜底。
-8. **Gate 6: Agent 主观决策与操作错误 (`gate6_agent_primary`)**：在满足 5 项必要条件且具备正面行为信号时归因为 `agent`。该 Gate 必然命中，从而终结整条判定链。
+4. **Gate 1c: 验证前 Runner / 执行基础设施 (`gate1c_runner_artifact_collection`)**：发生在 Agent 执行之后、验证之前的 Harbor 故障——`INFRA_ARTIFACT_COLLECTION_CRASH`（`Engine cp failed`）、`INFRA_RUNNER_INTERRUPTED`（日志止于 `Collecting main service artifacts`）或作为因果项的 `INFRA_AGENT_TIMEOUT`——均归因为 `infra`。上游的 Agent 超时优先于下游的产物采集崩溃；Agent 缺失的已声明交付物作为显式的伴随因素保留。此类 Trial 大多验证器从未启动，因此**不存在已评分失败**，且严禁判为 `agent` / `AGENT_PREMATURE_TERMINATION`。
+5. **Gate 2: 题目资产与配置缺陷 (`gate2_case_definition`)**：题目要求资产缺失或镜像配置损坏，归因为 `case`。
+6. **Gate 3: 评测器缺陷 (`gate3_verifier_defect`)**：评测器自身内部崩溃（`VERIFIER_RECOMPUTE_DEFECT`）或完成直接因果绑定的解析正则缺陷（`failure_binding == "direct"`），归因为 `verifier`。
+7. **Gate 4: 数值漂移与容差缺陷 (`gate4_numerical_divergence`)**：结构化瞬时轨迹发散但系综均值守恒吻合、且三方契约闭环成立时，归因为 `verifier` (`VERIFIER_TOLERANCE_TOO_STRICT`)。
+8. **Gate 5: 正面证据不足门控 (`gate5_insufficient_positive_evidence`)**：若 Trial 失败但缺乏指向 Agent 行为的正面因果证据，保守弃判并退化至 `unknown`，防止误怪 Agent（仅有 `reward == 0` 或 `verify.log` 中的 `FAIL` 不构成正面证据）。这是 Agent 归因前的保守兜底。
+9. **Gate 6: Agent 主观决策与操作错误 (`gate6_agent_primary`)**：在满足 5 项必要条件且具备正面行为信号时归因为 `agent`。该 Gate 必然命中，从而终结整条判定链。
 
 | 阶段顺序 | 对应门控 | 适用范围 / 触发条件 | 归因类别 | 绝对禁止项 |
 | :--- | :--- | :--- | :--- | :--- |
 | **阶段 0: Trial 已通过** | Gate 0 | `verification_status == "passed"` 或 `reward >= 1.0` | `none`（无失败可归因） | 无失败归因 |
 | **阶段 1: 启动前环境** | Gate 1a | `agent_started == false` 且存在致命基础设施错误 | `infra` | 严禁归因 `agent` |
 | **阶段 1b: 启动前静默**| Gate 1b | `agent_started == false` 且无任何异常日志证据 | `unknown` | 严禁归因 `agent` |
+| **阶段 1c: 验证前 Runner** | Gate 1c | Agent 执行后的产物采集崩溃 / 静默中断 / Agent 超时 | `infra` | 严禁归因 `agent`；验证器未启动时严禁判为已评分的 `failed` |
 | **阶段 2: 题目资产配置** | Gate 2 | 缺失 Prompt 资产文件或题目镜像配置损坏 | `case` | 严禁归因 `agent` |
 | **阶段 3: 评测器崩溃/解析**| Gate 3 | 评测器内部崩溃或直接绑定的解析器缺陷 | `verifier` | 严禁归因 `agent` 或判为 `unknown` |
 | **阶段 4: 数值容差缺陷** | Gate 4 | 瞬时轨迹发散但系综统计量吻合且闭环成立 | `verifier` | 严禁未经验证归因 `agent`（不完备时弃判）|
@@ -68,6 +70,11 @@ $$\text{Infra (启动前环境)} \longrightarrow \text{Case (题目资产/配置
 > - 若 `runtime.agent_started == false` 且存在致命基础设施故障证据（`causal_candidate == true`）→ `primary_root_cause.category` **必须**为 `infra`（若系题目 `Dockerfile` 自身语法/配置损坏则为 `case`）。
 > - 若 `runtime.agent_started == false` 且无任何基础设施或异常日志 → `primary_root_cause.category` **必须**为 `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`)。
 > - 只要 `runtime.agent_started == false`，将 `primary_root_cause.category` 判为 `"agent"`（误判归因 Agent）属于**绝对禁止行为**。
+
+> **验证器未运行 Trial 硬规则 (`runtime.verifier_started == false` 或 `runtime.verdict in ("unknown", "not_run")`)**：
+> - 当验证器从未启动时，单凭 `sig:premature_completion` 轨迹启发式**不构成** Agent 正面证据 (`VERIFIER_NOT_RUN_PREMATURE_BLAME`)。要归因为 `agent`，必须在 `evidence_refs` 中引用未完成观测（未恢复的科学报错、`agent_mismatch` 契约违约、`wrong_output_path` 等）。
+> - Harbor 的已声明交付物来自 `task.toml` 的 `artifacts`，而非硬编码的 `results.json`。`premature_completion` 信号仅当某个*已声明*路径确实缺失、且与采集到的 `<trial>/artifacts/app/...` 目录树对账后成立时才有效。
+> - 发生在 Agent 执行之后 / 验证之前窗口内的 Runner 侧故障（Gate 1c）仍以 `infra` 为主根因；Agent 未完成的交付物是伴随因素而非根因。该 Trial **不予评分** (`reward=None`)，且不得在批次通过率中被计为已评分失败。
 
 ---
 

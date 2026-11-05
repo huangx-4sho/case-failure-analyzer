@@ -19,6 +19,156 @@ from typing import Any, Dict, List, Optional, Tuple
 
 SUPPORTED_SCHEMAS = {"ATIF-v1.7", "ATIF-v1.6", "ATIF-v1.5"}
 
+#: Shell tools whose *final* argument is the write destination (`cp src dst`,
+#: `mv src dst`, `rsync src dst/`, `tee file`, `sed -i file`).
+_SHELL_WRITE_TOOL_RE = re.compile(r"(?:\bcp\b|\bmv\b|\brsync\b|\btee\b|\binstall\b|\bsed\s+-i)")
+
+#: Function-style or path-taking writers where the deliverable appears among the
+#: keyword's arguments rather than as the command's last token.
+_FUNC_WRITE_RE = re.compile(
+    r"(?:write_text|json\.dump|\.write\s*\(|\bsave\b|\bcopy\b|\bopen\s*\("
+    r"|\bmkdir\b|\bmakedirs\b|\btouch\b|\btar\b|\bscp\b)"
+)
+
+
+def _path_covers(path: str, deliverable: str) -> bool:
+    """True when `path` is `deliverable` itself or lives inside it."""
+    p = (path or "").strip().rstrip("/")
+    d = (deliverable or "").strip().rstrip("/")
+    if not p or not d:
+        return False
+    return p == d or p.startswith(d + "/")
+
+
+def _command_writes_path(cmd: str, deliverable: str) -> bool:
+    """
+    True when a shell command appears to *write* `deliverable` rather than merely
+    read, list, or redirect stderr past it.
+
+    Three accepted forms:
+      1. a redirect whose immediate target is the path (`... > /app/final/x`);
+      2. a shell copy/move tool whose final argument is the path
+         (`cp /tmp/x /app/final/`);
+      3. a function-style or directory-creating writer with the path among its
+         arguments (`open('/app/final/x.json','w')`, `mkdir -p /app/final`).
+    `2>&1` fd duplication and `ls /app/final 2>/dev/null` never match.
+    """
+    d = (deliverable or "").strip().rstrip("/")
+    if not d or not cmd:
+        return False
+
+    # 1. Redirect directly into the deliverable.
+    if re.search(r">>?\s*['\"]?" + re.escape(d) + r"[/'\"]?", cmd):
+        return True
+
+    # 2. Copy/move tools: the deliverable must be the final argument.
+    if _SHELL_WRITE_TOOL_RE.search(cmd):
+        last_token = cmd.strip().split()[-1].strip("'\"")
+        if _path_covers(last_token, d):
+            return True
+
+    # 3. Function-style writers: the path appears among the arguments.
+    for m in _FUNC_WRITE_RE.finditer(cmd):
+        if d in cmd[m.end() : m.end() + 200]:
+            return True
+    return False
+
+
+def _deliverable_written(
+    deliverable: str,
+    written_files: List[str],
+    commands: List[str],
+) -> bool:
+    """
+    Best-effort check that the agent produced `deliverable` somewhere in the
+    trajectory: an explicit file write, or a shell command that writes to the
+    path.
+    """
+    for path in written_files:
+        if _path_covers(path, deliverable):
+            return True
+    for cmd in commands:
+        if deliverable in cmd and _command_writes_path(cmd, deliverable):
+            return True
+    return False
+
+
+#: Input roots the agent must never write to.
+_PROTECTED_INPUT_RE = re.compile(
+    r"(?:/workspace/assets|/inputs\b|/submission\b|/opt/[\w.-]*public/inputs)"
+)
+#: fd duplication / discard redirects that are not file writes.
+_FD_REDIRECT_RE = re.compile(r"\d*>&\d+|&>\s*/dev/null|\d*>\s*/dev/null|\d*>>\s*/dev/null")
+#: Shell-level mutation of the workspace (used for edit-aware retry detection).
+_SHELL_MUTATION_RE = re.compile(
+    r"(?:(?<![\d&-])>>?\s*[^\s&|;<>]|\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\brm\b"
+    r"|\bpatch\b|\bgit\s+(?:apply|checkout)\b)"
+)
+_HEREDOC_TARGET_RE = re.compile(
+    r"cat\s*>>?\s*(?P<p>[^\s<]+)\s*<<-?\s*['\"]?\w+['\"]?"
+    r"|<<-?\s*['\"]?\w+['\"]?\s*>>?\s*(?P<p2>[^\s]+)"
+)
+_DEP_SEARCH_RE = re.compile(
+    r"(?:\bwhich\s+\S|\bcommand\s+-v\b|\blocate\s+\S|\bfind\s+/(?:opt|usr|workspace/assets)\b"
+    r"|\bls\s+/opt\b|\bls\s+/workspace/assets\b|\bpip\s+(?:list|show)\b)"
+)
+_SELF_CHECK_RE = re.compile(
+    r"(?:verify|check|validate|sanity|selfcheck|self_check)[\w.-]*\.(?:py|sh)\b"
+)
+
+
+def strip_fd_redirects(cmd: str) -> str:
+    """Remove `2>&1` / `>/dev/null` style redirects so they never read as file writes."""
+    return _FD_REDIRECT_RE.sub(" ", cmd or "")
+
+
+def shell_writes_protected_input(cmd: str) -> bool:
+    """True only when a write (redirect/tee/sed -i/cp/mv) targets a protected input root."""
+    c = strip_fd_redirects(cmd)
+    for m in re.finditer(
+        r"(?:(?<![\d&-])>>?\s*(?P<r>[^\s&|;<>]+)|\btee\s+(?:-a\s+)?(?P<t>\S+)"
+        r"|\bsed\s+-i\S*\s+(?:-e\s+)?(?:'[^']*'|\"[^\"]*\"|\S+)\s+(?P<s>\S+)"
+        r"|\b(?:cp|mv)\s+[^;&|]*?\s(?P<d>\S+)\s*(?:$|[;&|]))",
+        c,
+    ):
+        target = next((g for g in m.groupdict().values() if g), "")
+        if _PROTECTED_INPUT_RE.search(target.strip("'\"")):
+            return True
+    return False
+
+
+def heredoc_written_path(cmd: str) -> Optional[str]:
+    m = _HEREDOC_TARGET_RE.search(cmd or "")
+    if not m:
+        return None
+    return (m.group("p") or m.group("p2") or "").strip("'\"") or None
+
+
+def summarize_code_payload(args: Dict[str, Any], limit: int = 600) -> Optional[str]:
+    """Compact, salience-aware snapshot of what a Write/Edit tool put into a file."""
+    new = args.get("content") or args.get("new_string") or args.get("newString") or ""
+    if not new and isinstance(args.get("edits"), list):
+        new = "\n".join(str(e.get("new_string", "")) for e in args["edits"] if isinstance(e, dict))
+    if not isinstance(new, str) or not new.strip():
+        return None
+    keep = re.compile(
+        r"(?:=\s*[-+0-9.eE]+|tol|cutoff|range|eta|alpha|spin|mult|charge|basis|conv|max_|"
+        r"\bdef\s|\bclass\s|import\s|open\(|json\.dump|to_csv|argparse)",
+        re.IGNORECASE,
+    )
+    lines = [ln.rstrip() for ln in new.splitlines() if ln.strip()]
+    picked = [ln for ln in lines if keep.search(ln)] or lines
+    out = "\n".join(picked[:12])
+    return out[:limit]
+
+
+def extract_thought(step: Dict[str, Any]) -> Optional[str]:
+    for key in ("reasoning_content", "thinking", "thought", "reasoning"):
+        val = step.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
 
 def sha256_text(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
@@ -154,7 +304,17 @@ def normalize_trajectory(
     trajectory_path: Optional[Path],
     max_obs_bytes: int = 2000,
     max_file_bytes: int = 50_000_000,
+    expected_deliverables: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
+    """
+    Normalize an ATIF agent trajectory into a timeline plus behavioral signals.
+
+    `expected_deliverables` is the harbor task's declared artifact set
+    (`task.toml` `artifacts`, e.g. `["/app/final"]`). When provided, the
+    `premature_completion` signal fires only if a *declared* deliverable is
+    absent from the trajectory — the hardcoded `results.json` heuristic below is
+    kept only as a fallback for tasks that declare nothing.
+    """
     if trajectory_path is None or not trajectory_path.is_file():
         return {
             "exists": False,
@@ -207,7 +367,8 @@ def normalize_trajectory(
     written_files: List[str] = []
     read_files: List[str] = []
 
-    prev_commands: List[Tuple[str, bool, str]] = []  # (cmd, failed, event_id)
+    prev_commands: List[Tuple[str, bool, str, int]] = []  # (cmd, failed, event_id, epoch)
+    mutation_epoch = 0  # bumps whenever the agent edits/writes anything
     results_json_written = False
     results_json_verified_after_write = False
     ran_simulation = False
@@ -238,6 +399,25 @@ def normalize_trajectory(
                 }
             )
             continue
+
+        thought = extract_thought(step)
+        if thought:
+            t_trunc, t_sha, _ = truncate_with_head_tail(thought, max_obs_bytes)
+            events.append(
+                {
+                    "event_id": f"trajectory:step:{step_id}:thought",
+                    "timestamp": ts,
+                    "actor": "agent",
+                    "event_type": "agent_thought",
+                    "tool_name": None,
+                    "command": None,
+                    "observation": t_trunc,
+                    "observation_sha256": t_sha,
+                    "exit_code": None,
+                    "source_file": "agent/trajectory.json",
+                    "source_pointer": f"{step_ptr}/thinking",
+                }
+            )
 
         # Agent reasoning / message event
         if msg:
@@ -293,10 +473,23 @@ def normalize_trajectory(
             # Check for repeated command
             norm_cmd = (cmd_or_path or "").strip()
             if fn_name.lower() == "bash" and norm_cmd:
-                for prev_cmd, prev_failed, prev_ev in prev_commands:
+                for prev_cmd, prev_failed, prev_ev, prev_epoch in prev_commands:
                     if prev_cmd == norm_cmd:
                         ev_type = "repeated_command"
-                        if prev_failed:
+                        if prev_failed and prev_epoch != mutation_epoch:
+                            signals.append(
+                                {
+                                    "signal_id": f"sig:iter_debug:{step_id}:{t_idx}",
+                                    "signal_type": "iterative_debugging_failure",
+                                    "description": (
+                                        f"Agent edited files then re-ran a still-failing command "
+                                        f"({norm_cmd[:100]}) after {prev_ev}"
+                                    ),
+                                    "event_ref": ev_id,
+                                    "source_pointer": tc_ptr,
+                                }
+                            )
+                        elif prev_failed:
                             signals.append(
                                 {
                                     "signal_id": f"sig:repeated_fail:{step_id}:{t_idx}",
@@ -307,13 +500,10 @@ def normalize_trajectory(
                                 }
                             )
                         break
-                prev_commands.append((norm_cmd, has_error, ev_id))
+                prev_commands.append((norm_cmd, has_error, ev_id, -1))  # epoch finalized below
 
                 # Behavioral heuristics on Bash commands
-                if any(
-                    k in norm_cmd
-                    for k in ("which ", "find ", "ls /opt", "ls /workspace/assets", "locate ")
-                ):
+                if _DEP_SEARCH_RE.search(strip_fd_redirects(norm_cmd)):
                     signals.append(
                         {
                             "signal_id": f"sig:dep_search:{step_id}:{t_idx}",
@@ -323,6 +513,29 @@ def normalize_trajectory(
                             "source_pointer": tc_ptr,
                         }
                     )
+
+                if _SELF_CHECK_RE.search(norm_cmd) and not has_error:
+                    signals.append(
+                        {
+                            "signal_id": f"sig:self_check:{step_id}:{t_idx}",
+                            "signal_type": "self_verification_executed",
+                            "description": f"Agent ran a self-check script: {norm_cmd[:120]}",
+                            "event_ref": ev_id,
+                            "source_pointer": tc_ptr,
+                        }
+                    )
+
+                hd_path = heredoc_written_path(norm_cmd)
+                if hd_path:
+                    written_files.append(hd_path)
+
+                if _SHELL_MUTATION_RE.search(strip_fd_redirects(norm_cmd)) or hd_path:
+                    mutation_epoch += 1
+                # A command's own output redirects must not count as an edit between
+                # it and its identical retry; finalize its epoch after its own bump.
+                if prev_commands and prev_commands[-1][2] == ev_id:
+                    c0, f0, e0, _ = prev_commands[-1]
+                    prev_commands[-1] = (c0, f0, e0, mutation_epoch)
 
                 if any(
                     bin_k in norm_cmd
@@ -386,11 +599,8 @@ def normalize_trajectory(
                 ):
                     results_json_verified_after_write = True
 
-                # Check if agent modified `/workspace/assets`
-                if re.search(
-                    r"(?:>|>>|sed\s+-i|cp\s+.*\s+/workspace/assets/|mv\s+.*\s+/workspace/assets/)",
-                    norm_cmd,
-                ):
+                # Check if agent modified protected inputs (fd redirects excluded)
+                if shell_writes_protected_input(norm_cmd):
                     signals.append(
                         {
                             "signal_id": f"sig:asset_mod:{step_id}:{t_idx}",
@@ -423,7 +633,10 @@ def normalize_trajectory(
                         }
                     )
 
+            code_payload = None
             if ev_type == "file_write" and cmd_or_path:
+                mutation_epoch += 1
+                code_payload = summarize_code_payload(args)
                 written_files.append(cmd_or_path)
                 if "/workspace/assets/" in cmd_or_path:
                     signals.append(
@@ -472,6 +685,7 @@ def normalize_trajectory(
                     "exit_code": exit_code,
                     "source_file": "agent/trajectory.json",
                     "source_pointer": tc_ptr,
+                    **({"code_payload": code_payload} if code_payload else {}),
                 }
             )
 
@@ -487,7 +701,57 @@ def normalize_trajectory(
             }
         )
 
-    if not results_json_written and events:
+    declared_deliverables = [
+        d for d in (expected_deliverables or []) if isinstance(d, str) and d.strip()
+    ]
+    # Shell commands that ran (including repeated/failed ones); file_write events
+    # are already collected in `written_files`.
+    ran_commands = [
+        ev["command"]
+        for ev in events
+        if ev.get("event_type") in ("tool_call", "shell_error", "repeated_command")
+        and ev.get("command")
+    ]
+
+    if declared_deliverables and events:
+        # Harbor task.toml declares the authoritative deliverable set. "Premature
+        # completion" therefore means a declared artifact was never produced -
+        # not the absence of a hardcoded `results.json` most harbor tasks never
+        # write. When every declared artifact is present, completion heuristics
+        # fall back to the results.json verification check below.
+        missing_deliverables = [
+            d
+            for d in declared_deliverables
+            if not _deliverable_written(d, written_files, ran_commands)
+        ]
+        if missing_deliverables:
+            signals.append(
+                {
+                    "signal_id": "sig:premature_completion",
+                    "signal_type": "premature_completion",
+                    "description": (
+                        "Agent trajectory ended without producing declared deliverable(s): "
+                        f"{', '.join(missing_deliverables)} (task.toml `artifacts`)."
+                    ),
+                    "event_ref": events[-1]["event_id"],
+                    "source_pointer": f"/steps/{len(steps) - 1}" if steps else "/steps",
+                    "declared_deliverables": declared_deliverables,
+                    "missing_deliverables": missing_deliverables,
+                }
+            )
+        elif results_json_written and not results_json_verified_after_write:
+            signals.append(
+                {
+                    "signal_id": "sig:unverified_output",
+                    "signal_type": "unverified_output",
+                    "description": "Agent wrote `results.json` without reading/validating its final schema.",
+                    "event_ref": events[-1]["event_id"],
+                    "source_pointer": f"/steps/{len(steps) - 1}" if steps else "/steps",
+                }
+            )
+    elif not results_json_written and events:
+        # Legacy fallback: no declared deliverables are known, so the only
+        # observable completion contract is `results.json`.
         signals.append(
             {
                 "signal_id": "sig:premature_completion",
@@ -508,7 +772,7 @@ def normalize_trajectory(
             }
         )
 
-    return {
+    result: Dict[str, Any] = {
         "exists": True,
         "schema_version": schema_version,
         "session_id": raw.get("session_id"),
@@ -518,6 +782,16 @@ def normalize_trajectory(
         "written_files": sorted(set(written_files)),
         "read_files": sorted(set(read_files)),
     }
+    if declared_deliverables:
+        # Additive: lets gates distinguish "declared deliverable missing" from a
+        # generic completion heuristic without re-parsing task.toml.
+        result["declared_deliverables"] = declared_deliverables
+        result["missing_deliverables"] = [
+            d
+            for d in declared_deliverables
+            if not _deliverable_written(d, written_files, ran_commands)
+        ]
+    return result
 
 
 def main() -> None:

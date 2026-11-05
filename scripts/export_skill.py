@@ -7,12 +7,14 @@ to a specified target destination with strict path safety guards and non-destruc
   1. Validates destination safety:
      - Refuses root filesystem `/` and critical system directories (`/etc`, `/usr`, etc.).
      - Refuses user home directory root (`Path.home()`).
-     - Refuses current repository root or its parent.
+     - Refuses the current repository root, its parent, or any path inside it.
   2. Non-destructive file synchronization:
      - Copies SKILL.md, agents/, scripts/, and references/.
      - Excludes `__pycache__`, `*.pyc`, `.DS_Store`, etc.
      - Never performs blanket deletion (`rsync --delete`) on unmanaged user files.
      - Tracks exported files via `.cfa_export_manifest.json` for managed cleanup if `--clean` is given.
+     - Validates every manifest entry before cleanup so stale or tampered metadata cannot
+       delete files outside the destination.
 """
 
 from __future__ import annotations
@@ -25,7 +27,13 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from staging import is_safe_manifest_relpath
+
+REPO_ROOT = SCRIPT_DIR.parent
 
 MANAGED_COMPONENTS = ["SKILL.md", "agents", "scripts", "references"]
 
@@ -57,11 +65,10 @@ RAW_SYSTEM_DIRS = {
     "/private/var",
 }
 
-SYSTEM_DIRECTORIES = {
-    Path(p).resolve() for p in RAW_SYSTEM_DIRS if Path(p).exists()
-} | {Path("/")}
+SYSTEM_DIRECTORIES = {Path(p).resolve() for p in RAW_SYSTEM_DIRS if Path(p).exists()} | {Path("/")}
 
 MANIFEST_FILENAME = ".cfa_export_manifest.json"
+EXPORT_MANIFEST_SCHEMA_VERSION = "cfa-export-manifest-v1"
 
 
 class ExportSafetyError(ValueError):
@@ -74,7 +81,7 @@ def validate_destination(dest_path_str: str, repo_root: Path = REPO_ROOT) -> Pat
       - Cannot be empty
       - Cannot be root or system directory
       - Cannot be home directory root
-      - Cannot be current repository root or its parent
+      - Cannot be the current repository root, its parent, or any path inside it
     """
     if not dest_path_str or not dest_path_str.strip():
         raise ExportSafetyError("Destination path cannot be empty.")
@@ -104,8 +111,78 @@ def validate_destination(dest_path_str: str, repo_root: Path = REPO_ROOT) -> Pat
         raise ExportSafetyError(
             f"Refusing to export into the parent directory of source repository: {dest}"
         )
+    try:
+        dest.relative_to(resolved_root)
+        inside_source = True
+    except ValueError:
+        inside_source = False
+    if inside_source:
+        raise ExportSafetyError(
+            f"Refusing to export into a directory inside the source repository: {dest}"
+        )
 
     return dest
+
+
+def _load_managed_relpaths(manifest_file: Path, dest: Path) -> Set[str]:
+    """Load only safe, well-formed file entries from a previous export manifest.
+
+    A malformed or tampered manifest must never become a deletion allow-list. The
+    manifest owner is validated, its schema version is checked when present, and
+    every path must resolve strictly inside ``dest``.
+    """
+    if not manifest_file.is_file():
+        return set()
+
+    try:
+        manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        print(
+            f"EXPORT WARNING: ignoring unreadable export manifest: {manifest_file}",
+            file=sys.stderr,
+        )
+        return set()
+
+    if not isinstance(manifest_data, dict):
+        print(
+            f"EXPORT WARNING: ignoring malformed export manifest: {manifest_file}",
+            file=sys.stderr,
+        )
+        return set()
+    if manifest_data.get("name") != "case-failure-analyzer":
+        print(
+            "EXPORT WARNING: ignoring export manifest owned by another skill: "
+            f"{manifest_data.get('name')!r}",
+            file=sys.stderr,
+        )
+        return set()
+
+    schema_version = manifest_data.get("schema_version")
+    if schema_version is not None and schema_version != EXPORT_MANIFEST_SCHEMA_VERSION:
+        print(
+            f"EXPORT WARNING: ignoring unsupported export manifest schema: {schema_version!r}",
+            file=sys.stderr,
+        )
+        return set()
+
+    raw_files = manifest_data.get("files")
+    if not isinstance(raw_files, list):
+        print(
+            f"EXPORT WARNING: ignoring export manifest with non-list 'files': {manifest_file}",
+            file=sys.stderr,
+        )
+        return set()
+
+    safe_files: Set[str] = set()
+    for raw_rel in raw_files:
+        if is_safe_manifest_relpath(raw_rel, dest):
+            safe_files.add(str(Path(raw_rel)))
+        else:
+            print(
+                f"EXPORT WARNING: ignoring unsafe export manifest path: {raw_rel!r}",
+                file=sys.stderr,
+            )
+    return safe_files
 
 
 def should_include_file(p: Path) -> bool:
@@ -163,21 +240,17 @@ def export_skill(
     files_to_export = collect_export_files(source_root)
 
     manifest_file = dest / MANIFEST_FILENAME
-    old_managed: Set[str] = set()
-    if manifest_file.is_file():
-        try:
-            manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
-            old_managed = set(manifest_data.get("files", []))
-        except (json.JSONDecodeError, OSError):
-            old_managed = set()
+    old_managed = _load_managed_relpaths(manifest_file, dest)
 
     cleaned_count = 0
     if clean and old_managed:
         current_relpaths = set(files_to_export.keys())
         stale_files = old_managed - current_relpaths
         for stale in stale_files:
+            if not is_safe_manifest_relpath(stale, dest):
+                continue
             target_stale = dest / stale
-            if target_stale.is_file():
+            if target_stale.is_file() or target_stale.is_symlink():
                 if not dry_run:
                     target_stale.unlink(missing_ok=True)
                 cleaned_count += 1
@@ -197,6 +270,7 @@ def export_skill(
 
     if not dry_run:
         manifest_payload = {
+            "schema_version": EXPORT_MANIFEST_SCHEMA_VERSION,
             "name": "case-failure-analyzer",
             "files": sorted(new_managed),
         }

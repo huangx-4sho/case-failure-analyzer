@@ -256,7 +256,8 @@ def gate2_case_definition(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=1,
-        counterfactual_supported=bool(ctx.sole_blocker),
+        # A single failing check is not proof that the missing asset is the
+        # blocker; no blind counterfactual bonus here.
         check_localization=ctx.check_localization,
         hypothesis_separation=ctx.hypothesis_separation,
     )
@@ -273,7 +274,6 @@ def gate2_case_definition(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=1,
-        counterfactual_supported=bool(ctx.sole_blocker),
         check_localization=ctx.check_localization,
         hypothesis_separation=ctx.hypothesis_separation,
     )

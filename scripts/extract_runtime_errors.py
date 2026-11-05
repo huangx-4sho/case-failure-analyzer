@@ -21,6 +21,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from cli_args import positive_int
 from discover_artifacts import safe_load_json
 from runtime_state import compute_runtime_state
 
@@ -137,8 +138,102 @@ INFRA_RULES: List[Tuple[str, str, str, re.Pattern[str]]] = [
     ),
 ]
 
+#: Harbor collects the agent's declared deliverables with `docker cp` *after*
+#: agent execution. A missing `/app/...` path aborts the whole trial before the
+#: verifier ever starts, so this is a runner-stage failure — not
+#: `environment_build` / `container_build`. Treating it as a first-class
+#: observation is what stops the engine from blaming the agent for "premature
+#: termination" on trials that were never scored.
+ARTIFACT_COLLECTION_CRASH_RE = re.compile(
+    r"RuntimeError:\s*Engine cp failed[^\n]*?"
+    r"(?:Could not find the file (?P<path>/\S+) in container|Error response from daemon)",
+    re.IGNORECASE,
+)
+#: A runner that stops logging right at this marker died (or was killed) during
+#: collection without emitting a traceback.
+RUNNER_INTERRUPTION_MARKER = "Collecting main service artifacts"
+
+#: Deliberately NOT an error rule: harbor trial logs contain a *benign telemetry*
+#: warning on every agent turn —
+#:   `Cannot estimate Claude cost for model '...': litellm.BadRequestError:
+#:    LLM Provider NOT provided. Pass in the LLM provider ...`
+#: It appears in fully successful 50+ step trajectories and in passing trials, so
+#: matching `litellm.BadRequestError` / `LLM Provider NOT provided` as a causal
+#: infrastructure error produces mass false positives. A genuine model-gateway
+#: failure is only observable through `exception_info` or a missing trajectory.
+
+
+def _runner_collection_observations(
+    sources_to_scan: List[Tuple[str, str, str]],
+    agent_started: bool,
+    verifier_started: bool,
+    start_counter: int,
+) -> Tuple[List[Dict[str, Any]], int, set]:
+    """
+    Detect post-agent artifact-collection crashes / silent interruptions.
+
+    Returns `(observations, next_error_counter, suppressed_rule_keys)`. The
+    suppressed keys stop the generic `Error response from daemon` rule from
+    double-reporting the same `Engine cp failed` line as an environment error.
+    """
+    observations: List[Dict[str, Any]] = []
+    suppressed: set = set()
+    counter = start_counter
+    seen_codes: set = set()
+    is_causal = bool(agent_started and not verifier_started)
+
+    for src_file, src_ptr, text in sources_to_scan:
+        if not text:
+            continue
+        crash = ARTIFACT_COLLECTION_CRASH_RE.search(text)
+        marker_tail = text.rstrip().endswith(RUNNER_INTERRUPTION_MARKER)
+        if crash:
+            code = "INFRA_ARTIFACT_COLLECTION_CRASH"
+            subtype = "artifact_collection_crash"
+            snippet = text[max(0, crash.start() - 60) : min(len(text), crash.end() + 160)]
+            path_match = re.search(
+                r"Could not find the file\s+(/\S+)\s+in container", text, re.IGNORECASE
+            )
+            missing_path = path_match.group(1) if path_match else ""
+        elif marker_tail and RUNNER_INTERRUPTION_MARKER in text:
+            code = "INFRA_RUNNER_INTERRUPTED"
+            subtype = "runner_interrupted"
+            snippet = (
+                "Runner log ends at 'Collecting main service artifacts' with no "
+                "verifier output or completion record (silent interruption)."
+            )
+            missing_path = ""
+        else:
+            continue
+        if code in seen_codes:
+            # trial.log and job.log usually carry the same traceback.
+            suppressed.add((src_file, "INFRA_CONTAINER_RUNTIME"))
+            continue
+        seen_codes.add(code)
+        suppressed.add((src_file, "INFRA_CONTAINER_RUNTIME"))
+        observations.append(
+            {
+                "error_id": f"err:{counter}",
+                "code": code,
+                "subtype": subtype,
+                "stage": "runner",
+                "runner_phase": "post_agent_execution",
+                "matched_text": " ".join(snippet.split())[:300],
+                "causal_candidate": is_causal,
+                "transient": not is_causal,
+                "source_file": src_file,
+                "source_pointer": src_ptr,
+                "missing_deliverable": missing_path,
+                "scoring_reached": verifier_started,
+            }
+        )
+        counter += 1
+    return observations, counter, suppressed
+
 
 def read_text_head_tail(path: Path, max_bytes: int = 120000) -> str:
+    if max_bytes <= 0:
+        raise ValueError(f"max_bytes must be a positive integer, got {max_bytes!r}")
     if not path.is_file():
         return ""
     try:
@@ -164,6 +259,8 @@ def extract_runtime_errors(
     trial_dir: Optional[Path] = None,
     max_log_bytes: int = 120000,
 ) -> Dict[str, Any]:
+    if max_log_bytes <= 0:
+        raise ValueError(f"max_log_bytes must be a positive integer, got {max_log_bytes!r}")
     error_observations: List[Dict[str, Any]] = []
 
     trial_res_path = trial_dir / "result.json" if trial_dir else None
@@ -224,6 +321,20 @@ def extract_runtime_errors(
     seen_codes_per_file = set()
     err_counter = 1
 
+    # Runner-stage collection failures are detected before the generic rules so
+    # `Error response from daemon` on an `Engine cp failed` line is not also
+    # reported as an environment/container-build error.
+    runner_obs, err_counter, _ = _runner_collection_observations(
+        sources_to_scan,
+        agent_started=agent_started,
+        verifier_started=verifier_started,
+        start_counter=err_counter,
+    )
+    error_observations.extend(runner_obs)
+    if runner_obs:
+        for src_file, _, _ in sources_to_scan:
+            seen_codes_per_file.add((src_file, "INFRA_CONTAINER_RUNTIME"))
+
     for src_file, src_ptr, text in sources_to_scan:
         if not text:
             continue
@@ -266,29 +377,44 @@ def extract_runtime_errors(
                 snippet_end = min(len(text), m.end() + 140)
                 snippet = text[snippet_start:snippet_end].replace("\n", " ").strip()
 
+                # A post-agent collection crash proves environment build already
+                # succeeded. The harbor fallback line "artifacts compose cp
+                # failed; retrying download with engine cp: Docker compose
+                # command failed" otherwise matches a build pattern and gets
+                # mislabeled `environment_build` / `container_build`.
+                effective_stage = stage
+                if runner_obs and agent_started and stage == "environment_build":
+                    effective_stage = "runner"
+
                 # Determine whether this error actually blocked execution or was recovered
-                if stage == "environment_build":
+                if effective_stage == "environment_build":
                     is_causal = not agent_started or has_unrecovered_runner_failure
-                elif code in ("INFRA_AGENT_TIMEOUT", "INFRA_API_ERROR", "INFRA_API_RATE_LIMIT"):
+                elif code in (
+                    "INFRA_AGENT_TIMEOUT",
+                    "INFRA_API_ERROR",
+                    "INFRA_API_RATE_LIMIT",
+                ):
                     is_causal = has_unrecovered_runner_failure or not verifier_started
                 elif code == "INFRA_VERIFIER_TIMEOUT":
                     is_causal = has_unrecovered_runner_failure
                 else:
                     is_causal = has_unrecovered_runner_failure
 
-                error_observations.append(
-                    {
-                        "error_id": f"err:{err_counter}",
-                        "code": code,
-                        "subtype": subtype,
-                        "stage": stage,
-                        "matched_text": snippet[:300],
-                        "causal_candidate": is_causal,
-                        "transient": not is_causal,
-                        "source_file": src_file,
-                        "source_pointer": src_ptr,
-                    }
-                )
+                observation: Dict[str, Any] = {
+                    "error_id": f"err:{err_counter}",
+                    "code": code,
+                    "subtype": subtype,
+                    "stage": effective_stage,
+                    "matched_text": snippet[:300],
+                    "causal_candidate": is_causal,
+                    "transient": not is_causal,
+                    "source_file": src_file,
+                    "source_pointer": src_ptr,
+                }
+                if effective_stage != stage:
+                    observation["stage_reclassified_from"] = stage
+                    observation["runner_phase"] = "post_agent_execution"
+                error_observations.append(observation)
                 err_counter += 1
 
     return {
@@ -308,10 +434,30 @@ def main() -> None:
         "--trial-dir", required=False, type=Path, default=None, help="Path to trial directory"
     )
     parser.add_argument(
-        "--max-log-bytes", type=int, default=120000, help="Max bytes to read from logs"
+        "--max-log-bytes",
+        type=positive_int,
+        default=120000,
+        help="Max bytes to read from logs (positive integer)",
     )
     parser.add_argument("--output", required=True, type=Path, help="Output JSON path")
     args = parser.parse_args()
+
+    if not args.job.exists():
+        print(f"ERROR: --job path does not exist: {args.job}", file=sys.stderr)
+        sys.exit(2)
+    if not args.job.is_dir():
+        print(f"ERROR: --job path exists and is not a directory: {args.job}", file=sys.stderr)
+        sys.exit(2)
+    if args.trial_dir is not None:
+        if not args.trial_dir.exists():
+            print(f"ERROR: --trial-dir path does not exist: {args.trial_dir}", file=sys.stderr)
+            sys.exit(2)
+        if not args.trial_dir.is_dir():
+            print(
+                f"ERROR: --trial-dir path exists and is not a directory: {args.trial_dir}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     res = extract_runtime_errors(
         job_dir=args.job,

@@ -31,6 +31,34 @@ _SHA256_CACHE: Dict[Tuple[str, int, int, Optional[int]], str] = {}
 _JSON_CACHE: Dict[Tuple[str, int, int], Optional[Dict[str, Any]]] = {}
 
 
+def extract_declared_deliverables(task_toml: Optional[Dict[str, Any]]) -> List[str]:
+    """
+    Declared deliverable paths from a harbor `task.toml` `artifacts` array.
+
+    Harbor collects these container paths (`docker cp`) after the agent phase and
+    before verification, so they are the task's authoritative deliverable set -
+    unlike a hardcoded `results.json`, which many harbor tasks never produce.
+
+    Returns the paths exactly as declared (e.g. `["/app/final"]`). A missing,
+    unreadable, or empty `artifacts` declaration yields `[]`, which callers read
+    as "declared deliverables unknown" and fall back to legacy heuristics.
+    """
+    if not isinstance(task_toml, dict):
+        return []
+    raw = task_toml.get("artifacts")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    declared: List[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            cleaned = item.strip()
+            if cleaned not in declared:
+                declared.append(cleaned)
+    return declared
+
+
 def compute_sha256(path: Path, max_bytes: Optional[int] = None) -> str:
     try:
         st = path.stat()

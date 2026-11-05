@@ -28,6 +28,21 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 MANIFEST_FILENAME = ".cfa_manifest.json"
 
 
+def manifest_filename(manifest_key: Optional[str] = None) -> str:
+    """
+    Manifest file for one publish target.
+
+    A shared output folder (e.g. `<bench>/failure-report/` holding every task's
+    reports) needs one manifest per writer; otherwise publishing task208 would
+    treat task207's files as stale and delete them. Without a key the classic
+    single-writer name is used.
+    """
+    if not manifest_key:
+        return MANIFEST_FILENAME
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(manifest_key)).strip("._") or "task"
+    return f".cfa_manifest.{safe}.json"
+
+
 def paths_overlap(p1: Path, p2: Path) -> bool:
     """Check if p1 and p2 are identical, or if either is a parent/child of the other (resolving symlinks)."""
     try:
@@ -55,8 +70,22 @@ def validate_input_output_isolation(
     out_dir: Path,
     input_roots: List[Tuple[Optional[Path], str]],
     planned_trial_names: List[str],
+    allowed_report_dir: Optional[Path] = None,
 ) -> None:
-    """Enforce strict read-only boundary between output targets and all inputs."""
+    """Enforce strict read-only boundary between output targets and all inputs.
+
+    `allowed_report_dir` is a narrow, sanctioned exception for task-ID mode:
+    reports may be written into a dedicated ``failure-report`` subfolder of a
+    task definition directory (which is itself an input root). The exception is
+    granted only when the folder is literally named ``failure-report`` and its
+    parent is one of the declared input roots. Even then:
+
+    - the output may never be *identical* to an input root,
+    - the output may never be a *parent* of an input root,
+    - symlinks inside the output tree that resolve to input paths are still
+      rejected (an output symlink escaping into the read-only inputs is unsafe),
+    - output elsewhere inside inputs remains forbidden.
+    """
     resolved_inputs: List[Tuple[Path, str]] = []
     for inp, label in input_roots:
         if inp is not None:
@@ -65,6 +94,23 @@ def validate_input_output_isolation(
             except Exception:
                 resolved_inputs.append((Path(inp.absolute()), label))
 
+    allowed: Optional[Path] = None
+    if allowed_report_dir is not None:
+        try:
+            candidate = allowed_report_dir.resolve()
+        except Exception:
+            candidate = Path(allowed_report_dir.absolute())
+        if candidate.name != "failure-report" or not any(
+            candidate.parent == r_inp for r_inp, _ in resolved_inputs
+        ):
+            print(
+                "ERROR: sanctioned report directory must be a 'failure-report' "
+                f"subfolder of a declared input root, got: {allowed_report_dir}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        allowed = candidate
+
     def _assert_no_overlap(target: Path, target_label: str) -> None:
         try:
             r_target = target.resolve()
@@ -72,12 +118,14 @@ def validate_input_output_isolation(
             r_target = Path(target.absolute())
         for r_inp, inp_label in resolved_inputs:
             is_overlap = False
+            output_inside_input = False
             if r_target == r_inp:
                 is_overlap = True
             else:
                 try:
                     r_target.relative_to(r_inp)
                     is_overlap = True
+                    output_inside_input = True
                 except ValueError:
                     pass
                 if not is_overlap:
@@ -87,6 +135,14 @@ def validate_input_output_isolation(
                     except ValueError:
                         pass
             if is_overlap:
+                # Sanctioned exception: this exact report folder (or a plain
+                # descendant of it) inside its own parent input root.
+                if allowed is not None and output_inside_input and r_inp == allowed.parent:
+                    try:
+                        r_target.relative_to(allowed)
+                        continue
+                    except ValueError:
+                        pass
                 print(
                     f"ERROR: {target_label} ({target}) cannot be identical to, inside, or a parent of {inp_label} ({r_inp}).",
                     file=sys.stderr,
@@ -309,19 +365,30 @@ def acquire_publish_lock(out_dir: Path):
         release_advisory_process_lock(handle)
 
 
-def publish_staging_to_output(staging_dir: Path, out_dir: Path, is_multi_trial: bool) -> None:
+def publish_staging_to_output(
+    staging_dir: Path,
+    out_dir: Path,
+    is_multi_trial: bool,
+    manifest_key: Optional[str] = None,
+) -> None:
     """Publish staging directory contents into out_dir with atomic file replacement and best-effort rollback."""
     out_dir.resolve().mkdir(parents=True, exist_ok=True)
     with acquire_publish_lock(out_dir):
         cleanup_orphaned_cfa_tmp_files(out_dir)
-        publish_staging_to_output_locked(staging_dir, out_dir, is_multi_trial)
+        publish_staging_to_output_locked(
+            staging_dir, out_dir, is_multi_trial, manifest_key=manifest_key
+        )
 
 
 def publish_staging_to_output_locked(
-    staging_dir: Path, out_dir: Path, is_multi_trial: bool
+    staging_dir: Path,
+    out_dir: Path,
+    is_multi_trial: bool,
+    manifest_key: Optional[str] = None,
 ) -> None:
     """Internal publish logic executed under process lock."""
     out_dir.resolve().mkdir(parents=True, exist_ok=True)
+    manifest_name = manifest_filename(manifest_key)
 
     # 1. Collect staged files and write manifest into staging_dir
     staged_rel_paths = sorted(
@@ -331,17 +398,18 @@ def publish_staging_to_output_locked(
     manifest_data = {
         "schema_version": "cfa-manifest-v1",
         "layout": "multi" if is_multi_trial else "single",
-        "managed_files": staged_rel_paths + [MANIFEST_FILENAME],
+        "scope": manifest_key or None,
+        "managed_files": staged_rel_paths + [manifest_name],
         "managed_dirs": staged_dirs,
     }
-    manifest_file = staging_dir / MANIFEST_FILENAME
+    manifest_file = staging_dir / manifest_name
     manifest_file.write_text(
         json.dumps(manifest_data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    staged_rel_paths.append(MANIFEST_FILENAME)
+    staged_rel_paths.append(manifest_name)
 
     # 2. Determine previous managed artifacts in out_dir from a verified manifest only
-    old_manifest_path = out_dir / MANIFEST_FILENAME
+    old_manifest_path = out_dir / manifest_name
     old_managed_files: Set[str] = set()
     old_managed_dirs: Set[str] = set()
     has_valid_old_manifest = False

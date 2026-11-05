@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -30,17 +31,21 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import staging
 from audit_contract import audit_contract
-from discover_artifacts import discover_all, discover_trials
+from cli_args import positive_int
+from discover_artifacts import discover_all, discover_trials, extract_declared_deliverables
 from extract_runtime_errors import extract_runtime_errors, read_text_head_tail
 from extract_scientific_errors import extract_scientific_errors
 from generate_hypotheses import generate_candidate_hypotheses
 from normalize_trajectory import normalize_trajectory
+from normalize_verifier_report import build_check_stats_from_report, build_verifier_report
 from render_report import (
     render_job_summary_markdown,
     render_report_markdown,
     render_skill_prescription_markdown,
 )
+from render_verdict import build_verdict_card, render_verdict_card_markdown
 from runtime_state import resolve_trajectory_path
+from task_ref import TaskRef, TaskRefError, REPORT_DIR_NAME, resolve_task_ref
 from staging import (
     acquire_publish_lock,
     cleanup_orphaned_cfa_tmp_files,
@@ -55,7 +60,7 @@ from staging import (
 )
 from validate_analysis import validate_all
 from attribution.engine import run_attribution_engine
-from diagnostics import format_diagnostic_line, merge_diagnostics
+from diagnostics import WARNING, format_diagnostic_line, make_diagnostic, merge_diagnostics
 
 # Re-exported public constants and helpers from staging
 MANIFEST_FILENAME = staging.MANIFEST_FILENAME
@@ -106,8 +111,40 @@ def _read_verifier_log_text(trial_dir: Optional[Path], max_log_bytes: int) -> st
     return ""
 
 
+def _record_check_stats_failure(
+    diagnostics: Optional[List[Dict[str, Any]]],
+    *,
+    code: str,
+    message: str,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append a degradation record when check-stat collection cannot complete."""
+    if diagnostics is None:
+        return
+    diagnostics.append(
+        make_diagnostic(
+            stage="verifier_check_stats",
+            code=code,
+            severity=WARNING,
+            message=message,
+            error_type=error_type,
+            error_message=error_message,
+            impact=(
+                "check_localization and counterfactual confidence inputs are "
+                "unavailable; attribution confidence falls back to the base "
+                "evidence score."
+            ),
+            context=context,
+        )
+    )
+
+
 def _build_verifier_check_stats(
-    trial_dir: Optional[Path], max_log_bytes: int
+    trial_dir: Optional[Path],
+    max_log_bytes: int,
+    diagnostics: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Compute the verifier check statistics stored on evidence as the additive
@@ -115,17 +152,46 @@ def _build_verifier_check_stats(
     via `AttributionContext.check_localization`). Returns None when the stats
     builder is unavailable, no verifier log text exists, or the builder fails —
     evidence collection must never crash on an optional additive key.
+
+    Failures are NOT silent: a warning diagnostic is appended so reports and
+    batch summaries can show that attribution confidence ran with degraded
+    localization evidence. A missing verifier log is normal and adds nothing.
     """
     if build_check_stats is None:
+        _record_check_stats_failure(
+            diagnostics,
+            code="VERIFIER_CHECK_STATS_BUILDER_UNAVAILABLE",
+            message="Verifier check statistics builder is unavailable.",
+        )
         return None
     verify_log_text = _read_verifier_log_text(trial_dir, max_log_bytes)
     if not verify_log_text.strip():
         return None
     try:
         stats = build_check_stats(verify_log_text)
-    except Exception:
+    except Exception as exc:  # evidence collection must never crash on an optional key
+        _record_check_stats_failure(
+            diagnostics,
+            code="VERIFIER_CHECK_STATS_BUILD_FAILED",
+            message="Verifier check statistics could not be built from the verifier log.",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            context={"max_log_bytes": max_log_bytes},
+        )
         return None
-    return stats if isinstance(stats, dict) else None
+    if not isinstance(stats, dict):
+        _record_check_stats_failure(
+            diagnostics,
+            code="VERIFIER_CHECK_STATS_INVALID_RESULT",
+            message=(
+                "Verifier check statistics builder returned a non-object result; "
+                "localization evidence was discarded."
+            ),
+            error_type=type(stats).__name__,
+            context={"max_log_bytes": max_log_bytes},
+        )
+        return None
+    return stats
 
 
 class ReplayNotSupportedError(RuntimeError):
@@ -141,6 +207,72 @@ def run_isolated_verifier_replay(
     )
 
 
+def _confirm_delivered_on_disk(
+    trial_dir: Optional[Path],
+    declared_deliverables: List[str],
+) -> Set[str]:
+    """
+    Declared deliverables already confirmed inside the trial's collected
+    artifacts (`<trial>/artifacts/app/<declared path>`), i.e. paths harbor's
+    post-agent `docker cp` successfully retrieved.
+
+    This is authoritative for "the file existed in the container": the
+    trajectory matcher in `normalize_trajectory` is heuristic and can miss
+    script-generated paths, while a collected artifact cannot be imagined.
+    """
+    if trial_dir is None or not declared_deliverables:
+        return set()
+    art_root = trial_dir / "artifacts"
+    if not art_root.is_dir():
+        return set()
+    confirmed: Set[str] = set()
+    for declared in declared_deliverables:
+        rel = declared.strip().lstrip("/")
+        if rel and (art_root / rel).exists():
+            confirmed.add(declared)
+    return confirmed
+
+
+def _reconcile_delivered_deliverables(
+    norm_traj: Dict[str, Any],
+    trial_dir: Optional[Path],
+    declared_deliverables: List[str],
+) -> List[str]:
+    """
+    Drop declared deliverables that were actually collected on disk from the
+    trajectory-derived `missing_deliverables`, updating the `premature_completion`
+    signal in place so gates and reports see the reconciled set.
+
+    Returns the reconciled missing list (empty when nothing is missing).
+    """
+    missing = list(norm_traj.get("missing_deliverables") or [])
+    if not missing or not declared_deliverables:
+        return missing
+    confirmed = _confirm_delivered_on_disk(trial_dir, declared_deliverables)
+    if not confirmed:
+        return missing
+    reconciled = [d for d in missing if d not in confirmed]
+    norm_traj["missing_deliverables"] = reconciled
+    if reconciled:
+        for sig in norm_traj.get("behavioral_signals") or []:
+            if sig.get("signal_type") != "premature_completion":
+                continue
+            sig["missing_deliverables"] = reconciled
+            sig["description"] = (
+                "Agent trajectory ended without producing declared deliverable(s): "
+                f"{', '.join(reconciled)} (task.toml `artifacts`)."
+            )
+    else:
+        # Every declared deliverable was collected on disk: the completion signal
+        # was a trajectory-matching miss, so it must not reach the gates at all.
+        norm_traj["behavioral_signals"] = [
+            s
+            for s in (norm_traj.get("behavioral_signals") or [])
+            if s.get("signal_type") != "premature_completion"
+        ]
+    return reconciled
+
+
 def collect_case_evidence(
     trial_inv: Dict[str, Any],
     job_dir: Path,
@@ -150,7 +282,17 @@ def collect_case_evidence(
     task_dir = Path(trial_inv["task_dir"]) if trial_inv.get("task_dir") else None
 
     traj_path = resolve_trajectory_path(trial_dir)
-    norm_traj = normalize_trajectory(traj_path, max_obs_bytes=max(1500, max_log_bytes // 40))
+    declared_deliverables = extract_declared_deliverables(
+        (trial_inv.get("metadata") or {}).get("task_toml")
+    )
+    norm_traj = normalize_trajectory(
+        traj_path,
+        max_obs_bytes=max(1500, max_log_bytes // 40),
+        expected_deliverables=declared_deliverables,
+    )
+    missing_deliverables = _reconcile_delivered_deliverables(
+        norm_traj, trial_dir, declared_deliverables
+    )
 
     runtime_err_res = extract_runtime_errors(
         job_dir=job_dir,
@@ -164,11 +306,19 @@ def collect_case_evidence(
         normalized_traj=norm_traj,
     )
 
+    verifier_report = build_verifier_report(trial_dir)
+
     sci_res = extract_scientific_errors(
         trial_dir=trial_dir,
         normalized_traj=norm_traj,
+        verifier_report=verifier_report,
     )
 
+    # Additive top-level key: recoveries that degraded evidence on this trial.
+    diagnostics = merge_diagnostics(
+        (trial_inv.get("runtime") or {}).get("diagnostics"),
+        contract_res.get("diagnostics"),
+    )
     evidence: Dict[str, Any] = {
         "case_id": trial_inv["case_id"],
         "trial_name": trial_inv["trial_name"],
@@ -177,7 +327,12 @@ def collect_case_evidence(
         "task_dir": trial_inv["task_dir"],
         "artifacts": trial_inv["artifacts"],
         "runtime": trial_inv["runtime"],
-        "metadata": trial_inv.get("metadata", {}),
+        # Additive key: harbor's declared deliverable set (task.toml `artifacts`),
+        # empty when the task declaration is unavailable.
+        "metadata": {
+            **(trial_inv.get("metadata") or {}),
+            "declared_deliverables": declared_deliverables,
+        },
         "timeline": norm_traj["events"],
         "behavioral_signals": norm_traj["behavioral_signals"],
         "error_observations": runtime_err_res["error_observations"],
@@ -185,16 +340,40 @@ def collect_case_evidence(
         "verifier_observations": contract_res["verifier_observations"],
         "scientific_observations": sci_res["scientific_observations"],
         "missing_artifacts": trial_inv["missing_artifacts"],
-        # Additive top-level key: recoveries that degraded evidence on this trial.
-        "diagnostics": merge_diagnostics(
-            (trial_inv.get("runtime") or {}).get("diagnostics"),
-            contract_res.get("diagnostics"),
-        ),
+        # Additive top-level key: declared deliverables (task.toml `artifacts`)
+        # that were never produced. Empty for tasks with no declaration.
+        "missing_deliverables": missing_deliverables,
+        "diagnostics": diagnostics,
     }
+    # Additive top-level key: normalized verifier report. Harbor tasks use at
+    # least five different verifier JSON schemas; this is the only place where
+    # named failed checks, per-check deviation values, `core_failures` and
+    # `failure_origin` become visible to gates, reports and the batch board.
+    if verifier_report is not None:
+        evidence["verifier_report"] = verifier_report
+
     # Additive top-level key: verifier check statistics for the confidence
-    # upgrade (`check_localization` measurement). Present only when a verifier
-    # log exists, so trials without one keep their previous evidence shape.
-    verifier_check_stats = _build_verifier_check_stats(trial_dir, max_log_bytes)
+    # upgrade (`check_localization` measurement). When there is no verify.log,
+    # derive the same shape from the structured report instead of losing every
+    # named failed check.
+    verifier_check_stats = _build_verifier_check_stats(trial_dir, max_log_bytes, diagnostics)
+    if verifier_report is not None:
+        if verifier_check_stats is None or verifier_check_stats.get("total_checks", 0) == 0:
+            if (
+                verifier_report.get("checks")
+                or verifier_report.get("failed_checks")
+                or verifier_report.get("failed_check_count")
+            ):
+                verifier_check_stats = build_check_stats_from_report(verifier_report)
+        elif verifier_report.get("failed_check_summaries"):
+            summaries = list(verifier_check_stats.get("failed_check_summaries") or [])
+            for item in verifier_report["failed_check_summaries"]:
+                if item not in summaries:
+                    summaries.append(item)
+            verifier_check_stats["failed_check_summaries"] = summaries
+            verifier_check_stats["verifier_report_checks"] = verifier_report.get(
+                "failed_check_count", len(verifier_report.get("failed_checks") or [])
+            )
     if verifier_check_stats is not None:
         evidence["verifier_check_stats"] = verifier_check_stats
     cand_hyps = generate_candidate_hypotheses(evidence)
@@ -235,6 +414,85 @@ def _reconcile_competing_hypotheses(
     return merged
 
 
+def _enrich_with_verifier_report(
+    result: Dict[str, Any], evidence: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Put named verifier checks (and their deviation values) into the failure
+    manifestation, and correct a premature-termination verdict that the
+    structured verifier report contradicts.
+
+    Harbor graders emit layered JSON reports with no `verifier/verify.log`.
+    Without this step the report says "agent wrote results.json without sanity
+    validation" while the real failure is e.g. `L3
+    coordination_distances_match_derived_reference` (5/25 distances within
+    tolerance, worst deviation 3.326 A).
+    """
+    report = evidence.get("verifier_report")
+    if not isinstance(report, dict):
+        return result
+    failed = report.get("failed_checks") or []
+    summary = str(report.get("summary") or "").strip()
+    if not failed and not summary:
+        return result
+
+    manifestation = result.get("failure_manifestation")
+    if not isinstance(manifestation, dict):
+        manifestation = {}
+        result["failure_manifestation"] = manifestation
+    if summary:
+        manifestation["summary"] = summary[:700]
+    if failed:
+        manifestation["type"] = "verifier_check_failed"
+        manifestation["named_failed_checks"] = [
+            {
+                "layer": c.get("layer"),
+                "name": c.get("name"),
+                "detail": str(c.get("detail") or "")[:300],
+                "core": bool(c.get("core")),
+                "source": c.get("source"),
+            }
+            for c in failed[:5]
+        ]
+    if report.get("diagnosability") == "low":
+        manifestation["verifier_diagnosability"] = "low"
+        manifestation["verifier_diagnosability_reasons"] = list(
+            report.get("diagnosability_reasons") or []
+        )
+
+    prc = result.get("primary_root_cause")
+    if not (isinstance(prc, dict) and prc.get("code") == "AGENT_PREMATURE_TERMINATION" and failed):
+        return result
+
+    replacement = (
+        f"Named verifier checks failed: {summary[:420]}"
+        if summary
+        else ("Named verifier checks failed; the trial was scored, not terminated early.")
+    )
+    prc["code"] = "AGENT_RESULT_VALIDATION"
+    prc["subtype"] = "result_validation"
+    prc["summary"] = replacement
+    for hyp in result.get("competing_hypotheses") or []:
+        if (
+            isinstance(hyp, dict)
+            and hyp.get("category") == "agent"
+            and hyp.get("hypothesis_id") == "H1"
+        ):
+            hyp["claim"] = replacement
+    for action in result.get("recommended_actions") or []:
+        if isinstance(action, dict) and "premature" in str(action.get("action", "")).lower():
+            action["action"] = replacement
+    fud = result.get("first_unrecovered_deviation")
+    if isinstance(fud, dict):
+        fud["summary"] = replacement
+    trace = result.get("decision_trace")
+    if isinstance(trace, dict):
+        trace["verifier_report_correction"] = (
+            "AGENT_PREMATURE_TERMINATION -> AGENT_RESULT_VALIDATION"
+        )
+    return result
+
+
 def build_causal_attribution(
     evidence: Dict[str, Any],
     norm_traj: Dict[str, Any],
@@ -254,6 +512,7 @@ def build_causal_attribution(
         trace = result.get("decision_trace")
         if isinstance(trace, dict):
             trace["reconciled_competing_hypotheses"] = True
+        result = _enrich_with_verifier_report(result, evidence)
     return result
 
 
@@ -332,6 +591,23 @@ KNOWN_ROOT_ARTIFACTS = {
 }
 
 
+def _artifact_name(logical: str, basename: Optional[str]) -> str:
+    """
+    Map a canonical artifact name to its on-disk name.
+
+    With `basename=None` (legacy mode) names are unchanged. In task-ID mode
+    `basename="task208"` produces `task208.md`, `task208.zh.md`,
+    `task208.analysis.json`, `task208.summary.md`, etc.
+    """
+    if not basename:
+        return logical
+    if logical == "report.md":
+        return f"{basename}.md"
+    if logical.startswith("report."):
+        return f"{basename}.{logical[len('report.') :]}"
+    return f"{basename}.{logical}"
+
+
 def write_outputs(
     out_dir: Path,
     evidence: Dict[str, Any],
@@ -341,14 +617,24 @@ def write_outputs(
     cand_hyps: Optional[Dict[str, Any]] = None,
     fmt: str = "both",
     lang: str = "bilingual",
+    basename: Optional[str] = None,
+    verdict_card: Optional[Dict[str, Any]] = None,
+    verdict_md: Optional[str] = None,
 ) -> None:
+    """
+    Write trial artifacts. `basename` switches to task-ID naming; `verdict_card`
+    / `verdict_md` add the compact direct-answer card (`task208.summary.*`).
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    def name(logical: str) -> str:
+        return _artifact_name(logical, basename)
 
     # 1. Determine planned artifacts for the current invocation
     planned_files: Set[str] = set()
     effective_cand_hyps = cand_hyps
     if fmt in ("json", "both"):
-        planned_files.add("evidence.json")
+        planned_files.add(name("evidence.json"))
         if effective_cand_hyps is None and analysis is not None:
             effective_cand_hyps = {
                 "case_id": evidence.get("case_id"),
@@ -356,94 +642,133 @@ def write_outputs(
                 "candidate_hypotheses": analysis.get("competing_hypotheses") or [],
             }
         if effective_cand_hyps is not None:
-            planned_files.add("candidate-hypotheses.json")
+            planned_files.add(name("candidate-hypotheses.json"))
         if analysis is not None:
-            planned_files.add("analysis.json")
+            planned_files.add(name("analysis.json"))
+        if verdict_card is not None:
+            planned_files.add(name("summary.json"))
 
     has_markdown = fmt in ("markdown", "both") and report_md is not None and analysis is not None
     if has_markdown:
         sp = analysis.get("skill_prescription")
         if lang == "zh":
-            planned_files.add("report.md")
-            planned_files.add("report.zh.md")
+            planned_files.add(name("report.md"))
+            planned_files.add(name("report.zh.md"))
             if skill_md and sp:
-                planned_files.add("skill-prescription.md")
-                planned_files.add("skill-prescription.zh.md")
+                planned_files.add(name("skill-prescription.md"))
+                planned_files.add(name("skill-prescription.zh.md"))
         elif lang == "en":
-            planned_files.add("report.md")
-            planned_files.add("report.en.md")
+            planned_files.add(name("report.md"))
+            planned_files.add(name("report.en.md"))
             if skill_md and sp:
-                planned_files.add("skill-prescription.md")
-                planned_files.add("skill-prescription.en.md")
+                planned_files.add(name("skill-prescription.md"))
+                planned_files.add(name("skill-prescription.en.md"))
         else:  # bilingual
-            planned_files.add("report.md")
-            planned_files.add("report.zh.md")
-            planned_files.add("report.en.md")
+            planned_files.add(name("report.md"))
+            planned_files.add(name("report.zh.md"))
+            planned_files.add(name("report.en.md"))
             if skill_md and sp:
-                planned_files.add("skill-prescription.md")
-                planned_files.add("skill-prescription.zh.md")
-                planned_files.add("skill-prescription.en.md")
+                planned_files.add(name("skill-prescription.md"))
+                planned_files.add(name("skill-prescription.zh.md"))
+                planned_files.add(name("skill-prescription.en.md"))
+        if verdict_md is not None:
+            planned_files.add(name("summary.md"))
 
     # 2. Lifecycle cleanup: purge stale known trial artifacts from prior runs
-    for stale_file in KNOWN_TRIAL_ARTIFACTS - planned_files:
+    known_names = {name(logical) for logical in KNOWN_TRIAL_ARTIFACTS}
+    known_names.update({name("summary.json"), name("summary.md")})
+    for stale_file in known_names - planned_files:
         stale_path = out_dir / stale_file
         if stale_path.is_file():
             stale_path.unlink()
 
     # 3. Write planned artifacts
-    if "evidence.json" in planned_files:
-        (out_dir / "evidence.json").write_text(
+    if name("evidence.json") in planned_files:
+        (out_dir / name("evidence.json")).write_text(
             json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    if "candidate-hypotheses.json" in planned_files and effective_cand_hyps is not None:
-        (out_dir / "candidate-hypotheses.json").write_text(
+    if name("candidate-hypotheses.json") in planned_files and effective_cand_hyps is not None:
+        (out_dir / name("candidate-hypotheses.json")).write_text(
             json.dumps(effective_cand_hyps, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    if "analysis.json" in planned_files and analysis is not None:
-        (out_dir / "analysis.json").write_text(
+    if name("analysis.json") in planned_files and analysis is not None:
+        (out_dir / name("analysis.json")).write_text(
             json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+    if verdict_card is not None and name("summary.json") in planned_files:
+        (out_dir / name("summary.json")).write_text(
+            json.dumps(verdict_card, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    if verdict_md is not None and name("summary.md") in planned_files:
+        (out_dir / name("summary.md")).write_text(verdict_md, encoding="utf-8")
     if has_markdown and analysis is not None:
         sp = analysis.get("skill_prescription")
         if lang == "zh":
             zh_report = render_report_markdown(evidence, analysis, lang="zh", output_format=fmt)
-            (out_dir / "report.md").write_text(zh_report, encoding="utf-8")
-            (out_dir / "report.zh.md").write_text(zh_report, encoding="utf-8")
+            (out_dir / name("report.md")).write_text(zh_report, encoding="utf-8")
+            (out_dir / name("report.zh.md")).write_text(zh_report, encoding="utf-8")
             if skill_md and sp:
                 zh_skill = render_skill_prescription_markdown(sp, lang="zh")
-                (out_dir / "skill-prescription.md").write_text(zh_skill, encoding="utf-8")
-                (out_dir / "skill-prescription.zh.md").write_text(zh_skill, encoding="utf-8")
+                (out_dir / name("skill-prescription.md")).write_text(zh_skill, encoding="utf-8")
+                (out_dir / name("skill-prescription.zh.md")).write_text(zh_skill, encoding="utf-8")
         elif lang == "en":
             en_report = render_report_markdown(evidence, analysis, lang="en", output_format=fmt)
-            (out_dir / "report.md").write_text(en_report, encoding="utf-8")
-            (out_dir / "report.en.md").write_text(en_report, encoding="utf-8")
+            (out_dir / name("report.md")).write_text(en_report, encoding="utf-8")
+            (out_dir / name("report.en.md")).write_text(en_report, encoding="utf-8")
             if skill_md and sp:
                 en_skill = render_skill_prescription_markdown(sp, lang="en")
-                (out_dir / "skill-prescription.md").write_text(en_skill, encoding="utf-8")
-                (out_dir / "skill-prescription.en.md").write_text(en_skill, encoding="utf-8")
+                (out_dir / name("skill-prescription.md")).write_text(en_skill, encoding="utf-8")
+                (out_dir / name("skill-prescription.en.md")).write_text(en_skill, encoding="utf-8")
         else:  # bilingual
-            (out_dir / "report.md").write_text(
+            (out_dir / name("report.md")).write_text(
                 render_report_markdown(evidence, analysis, lang="bilingual", output_format=fmt),
                 encoding="utf-8",
             )
-            (out_dir / "report.zh.md").write_text(
+            (out_dir / name("report.zh.md")).write_text(
                 render_report_markdown(evidence, analysis, lang="zh", output_format=fmt),
                 encoding="utf-8",
             )
-            (out_dir / "report.en.md").write_text(
+            (out_dir / name("report.en.md")).write_text(
                 render_report_markdown(evidence, analysis, lang="en", output_format=fmt),
                 encoding="utf-8",
             )
             if skill_md and sp:
-                (out_dir / "skill-prescription.md").write_text(
+                (out_dir / name("skill-prescription.md")).write_text(
                     render_skill_prescription_markdown(sp, lang="bilingual"), encoding="utf-8"
                 )
-                (out_dir / "skill-prescription.zh.md").write_text(
+                (out_dir / name("skill-prescription.zh.md")).write_text(
                     render_skill_prescription_markdown(sp, lang="zh"), encoding="utf-8"
                 )
-                (out_dir / "skill-prescription.en.md").write_text(
+                (out_dir / name("skill-prescription.en.md")).write_text(
                     render_skill_prescription_markdown(sp, lang="en"), encoding="utf-8"
                 )
+
+
+def _degraded_diagnostic_counts(evidence: Dict[str, Any]) -> Dict[str, int]:
+    """Count warning/error diagnostics on one trial's evidence."""
+    counts = {"warning": 0, "error": 0}
+    for record in evidence.get("diagnostics") or []:
+        if not isinstance(record, dict):
+            continue
+        severity = record.get("severity")
+        if severity in counts:
+            counts[severity] += 1
+    return counts
+
+
+def _summary_diagnostic_fields(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    """Summary-row fields that make degraded evidence visible in batch output."""
+    counts = _degraded_diagnostic_counts(evidence)
+    report = evidence.get("verifier_report") or {}
+    return {
+        "diagnostic_counts": counts,
+        "degraded_evidence": bool(counts["warning"] or counts["error"]),
+        # `low` means the verifier's failure reason is a terse generic message
+        # with no named check or numeric deviation (see normalize_verifier_report).
+        "verifier_diagnosability": (
+            report.get("diagnosability") if isinstance(report, dict) else None
+        ),
+    }
 
 
 def compute_batch_statistics(summary_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -452,6 +777,8 @@ def compute_batch_statistics(summary_rows: List[Dict[str, Any]]) -> Dict[str, An
     stage_counts: Dict[str, int] = {}
     category_counts: Dict[str, int] = {}
     code_counts: Dict[str, int] = {}
+    diagnostic_counts = {"warning": 0, "error": 0}
+    degraded_trial_count = 0
     agent_started_count = 0
     verifier_started_count = 0
 
@@ -471,15 +798,40 @@ def compute_batch_statistics(summary_rows: List[Dict[str, Any]]) -> Dict[str, An
         code = row.get("code")
         if code:
             code_counts[code] = code_counts.get(code, 0) + 1
+        row_diagnostics = row.get("diagnostic_counts") or {}
+        row_warnings = int(row_diagnostics.get("warning", 0) or 0)
+        row_errors = int(row_diagnostics.get("error", 0) or 0)
+        diagnostic_counts["warning"] += row_warnings
+        diagnostic_counts["error"] += row_errors
+        if row_warnings or row_errors:
+            degraded_trial_count += 1
+
+    low_diagnosability_count = sum(
+        1 for row in summary_rows if row.get("verifier_diagnosability") == "low"
+    )
+    scored_trial_count = verifier_started_count
+    not_scored_trial_count = max(0, len(summary_rows) - scored_trial_count)
+    passed_count = int(verdict_counts.get("passed", 0))
+    scored_pass_rate = (
+        round(passed_count / scored_trial_count * 100.0, 1) if scored_trial_count > 0 else 0.0
+    )
 
     return {
         "total_trials": len(summary_rows),
         "agent_started_count": agent_started_count,
         "verifier_started_count": verifier_started_count,
+        # Three-state scoring coverage: trials whose verifier never ran are NOT
+        # scored failures and must not be counted as agent failures in the rate.
+        "scored_trial_count": scored_trial_count,
+        "not_scored_trial_count": not_scored_trial_count,
+        "scored_pass_rate": scored_pass_rate,
+        "low_diagnosability_trial_count": low_diagnosability_count,
         "verdict_counts": verdict_counts,
         "failure_stage_counts": stage_counts,
         "category_counts": category_counts,
         "root_cause_code_counts": dict(sorted(code_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "degraded_evidence_trial_count": degraded_trial_count,
+        "diagnostic_severity_counts": diagnostic_counts,
     }
 
 
@@ -487,16 +839,54 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Analyze scientific-computing benchmark case failures (case failure analyzer)."
     )
-    parser.add_argument("--job", required=True, type=Path, help="Job or trial directory path")
+    parser.add_argument(
+        "--job", required=False, type=Path, default=None, help="Job or trial directory path"
+    )
+    parser.add_argument(
+        "--task-id",
+        required=False,
+        default=None,
+        help=(
+            "Short task reference (e.g. 'task208', '208', 'task 208__jaekojA'). "
+            "Resolves the trial under --jobs-root and writes task<id>.* reports "
+            "into the task's failure-report/ folder."
+        ),
+    )
+    parser.add_argument(
+        "--jobs-root",
+        required=False,
+        type=Path,
+        default=None,
+        help=(
+            "Benchmark checkout root containing case folders' jobs/ trees. "
+            "Defaults to $CFA_JOBS_ROOT, then the current working directory."
+        ),
+    )
+    parser.add_argument(
+        "--report-dir",
+        required=False,
+        type=Path,
+        default=None,
+        help="Override the default <task>/failure-report output directory",
+    )
     parser.add_argument(
         "--task", required=False, type=Path, default=None, help="Task definition directory path"
     )
     parser.add_argument("--trial", default="all", help="Specific trial name or 'all'")
     parser.add_argument(
         "--output",
-        required=True,
+        required=False,
         type=Path,
-        help="Output directory for evidence.json, candidate-hypotheses.json, analysis.json, report.md",
+        default=None,
+        help=(
+            "Output directory. Optional in --task-id mode (defaults to the task's "
+            "failure-report/ folder); required otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--no-verdict-stdout",
+        action="store_true",
+        help="Suppress the direct-answer verdict card printed to stdout in --task-id mode",
     )
     parser.add_argument(
         "--phase",
@@ -514,7 +904,10 @@ def main() -> None:
         help="Verifier/simulation replay mode (only 'none' is supported for static read-only analysis)",
     )
     parser.add_argument(
-        "--max-log-bytes", type=int, default=120000, help="Maximum bytes per log file read"
+        "--max-log-bytes",
+        type=positive_int,
+        default=120000,
+        help="Maximum bytes per log file read (positive integer)",
     )
     parser.add_argument(
         "--include-session-files",
@@ -534,6 +927,46 @@ def main() -> None:
         help="Report language edition (default: bilingual; options: bilingual, zh, en)",
     )
     args = parser.parse_args()
+
+    # ── Task-ID quick invocation (e.g. `/case failure analyzer task208`) ──────
+    task_ref: Optional[TaskRef] = None
+    basename: Optional[str] = None
+    if args.task_id:
+        explicit_root = args.jobs_root or os.environ.get("CFA_JOBS_ROOT")
+        cwd = Path.cwd()
+        roots = [Path(explicit_root)] if explicit_root else [cwd, cwd.parent]
+        task_ref = None
+        last_error: Optional[TaskRefError] = None
+        for candidate_root in roots:
+            try:
+                task_ref = resolve_task_ref(
+                    args.task_id, candidate_root, report_dir_override=args.report_dir
+                )
+                break
+            except TaskRefError as exc:
+                last_error = exc
+        if task_ref is None:
+            print(f"ERROR: {last_error}", file=sys.stderr)
+            sys.exit(2)
+        args.job = task_ref.trial_dir
+        args.task = task_ref.task_def_dir or args.task
+        args.trial = task_ref.trial_dir.name
+        if args.output is None:
+            args.output = task_ref.report_dir
+        basename = task_ref.report_basename
+    else:
+        if args.job is None:
+            print("ERROR: --job is required when --task-id is not used.", file=sys.stderr)
+            sys.exit(2)
+        if args.output is None:
+            print("ERROR: --output is required when --task-id is not used.", file=sys.stderr)
+            sys.exit(2)
+        if args.jobs_root is not None or args.report_dir is not None:
+            print(
+                "ERROR: --jobs-root and --report-dir are only valid with --task-id.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     if args.phase == "collect" and args.format == "markdown":
         print(
@@ -564,10 +997,22 @@ def main() -> None:
             print(f"ERROR: --task path exists and is not a directory: {args.task}", file=sys.stderr)
             sys.exit(2)
 
+    # The default landing (`<bench>/failure-report/<task>`) is outside every
+    # input. An explicit `--report-dir` may still target a `failure-report`
+    # folder inside a case directory; that exact folder is the only sanctioned
+    # output inside an input tree.
+    sanctioned_report_dir: Optional[Path] = None
+    if task_ref is not None and args.output.resolve() == task_ref.report_dir:
+        resolved_out = args.output.resolve()
+        resolved_inputs = [p.resolve() for p in (args.job, args.task) if p is not None]
+        if resolved_out.name == REPORT_DIR_NAME and resolved_out.parent in resolved_inputs:
+            sanctioned_report_dir = resolved_out
+
     _validate_input_output_isolation(
         out_dir=args.output,
         input_roots=[(args.job, "--job"), (args.task, "--task")],
         planned_trial_names=[],
+        allowed_report_dir=sanctioned_report_dir,
     )
 
     all_trials = discover_trials(args.job, trial_filter="all")
@@ -622,11 +1067,13 @@ def main() -> None:
         out_dir=args.output,
         input_roots=all_input_roots,
         planned_trial_names=planned_trial_names,
+        allowed_report_dir=sanctioned_report_dir,
     )
 
     validate_output_writable(args.output)
 
     staging_dir = Path(tempfile.mkdtemp(prefix="cfa_staging_"))
+    verdict_stdout: Optional[str] = None
     try:
         if len(trials) == 1:
             inv = trials[0]
@@ -644,6 +1091,7 @@ def main() -> None:
                     cand_hyps=cand_hyps,
                     fmt=args.format,
                     lang=args.lang,
+                    basename=basename,
                 )
             else:
                 ev, an, rep, skill_md = analyze_single_trial(
@@ -654,6 +1102,18 @@ def main() -> None:
                     lang=args.lang,
                 )
                 _report_diagnostics(ev)
+                card: Optional[Dict[str, Any]] = None
+                card_md: Optional[str] = None
+                if task_ref is not None:
+                    card = build_verdict_card(
+                        ev,
+                        an,
+                        task_id=task_ref.task_id,
+                        report_basename=task_ref.report_basename,
+                    )
+                    card_lang = "zh" if args.lang != "en" else "en"
+                    card_md = render_verdict_card_markdown(card, lang=card_lang)
+                    verdict_stdout = card_md
                 write_outputs(
                     staging_dir,
                     ev,
@@ -662,8 +1122,21 @@ def main() -> None:
                     skill_md,
                     fmt=args.format,
                     lang=args.lang,
+                    basename=basename,
+                    verdict_card=card,
+                    verdict_md=card_md,
                 )
-            publish_staging_to_output(staging_dir, args.output, is_multi_trial=False)
+            # The default task-ID landing is a dedicated per-task folder, so the
+            # generic manifest is enough; a shared --report-dir keeps the
+            # task-scoped manifest to avoid deleting a sibling task's reports.
+            manifest_key = (
+                None
+                if task_ref is not None and args.output.resolve() == task_ref.report_dir
+                else basename
+            )
+            publish_staging_to_output(
+                staging_dir, args.output, is_multi_trial=False, manifest_key=manifest_key
+            )
         else:
             summary_rows = []
             for inv in trials:
@@ -682,6 +1155,7 @@ def main() -> None:
                         cand_hyps=cand_hyps,
                         fmt=args.format,
                         lang=args.lang,
+                        basename=basename,
                     )
                     summary_rows.append(
                         {
@@ -690,6 +1164,7 @@ def main() -> None:
                             "agent_started": bool(ev["runtime"].get("agent_started")),
                             "verifier_started": bool(ev["runtime"].get("verifier_started")),
                             "phase": "collect",
+                            **_summary_diagnostic_fields(ev),
                         }
                     )
                 else:
@@ -709,6 +1184,7 @@ def main() -> None:
                         skill_md,
                         fmt=args.format,
                         lang=args.lang,
+                        basename=basename,
                     )
                     summary_rows.append(
                         {
@@ -721,6 +1197,7 @@ def main() -> None:
                             "category": an["primary_root_cause"]["category"],
                             "code": an["primary_root_cause"]["code"],
                             "confidence": an["primary_root_cause"]["confidence"],
+                            **_summary_diagnostic_fields(ev),
                         }
                     )
             batch_stats = compute_batch_statistics(summary_rows)
@@ -759,6 +1236,12 @@ def main() -> None:
             publish_staging_to_output(staging_dir, args.output, is_multi_trial=True)
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
+
+    # Direct answer for task-ID invocation: the verdict card goes to stdout so a
+    # caller (`/case failure analyzer task208`) can answer without opening files.
+    if verdict_stdout and not args.no_verdict_stdout:
+        print(verdict_stdout)
+        print(f"REPORT_DIR: {args.output}")
 
 
 if __name__ == "__main__":

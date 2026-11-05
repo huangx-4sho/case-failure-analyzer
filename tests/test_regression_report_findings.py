@@ -295,7 +295,7 @@ class TestReportRegressionFindings(unittest.TestCase):
             self.assertTrue((out_dir / "report.zh.md").is_file())
             self.assertTrue((out_dir / "report.en.md").is_file())
             rep_text = (out_dir / "report.md").read_text(encoding="utf-8")
-            self.assertIn("Case Failure Analysis Report / 案例失败因果审计报告", rep_text)
+            self.assertIn("案例失败归因报告 / Case Failure Attribution", rep_text)
             self.assertNotIn("Part II: English Edition", rep_text)
 
     def test_13_persistent_fixture_tree_and_cli_phases(self) -> None:

@@ -118,7 +118,11 @@ def gate3_verifier_defect(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             if not vd
             else vd["details"]
         )
-    elif is_parser_fail or (th and th.get("type") == "parser_hazard") or (vd and "namelist" in vd.get("item", "")):
+    elif (
+        is_parser_fail
+        or (th and th.get("type") == "parser_hazard")
+        or (vd and "namelist" in vd.get("item", ""))
+    ):
         code = "VERIFIER_REGEX_OR_PARSER_DEFECT"
         subtype = "regex_or_parser_defect"
         summary = (
@@ -166,8 +170,9 @@ def gate3_verifier_defect(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             )
         )
 
-    is_logical_defect = bool(is_schema_fail or is_parser_fail)
-    counterfactual_supported = bool(ctx.sole_blocker) if is_logical_defect else False
+    # No blind counterfactual bonus: a single failing check does not prove the
+    # verifier defect is what flips it. Only Gate 4 binds that claim to the
+    # failing check's metric text before awarding it.
     margin_ratio = 4.0 if is_schema_fail else None
 
     prc = attach_confidence_metadata(
@@ -179,7 +184,6 @@ def gate3_verifier_defect(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=1,
-        counterfactual_supported=counterfactual_supported,
         margin_ratio=margin_ratio,
         check_localization=ctx.check_localization,
         hypothesis_separation=ctx.hypothesis_separation,
@@ -197,7 +201,6 @@ def gate3_verifier_defect(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=1,
-        counterfactual_supported=counterfactual_supported,
         margin_ratio=margin_ratio,
         check_localization=ctx.check_localization,
         hypothesis_separation=ctx.hypothesis_separation,

@@ -62,16 +62,19 @@ REQUIRED_ANALYSIS_KEYS = {
 VALID_CATEGORIES = {"infra", "case", "agent", "verifier", "unknown", "none"}
 VALID_VERDICTS = {"passed", "failed", "errored", "unknown"}
 
+from report_style import accepted_titles
+
+# Legacy aliases remain importable for callers that reference them directly.
 REQUIRED_REPORT_SECTIONS = [
-    (1, "诊断结论与运行态概览", "Verdict & Root Cause Summary"),
-    (2, "故障现场与因果证据链", "Failure Manifestation & Evidence Chain"),
-    (3, "竞争假设裁决与伴随信号", "Hypothesis Audit & Signals"),
-    (4, "修复行动与处方建议", "Recommended Actions & Notes"),
+    (1, "归因结论", "Root Cause Verdict"),
+    (2, "失败证据链", "Failure Evidence Chain"),
+    (3, "假设检验与排除", "Hypothesis Audit"),
+    (4, "改进建议", "Recommended Actions"),
 ]
 
 REQUIRED_PASSED_REPORT_SECTIONS = [
-    (1, "评测裁定与通过概览", "Verdict & Pass Summary"),
-    (2, "验证证据与产物索引", "Verification Evidence & Artifacts"),
+    (1, "通过结论", "Verdict & Pass Summary"),
+    (2, "验证证据", "Verification Evidence"),
 ]
 
 
@@ -138,27 +141,24 @@ def collect_positive_agent_evidence_ids(evidence: Dict[str, Any]) -> Set[str]:
     return pos_ids
 
 
-def validate_report_sections(
-    report_text: str, verdict: Optional[str] = None
-) -> List[str]:
+def validate_report_sections(report_text: str, verdict: Optional[str] = None) -> List[str]:
     errors: List[str] = []
+    passed_hint = "|".join(re.escape(t) for t in accepted_titles(1, passed=True))
     is_passed = (verdict == "passed") or bool(
-        re.search(
-            r"(?m)^##\s+1\.\s+(?:评测裁定与通过概览|Verdict & Pass Summary)",
-            report_text,
-        )
+        re.search(rf"(?m)^##\s+1\.\s+(?:{passed_hint})", report_text)
     )
-    sections = REQUIRED_PASSED_REPORT_SECTIONS if is_passed else REQUIRED_REPORT_SECTIONS
+    section_count = 2 if is_passed else 4
 
-    for num, zh_title, en_title in sections:
-        # Match start-of-line `## <num>. <zh_title>` or `## <num>. <en_title>`
-        header_pat = re.compile(
-            rf"(?m)^##\s+{num}\.\s+(?:{re.escape(zh_title)}|{re.escape(en_title)})(?:\s.*)?$"
-        )
+    for num in range(1, section_count + 1):
+        titles = accepted_titles(num, passed=is_passed)
+        alternation = "|".join(re.escape(t) for t in titles)
+        header_pat = re.compile(rf"(?m)^##\s+{num}\.\s+(?:{alternation})(?:\s.*)?$")
         m = header_pat.search(report_text)
+        canonical = titles[0]
         if not m:
             errors.append(
-                f"report.md missing required section header: '## {num}. {zh_title}' (or '## {num}. {en_title}')"
+                f"report.md missing required section header: '## {num}. {canonical}' "
+                f"(accepted: {', '.join(titles[:4])})"
             )
             continue
 
@@ -167,7 +167,7 @@ def validate_report_sections(
         next_h2 = re.search(r"(?m)^##\s+", after_header)
         body = after_header[: next_h2.start()] if next_h2 else after_header
         if not body.strip():
-            errors.append(f"report.md section '## {num}. {zh_title}' has empty body content.")
+            errors.append(f"report.md section '## {num}. {canonical}' has empty body content.")
     return errors
 
 
@@ -337,6 +337,36 @@ def validate_all(
                 "but `evidence_refs` does not cite any positive agent evidence "
                 "(behavioral_signal, agent_mismatch contract, agent timeline event, or scientific_observation)."
             )
+        runtime = evidence.get("runtime") or {}
+        verifier_started = bool(runtime.get("verifier_started", False))
+        runtime_verdict = runtime.get("verdict")
+        if not verifier_started or runtime_verdict in ("unknown", "not_run"):
+            premature_sig_ids = {
+                s.get("signal_id")
+                for s in (evidence.get("behavioral_signals") or [])
+                if s.get("signal_type") == "premature_completion"
+            }
+            cited_agent_refs = [r for r in ev_refs if r in pos_agent_ids]
+            if not cited_agent_refs or all(r in premature_sig_ids for r in cited_agent_refs):
+                errors.append(
+                    "VERIFIER_NOT_RUN_PREMATURE_BLAME violation: verifier did not run "
+                    "(`runtime.verifier_started is False` or `runtime.verdict in ('unknown', 'not_run')`), "
+                    "so primary_root_cause.category cannot be 'agent' based solely on trajectory completion heuristics."
+                )
+
+        # Hard Rule: a structured verifier report naming failed checks proves the
+        # trial reached scoring. `AGENT_PREMATURE_TERMINATION` would hide the
+        # actual failed check and its deviation, so it is forbidden here.
+        verifier_report = evidence.get("verifier_report")
+        if (
+            isinstance(verifier_report, dict)
+            and verifier_report.get("failed_checks")
+            and prc.get("code") == "AGENT_PREMATURE_TERMINATION"
+        ):
+            errors.append(
+                "NAMED_CHECK_PREMATURE_BLAME violation: verifier_report names failing "
+                "checks, so primary_root_cause.code cannot be 'AGENT_PREMATURE_TERMINATION'."
+            )
     elif cat == "verifier":
         unbound_hazards = {
             v.get("obs_id")
@@ -384,9 +414,7 @@ def validate_all(
 
     # 9. Optional report.md section & non-empty body validation
     if report_text is not None:
-        errors.extend(
-            validate_report_sections(report_text, verdict=analysis.get("verdict"))
-        )
+        errors.extend(validate_report_sections(report_text, verdict=analysis.get("verdict")))
 
     return len(errors) == 0, errors
 

@@ -8,8 +8,9 @@
 {
   "case_id": "string (e.g. ccb-cp2k-aimd-water or trial_name)",
   "job_dir": "string",
-  "task_dir": "string",
+  "task_dir": "string or null",
   "trial_name": "string",
+  "trial_dir": "string or null",
   "artifacts": [
     {
       "artifact_id": "art:trial_result",
@@ -37,6 +38,12 @@
       "agent_execution": {"started_at": "...", "finished_at": "..."},
       "verifier": {"started_at": "...", "finished_at": "..."}
     }
+  },
+  "metadata": {
+    "job_stats": {"n_total_trials": 2, "n_errored_trials": 1},
+    "job_result_summary": {"n_total_trials": 2, "n_errored_trials": 1},
+    "agent_info": "object or null (raw runner agent metadata)",
+    "task_toml": "object or null (parsed task.toml)"
   },
   "timeline": [
     {
@@ -115,11 +122,42 @@
       "required_discriminating_evidence": ["SCF iteration history", "MAX_SCF setting"]
     }
   ],
+  "diagnostics": [
+    {
+      "diagnostic_id": "diag:verifier_check_stats:VERIFIER_CHECK_STATS_BUILD_FAILED",
+      "schema_version": "diagnostics-v1",
+      "stage": "verifier_check_stats",
+      "code": "VERIFIER_CHECK_STATS_BUILD_FAILED",
+      "severity": "info|warning|error",
+      "message": "Verifier check statistics could not be built: ValueError",
+      "source_ref": "verifier/verify.log or null",
+      "error_type": "ValueError or null",
+      "error_message": "string or null",
+      "impact": "what the analyzer can no longer conclude because of this recovery",
+      "context": {"max_log_bytes": 120000}
+    }
+  ],
+  "verifier_check_stats": {
+    "total_checks": 2,
+    "passed_checks": 1,
+    "failed_checks": 1,
+    "failed_check_summaries": ["reported max_force 0.02863 != recomputed 0.03666 (tol 0.001)"],
+    "single_failure": true,
+    "widespread_failure": false,
+    "counterfactual_candidate": true
+  },
   "missing_artifacts": [
     "agent/trajectory.json"
   ]
 }
 ```
+
+**Evidence integrity fields:**
+
+- `trial_dir` / `task_dir` are absolute input paths resolved at collection time; reports render only relative anchors and never expose them.
+- `metadata` preserves raw runner metadata (`job_stats`, `agent_info`, parsed `task.toml`) for audit; it is not interpreted as evidence.
+- `diagnostics` is a list of structured recovery records (`diagnostics-v1`). `severity="warning"` means evidence was degraded and a conclusion may rest on less than it appears; `severity="error"` means a required input could not be read. Warning/error records surface in `report.md` Section 1 and are itemized in Section 2; summary rows and `job_summary.json` aggregate their counts.
+- `verifier_check_stats` is **optional** and present only when a verifier log exists. `total_checks` is a lower bound for fail-fast verifiers, whose passing checks print no marker. Only `single_failure` counts as check localization. `counterfactual_candidate` (exactly one failed check) is a *candidate* only: it cannot distinguish "the only check that failed" from "the only check that ran", so gates must independently bind it to metric-level evidence before awarding counterfactual confidence.
 
 ---
 
@@ -184,6 +222,69 @@
       "action": "Concrete remediation step"
     }
   ],
-  "skill_prescription": null
+  "skill_prescription": null,
+  "decision_trace": {
+    "schema_version": "decision-trace-v1",
+    "engine": "attribution-engine-v1",
+    "gate_order": ["gate0_passed", "gate1a_infra_prestartup", "..."],
+    "evaluated": [
+      {
+        "gate_id": "gate0_passed",
+        "matched": false,
+        "reason": "trial did not pass verification",
+        "checks": {"verification_status": "not_run", "reward": null}
+      }
+    ],
+    "selected": {
+      "gate_id": "gate1b_unknown_no_evidence",
+      "category": "unknown",
+      "code": "UNKNOWN_INSUFFICIENT_EVIDENCE",
+      "verdict": "errored",
+      "failure_stage": "unknown"
+    },
+    "reconciled_competing_hypotheses": true
+  }
 }
 ```
+
+`decision_trace` is an additive audit key: it records every evaluated gate, why each abstained, and which gate was selected. `checks` holds scalars only (no log text), and nothing time-dependent is recorded, so `analysis.json` stays byte-deterministic. `subcase_id` appears only when a gate selects a documented subcase.
+
+---
+
+## 3. Harbor Protocol Extensions (additive, optional keys)
+
+Harbor jobs (`jobs/<timestamp>/<trial>/` with `result.json`, `agent/trajectory.json`, `verifier/`, `artifacts/`, and a sibling `task.toml`) produce additional observation keys. All are **optional**: non-harbor inputs keep the legacy shape and the validator does not require them.
+
+```json
+{
+  "metadata": {
+    "task_toml": {"artifacts": ["/app/final", "/app/results.json"]},
+    "declared_deliverables": ["/app/final", "/app/results.json"]
+  },
+  "missing_deliverables": ["/app/final"],
+  "verifier_report": {
+    "schema_family": "envelope|envelope+layered|checks|criteria",
+    "primary_report": "verify.json",
+    "source_files": [{"rel_path": "core/verify.json", "role": "nested"}],
+    "verdict": "fail",
+    "scorable": true,
+    "reward": 0.0,
+    "status": "SCORED",
+    "scientific_status": "FAIL",
+    "failure_origin": {"role": "candidate", "reason_code": "SCIENTIFIC_CRITERIA_FAILED"},
+    "core_failures": ["coordination_distances_match_derived_reference"],
+    "messages": [],
+    "checks": [{"layer": "L3", "name": "...", "ok": false, "detail": "...", "core": false, "source": "core/verify.json"}],
+    "failed_checks": [{"layer": "L3", "name": "...", "ok": false, "detail": "...", "core": false, "source": "core/verify.json"}],
+    "failed_check_summaries": ["[L3] ..."],
+    "diagnosability": "normal|low",
+    "diagnosability_reasons": [],
+    "summary": "[L3] ..."
+  }
+}
+```
+
+- **`metadata.task_toml.artifacts`** is the authoritative declared-deliverable set. `metadata.declared_deliverables` mirrors it as a flat list. `normalize_trajectory(..., expected_deliverables=[...])` uses it to decide whether `sig:premature_completion` is real: the signal fires only when a *declared* path is absent from the trajectory, never because a hardcoded `results.json` was not written. When `task.toml` is unavailable the list is empty and the legacy `results.json` heuristic applies.
+- **`missing_deliverables`** is the reconciled list of declared paths that were never produced. Trajectory matching is heuristic, so `collect_case_evidence.py` cross-checks `<trial>/artifacts/app/<declared path>` (harbor's `docker cp` output, which cannot be imagined) and drops any path that was actually collected. A `premature_completion` signal carries `declared_deliverables` / `missing_deliverables` arrays; when all declared paths were collected, the signal is removed entirely.
+- **`verifier_report`** normalizes the five harbor verifier JSON families (layered `core/verify.json`, `scientific/verify.json` with `ACADEMIC_INTEGRITY_VETO`, `raw-verifier.json` `criteria[]`, `science.json` `checks[]`, and `verify.json` envelopes with `failure_origin`) into one shape: named `failed_checks` with `layer`, `name`, `detail`, `core`, `source`; `core_failures`; `failure_origin`; `scorable`; `reward`; and a `diagnosability` flag. `diagnosability == "low"` means the verifier emitted only a terse generic message with no named check or numeric deviation — the report surfaces this explicitly instead of pretending the evidence is complete. When a report is present, `build_check_stats_from_report()` also feeds `verifier_check_stats` so check localization and confidence scoring work on harbor reports too.
+- **`error_observations`** may carry harbor runner-stage entries with `stage: "runner"`, `runner_phase: "post_agent_execution"`, `scoring_reached`, and `missing_deliverable`. Codes: `INFRA_ARTIFACT_COLLECTION_CRASH` (`Engine cp failed ... Could not find the file /app/...`), `INFRA_RUNNER_INTERRUPTED` (log ends at `Collecting main service artifacts`), and causal `INFRA_AGENT_TIMEOUT`. These are temporally *after* agent execution but *before* verification, so they must never be staged as `environment_build` / `container_build`. A benign `Cannot estimate Claude cost ... litellm.BadRequestError: LLM Provider NOT provided` line is telemetry present in successful trials and is deliberately not an error rule.

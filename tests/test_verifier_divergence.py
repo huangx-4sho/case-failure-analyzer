@@ -25,7 +25,9 @@ if str(SCRIPT_DIR) not in sys.path:
 from extract_scientific_errors import extract_scientific_errors, extract_verifier_divergences
 
 
-FIXTURE_TRIAL_DIR = ROOT_DIR / "tests" / "fixtures" / "verifier_divergence" / "ase-custom-calculator"
+FIXTURE_TRIAL_DIR = (
+    ROOT_DIR / "tests" / "fixtures" / "verifier_divergence" / "ase-custom-calculator"
+)
 
 # Real verifier line from
 # ccb-l2-ase-custom-calculator/ase-custom-calculator__KaimrKM/verifier/verify.log
@@ -45,8 +47,7 @@ def _one_line(line: str) -> list:
 def _steps(*steps: dict) -> list:
     """Serialize raw ATIF steps the same way `_load_trajectory_steps` does."""
     return [
-        (step.get("step_id"), json.dumps(step, ensure_ascii=False, default=str))
-        for step in steps
+        (step.get("step_id"), json.dumps(step, ensure_ascii=False, default=str)) for step in steps
     ]
 
 
@@ -305,6 +306,32 @@ class TestExtractionIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             res = extract_scientific_errors(trial_dir=Path(tmp), normalized_traj=None)
         self.assertEqual(res["scientific_observations"], [])
+
+    def test_p2b_delta_mismatch_from_verifier_report(self) -> None:
+        report = {
+            "failed_checks": [
+                {
+                    "layer": "L3",
+                    "name": "neutral_stationary",
+                    "ok": False,
+                    "detail": "R02-M01/site000003 charge differs from independent frozen EQeq replay by 1.59869e-06 e beyond its decimal serialization bound 1.00001e-10 e",
+                    "source": "raw-verifier.json",
+                }
+            ],
+            "messages": [],
+        }
+        res = extract_scientific_errors(trial_dir=None, verifier_report=report)
+        obs = res["scientific_observations"]
+        self.assertEqual(len(obs), 1)
+        o = obs[0]
+        self.assertEqual(o["software"], "verifier")
+        self.assertEqual(o["error_family"], "verifier_recompute_divergence")
+        self.assertEqual(o["metric"], "charge")
+        self.assertAlmostEqual(o["reported_value"], 1.59869e-06)
+        self.assertEqual(o["recomputed_value"], 0.0)
+        self.assertAlmostEqual(o["tolerance"], 1.00001e-10)
+        self.assertEqual(o["source_ref"], "verifier:raw-verifier.json:neutral_stationary")
+        self.assertTrue(o["discriminating"])
 
 
 if __name__ == "__main__":

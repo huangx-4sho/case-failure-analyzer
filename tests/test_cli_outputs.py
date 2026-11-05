@@ -22,6 +22,10 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from report_style import section_title  # noqa: E402
+
 ENTRYPOINT = REPO_ROOT / "scripts" / "analyze_case.py"
 FIXTURE_JOB = REPO_ROOT / "tests" / "fixtures" / "regressions" / "mixed-job-success-trial" / "job"
 
@@ -119,7 +123,14 @@ class TestMultiTrialLayout(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         out = tmp / "out"
         proc = run_cli(
-            "--job", str(FIXTURE_JOB), "--output", str(out), "--trial", "all", "--format", "markdown"
+            "--job",
+            str(FIXTURE_JOB),
+            "--output",
+            str(out),
+            "--trial",
+            "all",
+            "--format",
+            "markdown",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue((out / "job_summary.md").is_file())
@@ -801,7 +812,14 @@ class TestLanguageCliOption(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         out = tmp / "out"
         proc = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "trial_b_pass", "--output", str(out), "--lang", "zh"
+            "--job",
+            str(FIXTURE_JOB),
+            "--trial",
+            "trial_b_pass",
+            "--output",
+            str(out),
+            "--lang",
+            "zh",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue((out / "report.md").is_file())
@@ -809,25 +827,39 @@ class TestLanguageCliOption(unittest.TestCase):
         self.assertFalse((out / "report.en.md").exists())
 
         rep_text = (out / "report.md").read_text(encoding="utf-8")
-        self.assertIn("## 1. 评测裁定与通过概览", rep_text)
-        self.assertIn("## 2. 验证证据与产物索引", rep_text)
+        self.assertIn(f"## {section_title(1, 'zh', passed=True)}", rep_text)
+        self.assertIn(f"## {section_title(2, 'zh', passed=True)}", rep_text)
         self.assertNotIn("Verdict & Pass Summary", rep_text)
 
         # Also test on a failed trial
         out_fail = tmp / "out_fail"
         proc_fail = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "trial_a_fail", "--output", str(out_fail), "--lang", "zh"
+            "--job",
+            str(FIXTURE_JOB),
+            "--trial",
+            "trial_a_fail",
+            "--output",
+            str(out_fail),
+            "--lang",
+            "zh",
         )
         self.assertEqual(proc_fail.returncode, 0, proc_fail.stderr)
         fail_rep = (out_fail / "report.md").read_text(encoding="utf-8")
-        self.assertIn("## 1. 诊断结论与运行态概览", fail_rep)
-        self.assertNotIn("Verdict & Root Cause Summary", fail_rep)
+        self.assertIn(f"## {section_title(1, 'zh')}", fail_rep)
+        self.assertNotIn("Root Cause Verdict", fail_rep)
 
     def test_lang_en_generates_pure_english_report(self) -> None:
         tmp = Path(tempfile.mkdtemp())
         out = tmp / "out"
         proc = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "trial_b_pass", "--output", str(out), "--lang", "en"
+            "--job",
+            str(FIXTURE_JOB),
+            "--trial",
+            "trial_b_pass",
+            "--output",
+            str(out),
+            "--lang",
+            "en",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue((out / "report.md").is_file())
@@ -835,40 +867,52 @@ class TestLanguageCliOption(unittest.TestCase):
         self.assertFalse((out / "report.zh.md").exists())
 
         rep_text = (out / "report.md").read_text(encoding="utf-8")
-        self.assertIn("## 1. Verdict & Pass Summary", rep_text)
-        self.assertIn("## 2. Verification Evidence & Artifacts", rep_text)
-        self.assertNotIn("评测裁定与通过概览", rep_text)
+        self.assertIn(f"## {section_title(1, 'en', passed=True)}", rep_text)
+        self.assertIn(f"## {section_title(2, 'en', passed=True)}", rep_text)
+        self.assertNotIn("通过结论", rep_text)
 
         # Also test on a failed trial
         out_fail = tmp / "out_fail"
         proc_fail = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "trial_a_fail", "--output", str(out_fail), "--lang", "en"
+            "--job",
+            str(FIXTURE_JOB),
+            "--trial",
+            "trial_a_fail",
+            "--output",
+            str(out_fail),
+            "--lang",
+            "en",
         )
         self.assertEqual(proc_fail.returncode, 0, proc_fail.stderr)
         fail_rep = (out_fail / "report.md").read_text(encoding="utf-8")
-        self.assertIn("## 1. Verdict & Root Cause Summary", fail_rep)
-        self.assertNotIn("诊断结论与运行态概览", fail_rep)
+        self.assertIn(f"## {section_title(1, 'en')}", fail_rep)
+        self.assertNotIn("归因结论", fail_rep)
 
     def test_lang_bilingual_default_and_explicit(self) -> None:
         # Default without --lang flag
         tmp1 = Path(tempfile.mkdtemp())
         out1 = tmp1 / "out"
-        proc1 = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "trial_b_pass", "--output", str(out1)
-        )
+        proc1 = run_cli("--job", str(FIXTURE_JOB), "--trial", "trial_b_pass", "--output", str(out1))
         self.assertEqual(proc1.returncode, 0, proc1.stderr)
         self.assertTrue((out1 / "report.md").is_file())
         self.assertTrue((out1 / "report.zh.md").is_file())
         self.assertTrue((out1 / "report.en.md").is_file())
 
         rep1_text = (out1 / "report.md").read_text(encoding="utf-8")
-        self.assertIn("## 1. 评测裁定与通过概览 (Verdict & Pass Summary)", rep1_text)
+        self.assertIn(f"## {section_title(1, 'bilingual', passed=True)}", rep1_text)
 
         # Explicit --lang bilingual on multi-trial batch
         tmp2 = Path(tempfile.mkdtemp())
         out2 = tmp2 / "out"
         proc2 = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "all", "--output", str(out2), "--lang", "bilingual"
+            "--job",
+            str(FIXTURE_JOB),
+            "--trial",
+            "all",
+            "--output",
+            str(out2),
+            "--lang",
+            "bilingual",
         )
         self.assertEqual(proc2.returncode, 0, proc2.stderr)
         self.assertTrue((out2 / "job_summary.md").is_file())
@@ -889,7 +933,9 @@ class TestLanguageCliOption(unittest.TestCase):
         self.assertTrue((out_zh / "job_summary.md").is_file())
         self.assertTrue((out_zh / "job_summary.zh.md").is_file())
         self.assertFalse((out_zh / "job_summary.en.md").exists())
-        self.assertIn("多 Trial 评测任务汇总报告", (out_zh / "job_summary.md").read_text(encoding="utf-8"))
+        self.assertIn(
+            "多 Trial 评测任务汇总报告", (out_zh / "job_summary.md").read_text(encoding="utf-8")
+        )
         self.assertTrue((out_zh / "trial_a_fail" / "report.zh.md").is_file())
         self.assertFalse((out_zh / "trial_a_fail" / "report.en.md").exists())
 
@@ -903,7 +949,10 @@ class TestLanguageCliOption(unittest.TestCase):
         self.assertTrue((out_en / "job_summary.md").is_file())
         self.assertTrue((out_en / "job_summary.en.md").is_file())
         self.assertFalse((out_en / "job_summary.zh.md").exists())
-        self.assertIn("Multi-Trial Batch Execution Summary", (out_en / "job_summary.md").read_text(encoding="utf-8"))
+        self.assertIn(
+            "Multi-Trial Batch Execution Summary",
+            (out_en / "job_summary.md").read_text(encoding="utf-8"),
+        )
         self.assertTrue((out_en / "trial_a_fail" / "report.en.md").is_file())
         self.assertFalse((out_en / "trial_a_fail" / "report.zh.md").exists())
 
@@ -912,16 +961,21 @@ class TestLanguageCliOption(unittest.TestCase):
         out = tmp / "out"
 
         # 1. Run default bilingual: produces report.md, report.zh.md, report.en.md
-        proc1 = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "trial_b_pass", "--output", str(out)
-        )
+        proc1 = run_cli("--job", str(FIXTURE_JOB), "--trial", "trial_b_pass", "--output", str(out))
         self.assertEqual(proc1.returncode, 0, proc1.stderr)
         self.assertTrue((out / "report.zh.md").is_file())
         self.assertTrue((out / "report.en.md").is_file())
 
         # 2. Rerun with --lang zh: report.en.md must be cleanly purged
         proc2 = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "trial_b_pass", "--output", str(out), "--lang", "zh"
+            "--job",
+            str(FIXTURE_JOB),
+            "--trial",
+            "trial_b_pass",
+            "--output",
+            str(out),
+            "--lang",
+            "zh",
         )
         self.assertEqual(proc2.returncode, 0, proc2.stderr)
         self.assertTrue((out / "report.zh.md").is_file())
@@ -929,7 +983,14 @@ class TestLanguageCliOption(unittest.TestCase):
 
         # 3. Rerun with --lang en: report.zh.md must be cleanly purged
         proc3 = run_cli(
-            "--job", str(FIXTURE_JOB), "--trial", "trial_b_pass", "--output", str(out), "--lang", "en"
+            "--job",
+            str(FIXTURE_JOB),
+            "--trial",
+            "trial_b_pass",
+            "--output",
+            str(out),
+            "--lang",
+            "en",
         )
         self.assertEqual(proc3.returncode, 0, proc3.stderr)
         self.assertTrue((out / "report.en.md").is_file())

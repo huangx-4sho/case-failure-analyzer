@@ -25,8 +25,11 @@ failing log contains exactly one `FAIL:` line and no per-check PASS lines;
 `total_checks` is therefore a *lower bound* of the checks the verifier ran.
 `single_failure` additionally requires `total_checks >= 2`, which only logs
 carrying per-check pass markers (bracket/TAP styles, or multiple `PASS:`
-lines) can satisfy; for fail-fast logs callers should rely on
-`counterfactual_candidate` instead and combine it with metric-level evidence.
+lines) can satisfy. A lone fail-fast `FAIL:` sets only
+`counterfactual_candidate`, which is *not* localization and must not be
+scored as one: it cannot tell "the only check that failed" from "the only
+check that ran". Callers must independently bind a candidate to
+metric-level evidence before treating it as counterfactual support.
 """
 
 from __future__ import annotations
@@ -41,9 +44,7 @@ _COLON_CHECK_RE = re.compile(r"^[ \t]*(?P<status>FAIL|PASS):[ \t]*(?P<msg>.*)$")
 _BRACKET_CHECK_RE = re.compile(r"^[ \t]*\[(?P<status>FAIL|PASS)\][ \t]*(?P<msg>.*)$")
 # TAP style: `not ok [N] [-] <msg>` / `ok [N] [-] <msg>`. `\b` keeps prose
 # words like "okay" from matching.
-_TAP_FAIL_RE = re.compile(
-    r"^[ \t]*not[ \t]+ok\b[ \t]*(?:\d+)?[ \t]*(?:-[ \t]*)?(?P<msg>.*)$"
-)
+_TAP_FAIL_RE = re.compile(r"^[ \t]*not[ \t]+ok\b[ \t]*(?:\d+)?[ \t]*(?:-[ \t]*)?(?P<msg>.*)$")
 _TAP_PASS_RE = re.compile(r"^[ \t]*ok\b[ \t]*(?:\d+)?[ \t]*(?:-[ \t]*)?(?P<msg>.*)$")
 
 

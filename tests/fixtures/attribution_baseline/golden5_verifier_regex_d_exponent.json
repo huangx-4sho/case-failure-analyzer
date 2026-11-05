@@ -20,7 +20,7 @@
     "subtype": "regex_or_parser_defect",
     "code": "VERIFIER_REGEX_OR_PARSER_DEFECT",
     "summary": "Verifier regex `VAL=\\s*([-\\d.E+]+)` parses floating-point numbers without Fortran `D/d` exponent support.",
-    "confidence": 0.62,
+    "confidence": 0.57,
     "confidence_kind": "heuristic_evidence_score",
     "evidence_strength": "medium"
   },
@@ -48,7 +48,7 @@
       "evidence_against": [],
       "missing_evidence": [],
       "counterfactual_test": "Fix `tests/verify.py` internal file/parser logic and re-verify existing trial artifacts.",
-      "confidence": 0.62,
+      "confidence": 0.57,
       "confidence_kind": "heuristic_evidence_score",
       "evidence_strength": "medium"
     },

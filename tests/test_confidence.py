@@ -19,6 +19,8 @@ SCRIPT_DIR = ROOT_DIR / "scripts"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from attribution.context import AttributionContext, _verifier_check_localization, build_context
+from attribution.trace import DecisionTrace
 from confidence import MAX_EVIDENCE_POINTS, attach_confidence_metadata, compute_evidence_confidence
 from verify_check_stats import build_check_stats
 
@@ -472,6 +474,49 @@ class TestBuildCheckStats(unittest.TestCase):
         self.assertFalse(stats["widespread_failure"])
         self.assertFalse(stats["single_failure"])
         self.assertFalse(stats["counterfactual_candidate"])
+
+
+class TestCheckLocalizationSemantics(unittest.TestCase):
+    """`single` is only real localization — a lone fail-fast `FAIL:` is a
+    `counterfactual_candidate`, not a proven single-check failure."""
+
+    @staticmethod
+    def _context(stats) -> AttributionContext:
+        return build_context({"verifier_check_stats": stats}, {}, DecisionTrace(gate_order=()))
+
+    def test_lone_fail_fast_is_not_localization(self) -> None:
+        stats = build_check_stats("FAIL: results.json missing key 'n_rows'\n")
+        self.assertTrue(stats["counterfactual_candidate"])
+        self.assertFalse(stats["single_failure"])
+        self.assertIsNone(_verifier_check_localization(stats))
+        ctx = self._context(stats)
+        self.assertIsNone(ctx.check_localization)
+        self.assertFalse(ctx.sole_blocker_candidate)
+
+    def test_single_failure_is_localization_and_sole_blocker_candidate(self) -> None:
+        stats = build_check_stats(
+            "PASS: results.json exists\nFAIL: results.json missing key 'n_rows'\n"
+        )
+        self.assertTrue(stats["single_failure"])
+        self.assertEqual(_verifier_check_localization(stats), "single")
+        ctx = self._context(stats)
+        self.assertEqual(ctx.check_localization, "single")
+        self.assertTrue(ctx.sole_blocker_candidate)
+
+    def test_widespread_failure_is_not_a_single_localization(self) -> None:
+        stats = build_check_stats("FAIL: check 1\nFAIL: check 2\nFAIL: check 3\nPASS: summary\n")
+        self.assertEqual(_verifier_check_localization(stats), "widespread")
+        ctx = self._context(stats)
+        self.assertEqual(ctx.check_localization, "widespread")
+        self.assertFalse(ctx.sole_blocker_candidate)
+
+    def test_missing_and_malformed_stats_yield_no_localization(self) -> None:
+        for unusable in (None, {}, "FAIL: text", {"single_failure": False}):
+            with self.subTest(stats=unusable):
+                self.assertIsNone(_verifier_check_localization(unusable))
+                ctx = self._context(unusable)
+                self.assertIsNone(ctx.check_localization)
+                self.assertFalse(ctx.sole_blocker_candidate)
 
 
 if __name__ == "__main__":

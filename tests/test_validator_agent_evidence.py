@@ -78,16 +78,12 @@ class TestPositiveAgentEvidenceFromCorroboratedDivergence(unittest.TestCase):
             agent_reported_value=None,
             agent_ref=None,
         )
-        pos = collect_positive_agent_evidence_ids(
-            {"scientific_observations": [obs]}
-        )
+        pos = collect_positive_agent_evidence_ids({"scientific_observations": [obs]})
         self.assertNotIn("sci:recompute_divergence:1", pos)
 
     def test_recovered_divergence_does_not_count(self) -> None:
         obs = _divergence_observation(recovered=True)
-        pos = collect_positive_agent_evidence_ids(
-            {"scientific_observations": [obs]}
-        )
+        pos = collect_positive_agent_evidence_ids({"scientific_observations": [obs]})
         self.assertNotIn("sci:recompute_divergence:1", pos)
 
     def test_plain_trajectory_origin_rule_unchanged(self) -> None:
@@ -96,11 +92,135 @@ class TestPositiveAgentEvidenceFromCorroboratedDivergence(unittest.TestCase):
             "source_ref": "trajectory:step:5",
             "recovered": False,
         }
-        pos = collect_positive_agent_evidence_ids(
-            {"scientific_observations": [obs]}
-        )
+        pos = collect_positive_agent_evidence_ids({"scientific_observations": [obs]})
         self.assertIn("sci:1", pos)
         self.assertIn("trajectory:step:5", pos)
+
+
+class TestVerifierNotRunPrematureBlame(unittest.TestCase):
+    def test_premature_completion_alone_fails_when_verifier_not_started(self) -> None:
+        from validate_analysis import validate_all
+
+        evidence = {
+            "case_id": "test_case",
+            "artifacts": [{"artifact_id": "art:1", "exists": True}],
+            "runtime": {"agent_started": True, "verifier_started": False, "verdict": "unknown"},
+            "timeline": [{"event_id": "step:1"}],
+            "error_observations": [],
+            "contract_observations": [],
+            "verifier_observations": [],
+            "scientific_observations": [],
+            "missing_artifacts": [],
+            "behavioral_signals": [
+                {"signal_id": "sig:premature_completion", "signal_type": "premature_completion"}
+            ],
+        }
+        analysis = {
+            "schema_version": "failure-analysis-v1",
+            "case_id": "test_case",
+            "verdict": "failed",
+            "failure_stage": "agent_execution",
+            "detection_stage": "agent_execution",
+            "first_unrecovered_deviation": {
+                "status": "identified",
+                "event_ref": "step:1",
+                "summary": "Agent stopped prematurely",
+            },
+            "failure_manifestation": {"type": "agent_execution_failed", "summary": "premature"},
+            "primary_root_cause": {
+                "category": "agent",
+                "subtype": "premature_termination",
+                "code": "AGENT_PREMATURE_TERMINATION",
+                "confidence": 0.8,
+                "confidence_band": "high",
+                "rationale": "Premature exit",
+            },
+            "contributing_factors": [],
+            "competing_hypotheses": [
+                {
+                    "hypothesis_id": "H1",
+                    "category": "agent",
+                    "claim": "Agent stopped",
+                    "evidence_for": ["sig:premature_completion"],
+                    "evidence_against": [],
+                }
+            ],
+            "evidence_refs": ["sig:premature_completion"],
+            "excluded_hypotheses": [],
+            "recommended_actions": [],
+            "skill_prescription": {
+                "recommended_skill": {"name": "test-skill"},
+                "trigger": ["test"],
+                "capability_gap": ["test"],
+            },
+        }
+        is_valid, errors = validate_all(evidence, analysis)
+        self.assertTrue(
+            any("VERIFIER_NOT_RUN_PREMATURE_BLAME" in e for e in errors),
+            f"Expected VERIFIER_NOT_RUN_PREMATURE_BLAME in errors: {errors}",
+        )
+
+    def test_premature_completion_allowed_when_verifier_started(self) -> None:
+        from validate_analysis import validate_all
+
+        evidence = {
+            "case_id": "test_case",
+            "artifacts": [{"artifact_id": "art:1", "exists": True}],
+            "runtime": {"agent_started": True, "verifier_started": True, "verdict": "failed"},
+            "timeline": [{"event_id": "step:1"}],
+            "error_observations": [],
+            "contract_observations": [],
+            "verifier_observations": [],
+            "scientific_observations": [],
+            "missing_artifacts": [],
+            "behavioral_signals": [
+                {"signal_id": "sig:premature_completion", "signal_type": "premature_completion"}
+            ],
+        }
+        analysis = {
+            "schema_version": "failure-analysis-v1",
+            "case_id": "test_case",
+            "verdict": "failed",
+            "failure_stage": "agent_execution",
+            "detection_stage": "verifier_execution",
+            "first_unrecovered_deviation": {
+                "status": "identified",
+                "event_ref": "step:1",
+                "summary": "Agent stopped prematurely",
+            },
+            "failure_manifestation": {"type": "verifier_check_failed", "summary": "premature"},
+            "primary_root_cause": {
+                "category": "agent",
+                "subtype": "premature_termination",
+                "code": "AGENT_PREMATURE_TERMINATION",
+                "confidence": 0.8,
+                "confidence_band": "high",
+                "rationale": "Premature exit",
+            },
+            "contributing_factors": [],
+            "competing_hypotheses": [
+                {
+                    "hypothesis_id": "H1",
+                    "category": "agent",
+                    "claim": "Agent stopped",
+                    "evidence_for": ["sig:premature_completion"],
+                    "evidence_against": [],
+                }
+            ],
+            "evidence_refs": ["sig:premature_completion"],
+            "excluded_hypotheses": [],
+            "recommended_actions": [],
+            "skill_prescription": {
+                "recommended_skill": {"name": "test-skill"},
+                "trigger": ["test"],
+                "capability_gap": ["test"],
+            },
+        }
+        is_valid, errors = validate_all(evidence, analysis)
+        self.assertFalse(
+            any("VERIFIER_NOT_RUN_PREMATURE_BLAME" in e for e in errors),
+            f"Unexpected VERIFIER_NOT_RUN_PREMATURE_BLAME in errors: {errors}",
+        )
 
 
 if __name__ == "__main__":

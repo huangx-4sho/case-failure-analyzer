@@ -74,15 +74,46 @@ def _verifier_check_localization(stats: Any) -> Optional[str]:
     """
     Map the evidence's `verifier_check_stats` dict (produced by
     `verify_check_stats.build_check_stats`) to `"single"` or `"widespread"`.
+
+    Only `single_failure` (one failed check among at least two observed check
+    lines) counts as `"single"`. `counterfactual_candidate` deliberately does
+    NOT: fail-fast verifiers abort at their first failing check, so a lone
+    `FAIL:` line with no `PASS:` markers cannot distinguish "the only check
+    that failed" from "the only check that ran". Treating it as localization
+    would award the single-check bonus (and, in earlier revisions, the
+    counterfactual bonus) for the same unproven assumption.
+
     A missing key, a non-dict payload, or neither flag set yields `None`.
     """
     if not isinstance(stats, dict):
         return None
-    if stats.get("single_failure") or stats.get("counterfactual_candidate"):
+    if stats.get("single_failure"):
         return "single"
     if stats.get("widespread_failure"):
         return "widespread"
     return None
+
+
+def _named_check_failure(evidence: Dict[str, Any]) -> bool:
+    """
+    True when the verifier log names at least one failing check.
+
+    Unlike `_verifier_check_localization`, this does not care whether the
+    failure is localized: any named failed check (`single_failure`,
+    `widespread_failure`, a non-empty `failed_check_summaries`, or a normalized
+    `verifier_report.failed_checks`) is more specific evidence about *what* the
+    verifier rejected than a generic trajectory-completion heuristic, and must
+    not be preempted by one.
+    """
+    report = evidence.get("verifier_report")
+    if isinstance(report, dict) and report.get("failed_checks"):
+        return True
+    stats = evidence.get("verifier_check_stats")
+    if not isinstance(stats, dict):
+        return False
+    if stats.get("single_failure") or stats.get("widespread_failure"):
+        return True
+    return bool(stats.get("failed_check_summaries"))
 
 
 def _hypothesis_separation(cand_hyps: Dict[str, Any]) -> Optional[float]:
@@ -145,12 +176,19 @@ class AttributionContext:
     # ── hoisted for the Gate 4 deterministic recompute-divergence path ───────
     recompute_divergences: List[Dict[str, Any]] = field(default_factory=list)
     has_recompute_divergence: bool = False
+    #: The verifier log names at least one failing check — specific evidence
+    #: about what was rejected, which outranks generic completion heuristics.
+    named_check_failure: bool = False
 
     # ── case-specific confidence measurements (confidence-upgrade inputs) ────
     margin_ratio: Optional[float] = None
     check_localization: Optional[str] = None
     hypothesis_separation: Optional[float] = None
-    sole_blocker: bool = False
+    #: Exactly one failed check among at least two observed check lines — a
+    #: *candidate* sole blocker, not proof. Gates must bind it independently
+    #: (e.g. Gate 4 requires the failing check to name the diverging metric)
+    #: before treating it as counterfactual support.
+    sole_blocker_candidate: bool = False
 
     # ── hoisted from the Gate 5 region ───────────────────────────────────────
     unrecovered_sci_obs: List[Dict[str, Any]] = field(default_factory=list)
@@ -161,6 +199,14 @@ class AttributionContext:
     agent_mismatch_contracts: List[Dict[str, Any]] = field(default_factory=list)
     unverified_output_sigs: List[Dict[str, Any]] = field(default_factory=list)
     agent_timeline_events: List[Dict[str, Any]] = field(default_factory=list)
+    #: Runner-stage artifact-collection crashes / silent interruptions that are
+    #: causal candidates. These happen *after* agent execution and *before* the
+    #: verifier, so they must not be staged as environment/container build.
+    artifact_collection_crashes: List[Dict[str, Any]] = field(default_factory=list)
+    #: Causal agent-execution infrastructure faults raised by the runner itself
+    #: (agent timeout). These are upstream of a collection crash when both occur,
+    #: so they outrank it as primary cause.
+    execution_infra_errors: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def build_context(
@@ -207,17 +253,13 @@ def build_context(
         ],
         recompute_divergences=recompute_divergences,
         has_recompute_divergence=bool(recompute_divergences),
+        named_check_failure=_named_check_failure(evidence),
         margin_ratio=_first_divergence_margin_ratio(recompute_divergences),
-        check_localization=_verifier_check_localization(
-            evidence.get("verifier_check_stats")
-        ),
+        check_localization=_verifier_check_localization(evidence.get("verifier_check_stats")),
         hypothesis_separation=_hypothesis_separation(cand_hyps),
-        sole_blocker=bool(
+        sole_blocker_candidate=bool(
             isinstance(evidence.get("verifier_check_stats"), dict)
-            and (
-                evidence["verifier_check_stats"].get("single_failure")
-                or evidence["verifier_check_stats"].get("counterfactual_candidate")
-            )
+            and evidence["verifier_check_stats"].get("single_failure")
             and not evidence["verifier_check_stats"].get("widespread_failure")
         ),
         unrecovered_sci_obs=[s for s in sci_obs if not s.get("recovered", False)],
@@ -230,4 +272,16 @@ def build_context(
         agent_mismatch_contracts=[c for c in contracts if c.get("alignment") == "agent_mismatch"],
         unverified_output_sigs=[s for s in signals if s.get("signal_type") == "unverified_output"],
         agent_timeline_events=[ev for ev in timeline if ev.get("actor") == "agent"],
+        artifact_collection_crashes=[
+            e
+            for e in (evidence.get("error_observations") or [])
+            if e.get("code") in ("INFRA_ARTIFACT_COLLECTION_CRASH", "INFRA_RUNNER_INTERRUPTED")
+            and e.get("causal_candidate")
+            and e.get("stage") == "runner"
+        ],
+        execution_infra_errors=[
+            e
+            for e in (evidence.get("error_observations") or [])
+            if e.get("code") == "INFRA_AGENT_TIMEOUT" and e.get("causal_candidate")
+        ],
     )

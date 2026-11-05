@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENTRYPOINT = REPO_ROOT / "scripts" / "analyze_case.py"
+RUNTIME_ENTRYPOINT = REPO_ROOT / "scripts" / "extract_runtime_errors.py"
 
 try:
     import yaml  # type: ignore
@@ -31,6 +32,14 @@ except Exception:  # pragma: no cover
 def run_cli(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(ENTRYPOINT), *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def run_runtime_cli(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(RUNTIME_ENTRYPOINT), *args],
         capture_output=True,
         text=True,
     )
@@ -96,6 +105,89 @@ class TestCliInputValidation(unittest.TestCase):
             )
             self.assertEqual(res.returncode, 2, res.stderr)
             self.assertIn("invalid choice", res.stderr)
+
+    def test_non_positive_max_log_bytes_exits_2_without_writing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            (job / "result.json").write_text(json.dumps({"trial_name": "t1"}), encoding="utf-8")
+            for bad in ("0", "-1", "-120000"):
+                with self.subTest(max_log_bytes=bad):
+                    out = Path(tmp) / f"out_{bad.lstrip('-')}"
+                    res = run_cli(
+                        "--job",
+                        str(job),
+                        "--output",
+                        str(out),
+                        "--max-log-bytes",
+                        bad,
+                    )
+                    self.assertEqual(res.returncode, 2, res.stderr)
+                    self.assertIn("positive integer", res.stderr)
+                    self.assertFalse(out.exists(), "no output may be written for a bad budget")
+
+    def test_non_integer_max_log_bytes_exits_2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            (job / "result.json").write_text(json.dumps({"trial_name": "t1"}), encoding="utf-8")
+            res = run_cli(
+                "--job", str(job), "--output", str(Path(tmp) / "out"), "--max-log-bytes", "1e6"
+            )
+            self.assertEqual(res.returncode, 2, res.stderr)
+            self.assertIn("positive integer", res.stderr)
+
+    def test_runtime_cli_rejects_non_positive_max_log_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            for bad in ("0", "-5"):
+                with self.subTest(max_log_bytes=bad):
+                    out = Path(tmp) / f"runtime_{bad.lstrip('-')}.json"
+                    res = run_runtime_cli(
+                        "--job",
+                        str(job),
+                        "--output",
+                        str(out),
+                        "--max-log-bytes",
+                        bad,
+                    )
+                    self.assertEqual(res.returncode, 2, res.stderr)
+                    self.assertIn("positive integer", res.stderr)
+                    self.assertFalse(out.exists())
+
+    def test_runtime_cli_rejects_missing_or_non_directory_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job_file = Path(tmp) / "job.json"
+            job_file.write_text("{}", encoding="utf-8")
+            for index, bad_job in enumerate((Path(tmp) / "does_not_exist", job_file)):
+                with self.subTest(job=str(bad_job)):
+                    out = Path(tmp) / f"runtime_{index}.json"
+                    res = run_runtime_cli("--job", str(bad_job), "--output", str(out))
+                    self.assertEqual(res.returncode, 2, res.stderr)
+                    self.assertIn("--job", res.stderr)
+                    self.assertFalse(out.exists())
+
+    def test_runtime_cli_rejects_missing_or_non_directory_trial_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            trial_file = Path(tmp) / "trial.json"
+            trial_file.write_text("{}", encoding="utf-8")
+            for index, bad_trial in enumerate((Path(tmp) / "does_not_exist", trial_file)):
+                with self.subTest(trial_dir=str(bad_trial)):
+                    out = Path(tmp) / f"runtime_trial_{index}.json"
+                    res = run_runtime_cli(
+                        "--job",
+                        str(job),
+                        "--trial-dir",
+                        str(bad_trial),
+                        "--output",
+                        str(out),
+                    )
+                    self.assertEqual(res.returncode, 2, res.stderr)
+                    self.assertIn("--trial-dir", res.stderr)
+                    self.assertFalse(out.exists())
 
     def test_legitimate_job_level_prestartup_failure_still_succeeds(self) -> None:
         """A job dir with result.json but no trial dirs is a valid job-level failure."""

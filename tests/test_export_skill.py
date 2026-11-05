@@ -5,6 +5,8 @@ Unit tests for safe skill packaging and export (`scripts/export_skill.py`).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -18,6 +20,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from export_skill import (
+    EXPORT_MANIFEST_SCHEMA_VERSION,
     ExportSafetyError,
     MANIFEST_FILENAME,
     export_skill,
@@ -52,6 +55,12 @@ class TestExportSkill(unittest.TestCase):
         with self.assertRaises(ExportSafetyError):
             validate_destination(str(REPO_ROOT.parent))
 
+        # Any path inside the source repository
+        with self.assertRaises(ExportSafetyError):
+            validate_destination(str(REPO_ROOT / "scripts" / "nested_export"))
+        with self.assertRaises(ExportSafetyError):
+            validate_destination(str(REPO_ROOT / "references" / "nested_export"))
+
     def test_export_skill_files_and_manifest(self) -> None:
         """Verifies clean export of all managed components and manifest creation."""
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -76,6 +85,7 @@ class TestExportSkill(unittest.TestCase):
             manifest_file = dest / MANIFEST_FILENAME
             self.assertTrue(manifest_file.is_file())
             data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            self.assertEqual(data.get("schema_version"), EXPORT_MANIFEST_SCHEMA_VERSION)
             self.assertEqual(data.get("name"), "case-failure-analyzer")
             self.assertIn("SKILL.md", data.get("files", []))
             self.assertIn("scripts/analyze_case.py", data.get("files", []))
@@ -140,6 +150,103 @@ class TestExportSkill(unittest.TestCase):
             self.assertFalse(stale_file.exists())
             self.assertTrue(user_file.is_file())
             self.assertTrue((dest / "SKILL.md").is_file())
+
+    def test_clean_rejects_manifest_paths_escaping_destination(self) -> None:
+        """Traversal, absolute, and symlink escapes must never delete outside dest."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            dest = base / "managed_skill"
+            dest.mkdir()
+            victim = base / "victim.txt"
+            victim.write_text("precious data", encoding="utf-8")
+            outside_target = base / "outside_target.txt"
+            outside_target.write_text("also precious", encoding="utf-8")
+            symlink = dest / "escape.txt"
+            symlink.symlink_to(outside_target)
+
+            manifest = dest / MANIFEST_FILENAME
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "name": "case-failure-analyzer",
+                        "files": [
+                            "../victim.txt",
+                            str(victim.resolve()),
+                            "escape.txt",
+                            "safe-stale.txt",
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            safe_stale = dest / "safe-stale.txt"
+            safe_stale.write_text("old managed file", encoding="utf-8")
+
+            _copied, cleaned = export_skill(dest, clean=True)
+
+            self.assertEqual(cleaned, 1)
+            self.assertEqual(victim.read_text(encoding="utf-8"), "precious data")
+            self.assertEqual(outside_target.read_text(encoding="utf-8"), "also precious")
+            self.assertTrue(symlink.is_symlink())
+            self.assertFalse(safe_stale.exists())
+
+    def test_clean_ignores_malformed_or_foreign_manifests(self) -> None:
+        """Untrusted manifest metadata must not become a deletion allow-list."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            victim = base / "victim.txt"
+            victim.write_text("precious data", encoding="utf-8")
+
+            for index, payload in enumerate(
+                (
+                    {"name": "another-skill", "files": ["../victim.txt"]},
+                    {"name": "case-failure-analyzer", "files": "../victim.txt"},
+                    {
+                        "schema_version": "future-version",
+                        "name": "case-failure-analyzer",
+                        "files": ["../victim.txt"],
+                    },
+                    [{"name": "case-failure-analyzer", "files": ["../victim.txt"]}],
+                )
+            ):
+                with self.subTest(payload=payload):
+                    dest = base / f"managed_skill_{index}"
+                    dest.mkdir()
+                    (dest / MANIFEST_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+                    _copied, cleaned = export_skill(dest, clean=True)
+                    self.assertEqual(cleaned, 0)
+                    self.assertEqual(victim.read_text(encoding="utf-8"), "precious data")
+
+    def test_clean_tolerates_non_utf8_manifest(self) -> None:
+        """An unreadable manifest must warn and yield no deletion allow-list, not crash."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "managed_skill"
+            dest.mkdir()
+            stale_file = dest / "scripts" / "old_managed_tool.py"
+            stale_file.parent.mkdir(parents=True)
+            stale_file.write_text("old code", encoding="utf-8")
+            (dest / MANIFEST_FILENAME).write_bytes(b"\xff\xfe\x00broken")
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                _copied, cleaned = export_skill(dest, clean=True)
+
+            self.assertEqual(cleaned, 0)
+            self.assertTrue(stale_file.is_file(), "stale file must survive an unreadable manifest")
+            self.assertIn("unreadable export manifest", stderr.getvalue())
+
+    def test_cli_refuses_export_inside_source_repository(self) -> None:
+        nested_dest = SCRIPT_DIR / "nested_export_must_not_exist"
+        cmd = [
+            sys.executable,
+            str(SCRIPT_DIR / "export_skill.py"),
+            "--dest",
+            str(nested_dest),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("EXPORT SAFETY ERROR", proc.stderr)
+        self.assertFalse(nested_dest.exists())
 
     def test_cli_exit_codes(self) -> None:
         """Verifies CLI exit codes for valid and invalid destinations."""

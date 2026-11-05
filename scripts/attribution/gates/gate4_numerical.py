@@ -137,8 +137,7 @@ def _recompute_divergence_agent_attribution(
     agent_reported = chosen.get("agent_reported_value")
 
     corroboration = (
-        f"the agent's own trajectory self-report agrees with the reported value "
-        f"({agent_reported})"
+        f"the agent's own trajectory self-report agrees with the reported value ({agent_reported})"
     )
     if _AGENT_RESULT_METRIC_RE.search(metric):
         code = "AGENT_RESULT_VALIDATION"
@@ -322,13 +321,9 @@ def gate4_numerical_divergence(ctx: AttributionContext) -> Optional[Dict[str, An
     divergences = ctx.recompute_divergences
     has_recompute_divergence = ctx.has_recompute_divergence
     corroborated = [
-        o
-        for o in divergences
-        if o.get("discriminating") and o.get("agent_reported_matches")
+        o for o in divergences if o.get("discriminating") and o.get("agent_reported_matches")
     ]
-    agent_eligible = [
-        o for o in corroborated if o.get("check_kind") in _AGENT_BLAME_CHECK_KINDS
-    ]
+    agent_eligible = [o for o in corroborated if o.get("check_kind") in _AGENT_BLAME_CHECK_KINDS]
     divergence_checks: Dict[str, Any] = {
         "has_recompute_divergence": has_recompute_divergence,
         "recompute_divergence_count": len(divergences),

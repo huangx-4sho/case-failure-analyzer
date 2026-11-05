@@ -27,6 +27,7 @@ from .gates import (
     gate5_insufficient as _gate5,
     gate6_agent_primary as _gate6,
 )
+from .gates.gate1c_runner_collection import gate1c_runner_artifact_collection as _gate1c
 from .schema import make_attribution
 from .trace import DecisionTrace
 
@@ -35,6 +36,7 @@ GATE_ORDER: Tuple[str, ...] = (
     "gate0_passed",
     "gate1a_infra_prestartup",
     "gate1b_unknown_no_evidence",
+    "gate1c_runner_artifact_collection",
     "gate2_case_definition",
     "gate3_verifier_defect",
     "gate4_numerical_divergence",
@@ -46,6 +48,7 @@ GATES: Tuple[Callable[[AttributionContext], Optional[Dict[str, Any]]], ...] = (
     _gate0.gate0_passed,
     _gate1.gate1a_infra_prestartup,
     _gate1.gate1b_unknown_no_evidence,
+    _gate1c,
     _gate2.gate2_case_definition,
     _gate3.gate3_verifier_defect,
     _gate4.gate4_numerical_divergence,
