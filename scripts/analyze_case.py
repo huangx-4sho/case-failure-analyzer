@@ -620,12 +620,20 @@ def write_outputs(
     basename: Optional[str] = None,
     verdict_card: Optional[Dict[str, Any]] = None,
     verdict_md: Optional[str] = None,
+    archive_evidence: bool = True,
 ) -> None:
     """
-    Write trial artifacts. `basename` switches to task-ID naming; `verdict_card`
-    / `verdict_md` add the compact direct-answer card (`task208.summary.*`).
+    Write trial artifacts.
+    In task-ID mode (basename is provided), enforces a clean hierarchical layout:
+      - Top-level: clean markdown (e.g. task208.md, summary.md, skill-prescription.md)
+      - data/: machine JSON (evidence.json, analysis.json, summary.json, candidate-hypotheses.json)
+      - Eliminates redundant single-language .zh.md copies.
+    In flat mode (basename=None), outputs directly to out_dir for compatibility.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    is_hierarchical = basename is not None
+    if is_hierarchical:
+        (out_dir / "data").mkdir(parents=True, exist_ok=True)
 
     def name(logical: str) -> str:
         return _artifact_name(logical, basename)
@@ -634,7 +642,9 @@ def write_outputs(
     planned_files: Set[str] = set()
     effective_cand_hyps = cand_hyps
     if fmt in ("json", "both"):
-        planned_files.add(name("evidence.json"))
+        ev_file = "data/evidence.json" if is_hierarchical else name("evidence.json")
+        if archive_evidence:
+            planned_files.add(ev_file)
         if effective_cand_hyps is None and analysis is not None:
             effective_cand_hyps = {
                 "case_id": evidence.get("case_id"),
@@ -642,106 +652,114 @@ def write_outputs(
                 "candidate_hypotheses": analysis.get("competing_hypotheses") or [],
             }
         if effective_cand_hyps is not None:
-            planned_files.add(name("candidate-hypotheses.json"))
+            cand_file = "data/candidate-hypotheses.json" if is_hierarchical else name("candidate-hypotheses.json")
+            planned_files.add(cand_file)
         if analysis is not None:
-            planned_files.add(name("analysis.json"))
+            an_file = "data/analysis.json" if is_hierarchical else name("analysis.json")
+            planned_files.add(an_file)
         if verdict_card is not None:
-            planned_files.add(name("summary.json"))
+            sum_json = "data/summary.json" if is_hierarchical else name("summary.json")
+            planned_files.add(sum_json)
 
     has_markdown = fmt in ("markdown", "both") and report_md is not None and analysis is not None
     if has_markdown:
         sp = analysis.get("skill_prescription")
-        if lang == "zh":
-            planned_files.add(name("report.md"))
-            planned_files.add(name("report.zh.md"))
-            if skill_md and sp:
-                planned_files.add(name("skill-prescription.md"))
-                planned_files.add(name("skill-prescription.zh.md"))
-        elif lang == "en":
-            planned_files.add(name("report.md"))
-            planned_files.add(name("report.en.md"))
-            if skill_md and sp:
-                planned_files.add(name("skill-prescription.md"))
-                planned_files.add(name("skill-prescription.en.md"))
-        else:  # bilingual
-            planned_files.add(name("report.md"))
-            planned_files.add(name("report.zh.md"))
-            planned_files.add(name("report.en.md"))
-            if skill_md and sp:
-                planned_files.add(name("skill-prescription.md"))
-                planned_files.add(name("skill-prescription.zh.md"))
-                planned_files.add(name("skill-prescription.en.md"))
+        main_report = f"{basename}.md" if is_hierarchical else name("report.md")
+        planned_files.add(main_report)
+        if lang == "bilingual":
+            en_report = f"{basename}.en.md" if is_hierarchical else name("report.en.md")
+            planned_files.add(en_report)
+            if not is_hierarchical:
+                planned_files.add(name("report.zh.md"))
+        if skill_md and sp:
+            main_skill = "skill-prescription.md" if is_hierarchical else name("skill-prescription.md")
+            planned_files.add(main_skill)
+            if lang == "bilingual":
+                en_skill = "skill-prescription.en.md" if is_hierarchical else name("skill-prescription.en.md")
+                planned_files.add(en_skill)
+                if not is_hierarchical:
+                    planned_files.add(name("skill-prescription.zh.md"))
         if verdict_md is not None:
-            planned_files.add(name("summary.md"))
+            sum_md = "summary.md" if is_hierarchical else name("summary.md")
+            planned_files.add(sum_md)
 
-    # 2. Lifecycle cleanup: purge stale known trial artifacts from prior runs
+    # 2. Lifecycle cleanup: purge stale artifacts from prior runs
     known_names = {name(logical) for logical in KNOWN_TRIAL_ARTIFACTS}
-    known_names.update({name("summary.json"), name("summary.md")})
+    known_names.update({
+        name("summary.json"), name("summary.md"),
+        "summary.md", "summary.json",
+        "data/evidence.json", "data/analysis.json", "data/summary.json", "data/candidate-hypotheses.json",
+    })
+    if is_hierarchical:
+        known_names.update({
+            f"{basename}.zh.md", f"{basename}.en.md", f"{basename}.evidence.json",
+            f"{basename}.analysis.json", f"{basename}.summary.json", f"{basename}.summary.md",
+            f"{basename}.candidate-hypotheses.json",
+        })
     for stale_file in known_names - planned_files:
         stale_path = out_dir / stale_file
         if stale_path.is_file():
             stale_path.unlink()
 
     # 3. Write planned artifacts
-    if name("evidence.json") in planned_files:
-        (out_dir / name("evidence.json")).write_text(
-            json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    if name("candidate-hypotheses.json") in planned_files and effective_cand_hyps is not None:
-        (out_dir / name("candidate-hypotheses.json")).write_text(
-            json.dumps(effective_cand_hyps, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    if name("analysis.json") in planned_files and analysis is not None:
-        (out_dir / name("analysis.json")).write_text(
-            json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    if verdict_card is not None and name("summary.json") in planned_files:
-        (out_dir / name("summary.json")).write_text(
-            json.dumps(verdict_card, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    if verdict_md is not None and name("summary.md") in planned_files:
-        (out_dir / name("summary.md")).write_text(verdict_md, encoding="utf-8")
+    ev_target = (out_dir / "data" / "evidence.json") if is_hierarchical else (out_dir / name("evidence.json"))
+    if ("data/evidence.json" in planned_files or name("evidence.json") in planned_files) and archive_evidence:
+        ev_target.write_text(json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    cand_target = (out_dir / "data" / "candidate-hypotheses.json") if is_hierarchical else (out_dir / name("candidate-hypotheses.json"))
+    if ("data/candidate-hypotheses.json" in planned_files or name("candidate-hypotheses.json") in planned_files) and effective_cand_hyps is not None:
+        cand_target.write_text(json.dumps(effective_cand_hyps, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    an_target = (out_dir / "data" / "analysis.json") if is_hierarchical else (out_dir / name("analysis.json"))
+    if ("data/analysis.json" in planned_files or name("analysis.json") in planned_files) and analysis is not None:
+        an_target.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    sum_json_target = (out_dir / "data" / "summary.json") if is_hierarchical else (out_dir / name("summary.json"))
+    if verdict_card is not None and ("data/summary.json" in planned_files or name("summary.json") in planned_files):
+        sum_json_target.write_text(json.dumps(verdict_card, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    sum_md_target = (out_dir / "summary.md") if is_hierarchical else (out_dir / name("summary.md"))
+    if verdict_md is not None and ("summary.md" in planned_files or name("summary.md") in planned_files):
+        sum_md_target.write_text(verdict_md, encoding="utf-8")
+
     if has_markdown and analysis is not None:
         sp = analysis.get("skill_prescription")
+        main_report_target = (out_dir / f"{basename}.md") if is_hierarchical else (out_dir / name("report.md"))
+        main_skill_target = (out_dir / "skill-prescription.md") if is_hierarchical else (out_dir / name("skill-prescription.md"))
+
         if lang == "zh":
             zh_report = render_report_markdown(evidence, analysis, lang="zh", output_format=fmt)
-            (out_dir / name("report.md")).write_text(zh_report, encoding="utf-8")
-            (out_dir / name("report.zh.md")).write_text(zh_report, encoding="utf-8")
+            main_report_target.write_text(zh_report, encoding="utf-8")
+            if not is_hierarchical:
+                (out_dir / name("report.zh.md")).write_text(zh_report, encoding="utf-8")
             if skill_md and sp:
                 zh_skill = render_skill_prescription_markdown(sp, lang="zh")
-                (out_dir / name("skill-prescription.md")).write_text(zh_skill, encoding="utf-8")
-                (out_dir / name("skill-prescription.zh.md")).write_text(zh_skill, encoding="utf-8")
+                main_skill_target.write_text(zh_skill, encoding="utf-8")
+                if not is_hierarchical:
+                    (out_dir / name("skill-prescription.zh.md")).write_text(zh_skill, encoding="utf-8")
         elif lang == "en":
             en_report = render_report_markdown(evidence, analysis, lang="en", output_format=fmt)
-            (out_dir / name("report.md")).write_text(en_report, encoding="utf-8")
-            (out_dir / name("report.en.md")).write_text(en_report, encoding="utf-8")
+            main_report_target.write_text(en_report, encoding="utf-8")
+            if not is_hierarchical:
+                (out_dir / name("report.en.md")).write_text(en_report, encoding="utf-8")
             if skill_md and sp:
                 en_skill = render_skill_prescription_markdown(sp, lang="en")
-                (out_dir / name("skill-prescription.md")).write_text(en_skill, encoding="utf-8")
-                (out_dir / name("skill-prescription.en.md")).write_text(en_skill, encoding="utf-8")
+                main_skill_target.write_text(en_skill, encoding="utf-8")
+                if not is_hierarchical:
+                    (out_dir / name("skill-prescription.en.md")).write_text(en_skill, encoding="utf-8")
         else:  # bilingual
-            (out_dir / name("report.md")).write_text(
-                render_report_markdown(evidence, analysis, lang="bilingual", output_format=fmt),
-                encoding="utf-8",
-            )
-            (out_dir / name("report.zh.md")).write_text(
-                render_report_markdown(evidence, analysis, lang="zh", output_format=fmt),
-                encoding="utf-8",
-            )
-            (out_dir / name("report.en.md")).write_text(
-                render_report_markdown(evidence, analysis, lang="en", output_format=fmt),
-                encoding="utf-8",
-            )
+            bi_report = render_report_markdown(evidence, analysis, lang="bilingual", output_format=fmt)
+            main_report_target.write_text(bi_report, encoding="utf-8")
+            en_report_target = (out_dir / f"{basename}.en.md") if is_hierarchical else (out_dir / name("report.en.md"))
+            en_report_target.write_text(render_report_markdown(evidence, analysis, lang="en", output_format=fmt), encoding="utf-8")
+            if not is_hierarchical:
+                (out_dir / name("report.zh.md")).write_text(render_report_markdown(evidence, analysis, lang="zh", output_format=fmt), encoding="utf-8")
             if skill_md and sp:
-                (out_dir / name("skill-prescription.md")).write_text(
-                    render_skill_prescription_markdown(sp, lang="bilingual"), encoding="utf-8"
-                )
-                (out_dir / name("skill-prescription.zh.md")).write_text(
-                    render_skill_prescription_markdown(sp, lang="zh"), encoding="utf-8"
-                )
-                (out_dir / name("skill-prescription.en.md")).write_text(
-                    render_skill_prescription_markdown(sp, lang="en"), encoding="utf-8"
-                )
+                main_skill_target.write_text(render_skill_prescription_markdown(sp, lang="bilingual"), encoding="utf-8")
+                en_skill_target = (out_dir / "skill-prescription.en.md") if is_hierarchical else (out_dir / name("skill-prescription.en.md"))
+                en_skill_target.write_text(render_skill_prescription_markdown(sp, lang="en"), encoding="utf-8")
+                if not is_hierarchical:
+                    (out_dir / name("skill-prescription.zh.md")).write_text(render_skill_prescription_markdown(sp, lang="zh"), encoding="utf-8")
 
 
 def _degraded_diagnostic_counts(evidence: Dict[str, Any]) -> Dict[str, int]:
@@ -925,6 +943,11 @@ def main() -> None:
         choices=["bilingual", "zh", "en"],
         default="bilingual",
         help="Report language edition (default: bilingual; options: bilingual, zh, en)",
+    )
+    parser.add_argument(
+        "--archive-evidence",
+        action="store_true",
+        help="In multi-trial mode, also archive full evidence.json inside trials/<trial_name>/ (default: lightweight archiving)",
     )
     args = parser.parse_args()
 
@@ -1137,10 +1160,22 @@ def main() -> None:
             publish_staging_to_output(
                 staging_dir, args.output, is_multi_trial=False, manifest_key=manifest_key
             )
+            if task_ref is not None:
+                from render_index import update_failure_report_index
+
+                try:
+                    update_failure_report_index(task_ref.report_root)
+                except Exception as exc:
+                    print(f"WARNING: failed to update index: {exc}", file=sys.stderr)
         else:
             summary_rows = []
             for inv in trials:
-                t_out = staging_dir / inv["trial_name"]
+                t_out = (
+                    (staging_dir / "trials" / inv["trial_name"])
+                    if task_ref is not None
+                    else (staging_dir / inv["trial_name"])
+                )
+                archive_ev = args.archive_evidence if (task_ref is not None and args.phase != "collect") else True
                 if args.phase == "collect":
                     ev, _, _, cand_hyps = collect_case_evidence(
                         inv, job_dir=job_dir, max_log_bytes=args.max_log_bytes
@@ -1155,7 +1190,8 @@ def main() -> None:
                         cand_hyps=cand_hyps,
                         fmt=args.format,
                         lang=args.lang,
-                        basename=basename,
+                        basename=None,
+                        archive_evidence=True,
                     )
                     summary_rows.append(
                         {
@@ -1176,6 +1212,17 @@ def main() -> None:
                         lang=args.lang,
                     )
                     _report_diagnostics(ev)
+                    card = None
+                    card_md = None
+                    if task_ref is not None:
+                        card = build_verdict_card(
+                            ev,
+                            an,
+                            task_id=f"{task_ref.task_id}__{inv['trial_name']}",
+                            report_basename=task_ref.report_basename,
+                        )
+                        card_lang = "zh" if args.lang != "en" else "en"
+                        card_md = render_verdict_card_markdown(card, lang=card_lang)
                     write_outputs(
                         t_out,
                         ev,
@@ -1184,7 +1231,10 @@ def main() -> None:
                         skill_md,
                         fmt=args.format,
                         lang=args.lang,
-                        basename=basename,
+                        basename=None,
+                        verdict_card=card,
+                        verdict_md=card_md,
+                        archive_evidence=archive_ev,
                     )
                     summary_rows.append(
                         {
@@ -1234,6 +1284,13 @@ def main() -> None:
                         encoding="utf-8",
                     )
             publish_staging_to_output(staging_dir, args.output, is_multi_trial=True)
+            if task_ref is not None:
+                from render_index import update_failure_report_index
+
+                try:
+                    update_failure_report_index(task_ref.report_root)
+                except Exception as exc:
+                    print(f"WARNING: failed to update index: {exc}", file=sys.stderr)
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
 

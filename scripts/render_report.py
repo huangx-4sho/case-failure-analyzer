@@ -961,6 +961,11 @@ def _render_chinese_bilingual_core(
     lines.append(f"## {section_title(2, lang)}\n")
     lines.extend(_render_verifier_report_block(evidence, lang=lang))
 
+    from trace_causal_anchors import trace_causal_anchors, render_causal_anchors_markdown
+    anchors = trace_causal_anchors(evidence)
+    if anchors:
+        lines.extend(render_causal_anchors_markdown(anchors, lang=lang))
+
     fail_snippets = []
     for vobs in evidence.get("verifier_observations") or []:
         if vobs.get("type") == "verifier_fail_message" and (vobs.get("matched_text") or "").strip():
@@ -1197,6 +1202,12 @@ def _render_english_edition(
     # 2. Failure Evidence Chain
     lines.append(f"## {section_title(2, 'en')}\n")
     lines.extend(_render_verifier_report_block(evidence, lang="en"))
+
+    from trace_causal_anchors import trace_causal_anchors, render_causal_anchors_markdown
+    anchors = trace_causal_anchors(evidence)
+    if anchors:
+        lines.extend(render_causal_anchors_markdown(anchors, lang="en"))
+
     fail_snippets = []
     for vobs in evidence.get("verifier_observations") or []:
         if vobs.get("type") == "verifier_fail_message" and (vobs.get("matched_text") or "").strip():

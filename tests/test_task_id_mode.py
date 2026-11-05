@@ -411,20 +411,24 @@ class TaskIdCliTests(unittest.TestCase):
         out = Path(report_dir)
         self.assertEqual(out.name, "task208")
         self.assertEqual(out.parent.name, REPORT_DIR_NAME)
-        expected = {
+        expected_top = {
             "task208.md",
-            "task208.zh.md",
-            "task208.analysis.json",
-            "task208.evidence.json",
-            "task208.candidate-hypotheses.json",
-            "task208.summary.md",
-            "task208.summary.json",
+            "summary.md",
+            "data",
             ".cfa_manifest.json",
         }
-        self.assertTrue(expected.issubset({p.name for p in out.iterdir()}))
-        card = json.loads((out / "task208.summary.json").read_text(encoding="utf-8"))
+        self.assertTrue(expected_top.issubset({p.name for p in out.iterdir()}))
+        self.assertFalse((out / "task208.zh.md").exists())
+        data_files = {p.name for p in (out / "data").iterdir()}
+        self.assertTrue(
+            {"evidence.json", "analysis.json", "summary.json", "candidate-hypotheses.json"}.issubset(
+                data_files
+            )
+        )
+        card = json.loads((out / "data" / "summary.json").read_text(encoding="utf-8"))
         self.assertEqual(len(card["four_categories"]), 4)
         self.assertEqual(card["task_id"], "task208")
+        self.assertTrue((out.parent / "INDEX.md").is_file())
 
     def test_report_dir_override_outside_inputs_needs_no_exception(self) -> None:
         _make_harbor_tree(self.root)

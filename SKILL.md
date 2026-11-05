@@ -18,24 +18,40 @@ Diagnose why scientific-computing benchmark cases (`jobs/<job_name>` + `tasks/<t
 When invoked with a **task number** — e.g. `/case failure analyzer task208`, `task 220`, or a full trial name `task 208__jaekojA` — do NOT make the user open a file. Run one command and **answer in the conversation with the verdict card it prints to stdout**.
 
 ```bash
+python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
+# or equivalently:
 python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkout> --lang zh
 ```
 
 - `--jobs-root` is optional: it falls back to `$CFA_JOBS_ROOT`, then the current directory, then its parent. Pass it explicitly when the benchmark checkout is elsewhere.
 - The resolver finds the newest trial for that task and the task definition folder (`task.toml`). `--report-dir <path>` overrides the output location; `--no-verdict-stdout` suppresses the printed answer.
-- **Output landing**: reports land in `<bench_root>/failure-report/<task_id>/`, so the bench-level folder shows one subfolder per analyzed task instead of a flat pile of files. Inside the task folder all files are named after the task:
+- **Output landing**: reports land in `<bench_root>/failure-report/<task_id>/`, with an auto-updated global board `<bench_root>/failure-report/INDEX.md`:
 
-  | File | Purpose |
-  |---|---|
-  | `task208.md` / `task208.zh.md` / `task208.en.md` | Full bilingual causal audit (4 mandatory sections) |
-  | `task208.summary.md` | The verdict card (same text as stdout) |
-  | `task208.summary.json` | Machine-readable verdict card |
-  | `task208.evidence.json`, `task208.analysis.json`, `task208.candidate-hypotheses.json` | Structured evidence / attribution |
-  | `task208.skill-prescription*.md` | Only when an agent capability gap was found |
-  | `.cfa_manifest.json` | Publish manifest inside the task folder; cleanup never touches another task's folder |
+  ```text
+  failure-report/
+  ├── INDEX.md                          # 全局看板（大类分布统计、各用例裁决与链接清单，原子加锁更新）
+  ├── task207/
+  │   ├── task207.md                    # 主归因报告（干净 Markdown，单语模式无重复 .zh.md）
+  │   ├── summary.md                    # 根因速览卡片与关键因果链锚点（与 stdout 完全一致）
+  │   └── data/                         # 机器数据下沉，保持顶层整洁
+  │       ├── evidence.json             # 规整化证据、轨迹事件流、验证器日志
+  │       ├── analysis.json             # 结构化归因结论与判定门控
+  │       ├── summary.json              # 结构化速览卡片元数据
+  │       └── candidate-hypotheses.json # 候选假设及证据支持度
+  └── task208/
+      ├── task208.md
+      ├── summary.md
+      └── data/
+          ├── evidence.json
+          ├── analysis.json
+          ├── summary.json
+          └── candidate-hypotheses.json
+  ```
 
-  The task folder sits outside every declared input root, so the read-only boundary check is unaffected; re-running one task leaves the other task folders intact.
-- If the task has several trials, the newest `result.json` wins; the card discloses the selected trial. Use `--task-id 'task 208__<hash>'` to pin a specific one.
+  - **顶层保持 Clean Markdown**：仅保留主报告 `{task_id}.md`、速览卡片 `summary.md`（按需包含 `skill-prescription.md`）；
+  - **消除单语重复**：请求 `zh` 仅输出中文主报告，不再产生字节完全相同的 `.zh.md`；
+  - **多试次轻量归档**：多试次输出到 `trials/<trial_name>/`，仅存储 `summary.md`、`analysis.json` 与 `summary.json`，避免复制 200KB+ 的全量证据；可通过 `--archive-evidence` 按需开启全量保存；
+  - **只读脱敏检视**：使用 `python3 scripts/cfa.py inspect <task_id> [--section verdict|report|anchors|data]` 安全检视结果，默认自动脱敏家目录路径与敏感凭据。
 
 ### Required Answer Shape (answer order is load-bearing)
 
@@ -91,8 +107,10 @@ For harbor jobs (`jobs/<timestamp>/<trial>/` + sibling `task.toml`, `artifacts/`
 
 1. **Run Analysis**: For a task number use the one-line Task-ID command; for an explicit path use path mode:
    ```bash
+   python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout>
+   # or via analyze_case:
    python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkout>
-   python3 scripts/analyze_case.py --job jobs/<job_name> --task tasks/<task_name> --output failure-analysis/<case_id>
+   python3 scripts/analyze_case.py --job jobs/<job_name> --task tasks/<task_name> --output failure-report/<case_id>
    ```
 2. **Answer / Review Reports**: In Task-ID mode, relay the stdout verdict card as the answer (see Required Answer Shape). Otherwise inspect `report.md` (or `job_summary.md` for batch jobs), then referenced evidence files via file pointers.
 3. **Validate & Refine (Optional Model-in-the-Loop)**: When modifying hypotheses or refining attributions, edit `analysis.json` and validate machine-checkable hard rules:

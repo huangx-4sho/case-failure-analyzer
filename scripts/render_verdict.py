@@ -349,6 +349,9 @@ def build_verdict_card(
     trace = analysis.get("decision_trace") or {}
     selected = trace.get("selected") or {}
 
+    from trace_causal_anchors import trace_causal_anchors
+    anchors = trace_causal_anchors(evidence)
+
     return {
         "schema_version": "cfa-verdict-card-v1",
         "task_id": task_id or evidence.get("case_id"),
@@ -367,6 +370,7 @@ def build_verdict_card(
         "failure_reason": _failure_reason(evidence, analysis),
         "four_categories": categories,
         "subcategories": subcategories,
+        "causal_anchors": anchors,
         "named_failed_checks": [
             {"layer": c.get("layer"), "name": c.get("name"), "detail": _text(c.get("detail"), 300)}
             for c in named[:5]
@@ -472,6 +476,10 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
         for c in card["named_failed_checks"]:
             lines.append(f"- `[{c.get('layer') or 'L?'}] {c.get('name')}` — {c.get('detail')}")
         lines.append("")
+
+    if card.get("causal_anchors"):
+        from trace_causal_anchors import render_causal_anchors_markdown
+        lines.extend(render_causal_anchors_markdown(card["causal_anchors"], lang=lang))
 
     if card.get("evidence_refs"):
         refs = ", ".join(f"`{r}`" for r in card["evidence_refs"])
