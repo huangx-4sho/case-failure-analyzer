@@ -1,6 +1,0 @@
-{
-  "description": "Golden Fixture: Docker build network/apt failure where agent never started (false-agent-blame must be 0).",
-  "expected_category": "infra",
-  "expected_code": "INFRA_EXTERNAL_NETWORK",
-  "expected_agent_started": false
-}

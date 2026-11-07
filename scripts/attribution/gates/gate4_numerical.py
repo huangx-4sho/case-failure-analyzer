@@ -8,10 +8,12 @@ Two paths live in this gate, evaluated in this order:
 
 1. Deterministic verifier-recompute divergence (added 2026-09): the verifier
    itself independently recomputed a metric the agent delivered and the values
-   disagree, the agent's own trajectory self-report matches the reported value
-   (so the delivered result — not the verifier's arithmetic — is wrong), and the
-   metric binds to the task contract. This attributes `agent` and never fires on
-   `count_mismatch`, uncorroborated divergences, or unbindable metrics.
+   disagree. Corroboration requires either the agent's own *execution output*
+   recording the same absolute value, or — for delta divergences — the
+   delivered value being read from a structured artifact record named by the
+   verifier. The metric must also bind to the task contract. This attributes
+   `agent` and never fires on `count_mismatch`, uncorroborated divergences, or
+   unbindable metrics.
 2. The original ensemble-statistics path for Lyapunov-sensitive trajectory
    divergence, unchanged below.
 
@@ -43,7 +45,8 @@ _AGENT_BLAME_CHECK_KINDS = ("recompute_divergence", "reference_mismatch")
 _AGENT_RESULT_METRIC_RE = re.compile(
     r"(?:energy|enthalpy|force|stress|virial|pressure|temperature"
     r"|dist(?:ance)?|length|angle|dihedral|volume|density"
-    r"|count|number|n_[a-z0-9_]+)",
+    r"|count|number|n_[a-z0-9_]+"
+    r"|charge|dipole|polariz[a-z]*)",
     re.IGNORECASE,
 )
 
@@ -119,11 +122,20 @@ def _resolve_contract_binding(ctx: AttributionContext, metric: str) -> Optional[
     return None
 
 
+def _causal_anchor_fud_ref(ctx: AttributionContext) -> Optional[str]:
+    """First execution anchor that can carry the first unrecovered deviation."""
+    anchors = ctx.evidence.get("causal_anchors") or {}
+    for key in ("deliverable_generation", "algorithm_or_param_definition"):
+        anchor = anchors.get(key)
+        if isinstance(anchor, dict) and anchor.get("event_id"):
+            return str(anchor["event_id"])
+    return None
+
+
 def _recompute_divergence_agent_attribution(
     ctx: AttributionContext,
     chosen: Dict[str, Any],
     metric: str,
-    binding: str,
 ) -> Dict[str, Any]:
     """Build the 15-key agent attribution for a corroborated recompute divergence."""
     case_id = ctx.case_id
@@ -135,30 +147,59 @@ def _recompute_divergence_agent_attribution(
     recomputed = chosen.get("recomputed_value")
     tolerance = chosen.get("tolerance")
     agent_reported = chosen.get("agent_reported_value")
+    artifact_ref = chosen.get("agent_artifact_ref")
+    is_delta = bool(chosen.get("is_delta_divergence"))
+    artifact_clause = f" (read from `{artifact_ref}`)" if artifact_ref else ""
 
-    corroboration = (
-        f"the agent's own trajectory self-report agrees with the reported value ({agent_reported})"
-    )
-    if _AGENT_RESULT_METRIC_RE.search(metric):
-        code = "AGENT_RESULT_VALIDATION"
-        subtype = "result_validation"
-        summary = (
-            f"Agent delivered a '{metric}' result value that fails the verifier's "
-            f"independent recomputation (reported {reported} != recomputed {recomputed}, "
-            f"tol {tolerance}); {corroboration}, so the delivered result itself is wrong."
+    if is_delta:
+        delivered_clause = (
+            f"Agent delivered '{metric}' = {agent_reported}{artifact_clause}"
+            if agent_reported is not None
+            else f"Agent's delivered '{metric}' value"
         )
+        if _AGENT_RESULT_METRIC_RE.search(metric):
+            code = "AGENT_RESULT_VALIDATION"
+            subtype = "result_validation"
+            summary = (
+                f"{delivered_clause}, which deviates from the verifier's independent "
+                f"reference/replay by {reported} beyond its tolerance bound {tolerance}; "
+                f"the delivered result itself is inaccurate."
+            )
+        else:
+            code = "AGENT_SCIENTIFIC_PARAMETER_SELECTION"
+            subtype = "scientific_method_selection"
+            summary = (
+                f"{delivered_clause}; the verifier's independent reference/replay deviates "
+                f"by {reported} beyond its tolerance bound {tolerance}, so the agent's "
+                f"parameter/scientific-method selection is at fault."
+            )
     else:
-        code = "AGENT_SCIENTIFIC_PARAMETER_SELECTION"
-        subtype = "scientific_method_selection"
-        summary = (
-            f"Agent's selected '{metric}' fails the verifier's independent "
-            f"recomputation/reference comparison (reported {reported} != recomputed "
-            f"{recomputed}, tol {tolerance}); {corroboration}, so the agent's "
-            f"parameter/scientific-method selection is at fault."
+        corroboration = (
+            f"the agent's own execution output records the same value ({agent_reported})"
+            if agent_reported is not None
+            else "the verifier independently recomputed the metric"
         )
+        if _AGENT_RESULT_METRIC_RE.search(metric):
+            code = "AGENT_RESULT_VALIDATION"
+            subtype = "result_validation"
+            summary = (
+                f"Agent delivered a '{metric}' result value that fails the verifier's "
+                f"independent recomputation (reported {reported} != recomputed {recomputed}, "
+                f"tol {tolerance}); {corroboration}, so the delivered result itself is wrong."
+            )
+        else:
+            code = "AGENT_SCIENTIFIC_PARAMETER_SELECTION"
+            subtype = "scientific_method_selection"
+            summary = (
+                f"Agent's selected '{metric}' fails the verifier's independent "
+                f"recomputation/reference comparison (reported {reported} != recomputed "
+                f"{recomputed}, tol {tolerance}); {corroboration}, so the agent's "
+                f"parameter/scientific-method selection is at fault."
+            )
 
     # Required citations: the divergence observation, the verifier fail log (or
-    # the observation's own source ref), and the agent's trajectory self-report.
+    # the observation's own source ref), the execution step that produced the
+    # value, and the structured artifact the delivered value was read from.
     ev_refs: List[str] = []
     if chosen.get("sci_id"):
         ev_refs.append(str(chosen["sci_id"]))
@@ -168,6 +209,8 @@ def _recompute_divergence_agent_attribution(
         ev_refs.append(str(chosen["source_ref"]))
     if chosen.get("agent_ref"):
         ev_refs.append(str(chosen["agent_ref"]))
+    if artifact_ref:
+        ev_refs.append(str(artifact_ref))
     ev_refs = list(dict.fromkeys(ref for ref in ev_refs if ref))
 
     # True-counterfactual measurement: the verifier's check localization is a
@@ -183,6 +226,11 @@ def _recompute_divergence_agent_attribution(
         and str(metric).strip().lower() in single_failure_text
     )
 
+    # A delta divergence binds the delivered value through a structured
+    # artifact but has no absolute verifier value to equality-match, so it earns
+    # one fewer direct evidence point than an exact absolute match.
+    direct_points = 2 if is_delta else 3
+
     prc = attach_confidence_metadata(
         {
             "category": "agent",
@@ -190,7 +238,7 @@ def _recompute_divergence_agent_attribution(
             "code": code,
             "summary": summary,
         },
-        direct_causal_evidence=3,
+        direct_causal_evidence=direct_points,
         cross_source_corroboration=1,
         counterfactual_supported=counterfactual_supported,
         single_keyword_only=False,
@@ -210,11 +258,16 @@ def _recompute_divergence_agent_attribution(
             "evidence_against": [],
             "missing_evidence": [],
             "counterfactual_test": (
-                f"Recompute '{metric}' independently and reconcile the agent's "
-                f"delivered value with the verifier's recomputed value."
+                f"Replace the delivered '{metric}' value with the verifier's independent "
+                f"replay value and rerun the failing check."
+                if is_delta
+                else (
+                    f"Recompute '{metric}' independently and reconcile the agent's "
+                    f"delivered value with the verifier's recomputed value."
+                )
             ),
         },
-        direct_causal_evidence=3,
+        direct_causal_evidence=direct_points,
         cross_source_corroboration=1,
         counterfactual_supported=counterfactual_supported,
         single_keyword_only=False,
@@ -242,6 +295,52 @@ def _recompute_divergence_agent_attribution(
         contradicting_evidence=1,
     )
 
+    if is_delta:
+        fud_ref = _causal_anchor_fud_ref(ctx) or chosen.get("agent_ref") or ev_refs[0]
+        fud_summary = (
+            f"Agent delivered '{metric}' = {agent_reported}{artifact_clause}; the verifier's "
+            f"independent replay diverged by {reported} beyond its tolerance bound {tolerance}."
+            if agent_reported is not None
+            else (
+                f"Verifier's independent replay of '{metric}' diverged by {reported} beyond "
+                f"its tolerance bound {tolerance}; the delivered value could not be bound to "
+                f"a structured artifact."
+            )
+        )
+        h2_exclusion_reason = (
+            "The failing check names the record and metric with a declared numeric bound, "
+            f"and the agent's delivered value is independently located at `{artifact_ref or chosen.get('agent_ref')}`. "
+            "This is positive evidence of a delivered-value error, not of a verifier "
+            "recomputation defect."
+        )
+        action = (
+            f"Re-derive '{metric}' independently and reconcile the delivered value "
+            f"{agent_reported if agent_reported is not None else ''} with the verifier's "
+            f"replay before writing results{artifact_clause}."
+        )
+    else:
+        fud_ref = chosen.get("agent_ref") or ev_refs[0]
+        fud_summary = (
+            f"Agent's execution output recorded '{metric}' = {agent_reported}, which the "
+            f"verifier's independent recomputation contradicted (recomputed {recomputed}, "
+            f"tol {tolerance})."
+            if agent_reported is not None
+            else (
+                f"Verifier recomputation of '{metric}' diverged from the delivered value "
+                f"(reported {reported} != recomputed {recomputed}, tol {tolerance})."
+            )
+        )
+        h2_exclusion_reason = (
+            "The agent's own execution output records the same value as the verifier-reported "
+            "value, so the delivered result — not the verifier's recomputation — is "
+            "inconsistent with the reference."
+        )
+        action = (
+            f"Re-derive and sanity-check the reported '{metric}' against an "
+            f"independent calculation before writing results; reconcile it with "
+            f"the verifier's recomputed value."
+        )
+
     return {
         "schema_version": "failure-analysis-v1",
         "case_id": case_id,
@@ -251,12 +350,9 @@ def _recompute_divergence_agent_attribution(
         "detection_stage": "verifier_execution" if ctx.verifier_started else "agent_execution",
         "first_unrecovered_deviation": {
             "status": "identified",
-            "event_ref": ev_refs[0],
+            "event_ref": fud_ref,
             "timestamp": runtime.get("finished_at"),
-            "summary": (
-                f"Verifier recomputation of '{metric}' diverged from the agent's "
-                f"delivered value while the agent self-reported the same value."
-            ),
+            "summary": fud_summary,
         },
         "failure_manifestation": {
             "type": "verifier_recompute_divergence",
@@ -270,21 +366,13 @@ def _recompute_divergence_agent_attribution(
             {
                 "hypothesis_id": "H2",
                 "category": "verifier",
-                "reason": (
-                    "The agent's trajectory self-report matches the reported value, so "
-                    "the delivered result - not the verifier's recomputation - is "
-                    "inconsistent with the reference."
-                ),
+                "reason": h2_exclusion_reason,
             }
         ],
         "recommended_actions": [
             {
                 "owner": "Agent",
-                "action": (
-                    f"Re-derive and sanity-check the reported '{metric}' against an "
-                    f"independent calculation before writing results; reconcile it with "
-                    f"the verifier's recomputed value."
-                ),
+                "action": action,
             }
         ],
         "skill_prescription": None,
@@ -321,7 +409,13 @@ def gate4_numerical_divergence(ctx: AttributionContext) -> Optional[Dict[str, An
     divergences = ctx.recompute_divergences
     has_recompute_divergence = ctx.has_recompute_divergence
     corroborated = [
-        o for o in divergences if o.get("discriminating") and o.get("agent_reported_matches")
+        o
+        for o in divergences
+        if o.get("discriminating")
+        and (
+            o.get("agent_reported_matches")
+            or (o.get("is_delta_divergence") and o.get("agent_reported_value") is not None)
+        )
     ]
     agent_eligible = [o for o in corroborated if o.get("check_kind") in _AGENT_BLAME_CHECK_KINDS]
     divergence_checks: Dict[str, Any] = {
@@ -340,9 +434,14 @@ def gate4_numerical_divergence(ctx: AttributionContext) -> Optional[Dict[str, An
                 gate_id="gate4_numerical_divergence",
                 matched=True,
                 reason=(
-                    "verifier recomputed the agent's delivered metric and it diverges "
-                    "beyond tolerance while the agent's trajectory self-report matches "
-                    "the reported value"
+                    "verifier's independent replay/calculation diverges beyond tolerance "
+                    "from the agent's delivered value located in a structured deliverable"
+                    if chosen.get("is_delta_divergence")
+                    else (
+                        "verifier recomputed the agent's delivered metric and it diverges "
+                        "beyond tolerance while the agent's execution output records the "
+                        "same value"
+                    )
                 ),
                 checks={
                     "has_recompute_divergence": True,
@@ -351,9 +450,10 @@ def gate4_numerical_divergence(ctx: AttributionContext) -> Optional[Dict[str, An
                     "contract_binding": binding,
                     "check_kind": chosen.get("check_kind"),
                     "has_structured_numerical": has_structured_numerical,
+                    "agent_artifact_ref": chosen.get("agent_artifact_ref"),
                 },
             )
-            return _recompute_divergence_agent_attribution(ctx, chosen, metric, binding)
+            return _recompute_divergence_agent_attribution(ctx, chosen, metric)
         # The metric cannot be bound to the task contract: conservatively abstain
         # and mark the binding failure on the fall-through trace entry.
         divergence_checks["contract_binding"] = "unbound"

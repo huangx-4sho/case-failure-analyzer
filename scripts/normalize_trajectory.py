@@ -112,9 +112,19 @@ _DEP_SEARCH_RE = re.compile(
     r"(?:\bwhich\s+\S|\bcommand\s+-v\b|\blocate\s+\S|\bfind\s+/(?:opt|usr|workspace/assets)\b"
     r"|\bls\s+/opt\b|\bls\s+/workspace/assets\b|\bpip\s+(?:list|show)\b)"
 )
-_SELF_CHECK_RE = re.compile(
-    r"(?:verify|check|validate|sanity|selfcheck|self_check)[\w.-]*\.(?:py|sh)\b"
+#: Canonical agent-authored self-check script names. Deliberately excludes the
+#: benchmark's own `tests/verify.py` (a bare `verify.py` / `check.py` is not an
+#: agent self-check). Shared with `trace_causal_anchors.py` so the behavioral
+#: signal and the causal anchor never disagree about what counts as a self-check.
+SELF_CHECK_SCRIPT_RE = re.compile(
+    r"(?:verify_outputs|check_outputs|validate_outputs|verify_deliverables|"
+    r"check_results|run_checks|self[_-]?check|selfcheck|sanity_check)"
+    r"[a-z0-9_.-]*\.(?:py|sh)\b",
+    re.IGNORECASE,
 )
+#: A self-check must actually be *executed*, not merely mentioned in a `cat`
+#: / `Read` command.
+SELF_CHECK_RUN_RE = re.compile(r"(?:\bpython3?\b|\b(?:ba)?sh\b|\bpytest\b|\bnode\b|\./)")
 
 
 def strip_fd_redirects(cmd: str) -> str:
@@ -151,12 +161,17 @@ def summarize_code_payload(args: Dict[str, Any], limit: int = 600) -> Optional[s
         new = "\n".join(str(e.get("new_string", "")) for e in args["edits"] if isinstance(e, dict))
     if not isinstance(new, str) or not new.strip():
         return None
+    code_text = new
+    # Skip leading module docstring to surface real parameter and code statements
+    m_doc = re.match(r"^\s*(?:#.*?\n)*\s*(?:\"\"\"[\s\S]*?\"\"\"|'''[\s\S]*?''')\s*\n?", code_text)
+    if m_doc and len(code_text) > m_doc.end():
+        code_text = code_text[m_doc.end() :]
     keep = re.compile(
         r"(?:=\s*[-+0-9.eE]+|tol|cutoff|range|eta|alpha|spin|mult|charge|basis|conv|max_|"
         r"\bdef\s|\bclass\s|import\s|open\(|json\.dump|to_csv|argparse)",
         re.IGNORECASE,
     )
-    lines = [ln.rstrip() for ln in new.splitlines() if ln.strip()]
+    lines = [ln.rstrip() for ln in code_text.splitlines() if ln.strip()]
     picked = [ln for ln in lines if keep.search(ln)] or lines
     out = "\n".join(picked[:12])
     return out[:limit]
@@ -514,7 +529,11 @@ def normalize_trajectory(
                         }
                     )
 
-                if _SELF_CHECK_RE.search(norm_cmd) and not has_error:
+                if (
+                    SELF_CHECK_SCRIPT_RE.search(norm_cmd)
+                    and SELF_CHECK_RUN_RE.search(norm_cmd)
+                    and not has_error
+                ):
                     signals.append(
                         {
                             "signal_id": f"sig:self_check:{step_id}:{t_idx}",

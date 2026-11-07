@@ -36,6 +36,7 @@ flowchart TD
     C1 --> C14["工作流规划 (planning)"]
     C1 --> C15["代码与工具调用 (tool_use)"]
     C1 --> C16["结果校验归一化 (result_validation)"]
+    C1 --> C17["自检覆盖不足 (self_check_gap)"]
 
     C2 --> C21["题干约定缺失/歧义 (ambiguous_contract)"]
     C2 --> C22["初始资产缺失/损坏 (missing/corrupt_asset)"]
@@ -67,6 +68,7 @@ flowchart TD
 | `AGENT_PLANNING` | `planning` | 工作流编排与上下文状态保持失误 | 多阶段计算次序错乱、未冻结前序构型资产（误触发弛豫）、未正确关联前序输出目录（`outdir`/`prefix`） |
 | `AGENT_TOOL_USE` | `tool_use` | 工具调用与脚本生成缺陷 | 自动化生成输入文件或解析脚本时出现语法错误、遗漏关键晶胞参数（如 `celldm(1)`）或写错文件 |
 | `AGENT_RESULT_VALIDATION` | `result_validation` | 结果后处理与数据核验失误 | 量纲单位转换除错、每原子归一化因子除错、衍生量未核验物理自洽性即写入 `results.json` |
+| `AGENT_SELF_CHECK_GAP` | `self_check_gap` | 自检覆盖不足 | 智能体执行自检脚本并输出通过，但自检准则未覆盖验证器具名判定项或独立复算（如 `verify_outputs.py` 只校验内部一致性，未复算 `spin_selection` / `energy_parameters`） |
 | `AGENT_PATH_OR_DEPENDENCY_DISCOVERY` | `path_or_dependency_discovery` | 环境依赖与资产寻址失败 | 未能在容器已知路径中定位已预装的二进制、赝势文件、力场参数文件或 Checkpoint |
 | `AGENT_ERROR_DIAGNOSIS` | `error_diagnosis` | 物理报错诊断失误 | 仿真软件已给出明确报错诊断，智能体误判物理诱因并进行无效修改 |
 | `AGENT_RECOVERY` | `recovery` | 自愈恢复策略失效 | 面对错误盲目重复执行完全相同的失败命令，或陷入重试死循环 |

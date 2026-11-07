@@ -165,7 +165,11 @@ def _normalize_check(
     source: str,
     name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    ok = _as_bool(_first_value(item, ("ok", "passed", "status", "result", "state")))
+    ok = _as_bool(
+        _first_value(
+            item, ("ok", "passed", "status", "result", "state", "numeric_answer", "verdict")
+        )
+    )
     if name is None:
         name = str(_first_value(item, NAME_KEYS) or "")
     detail = _text(_first_value(item, DETAIL_KEYS))
@@ -182,6 +186,7 @@ def _normalize_check(
 
 def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str, Any]]) -> None:
     """Flatten one JSON object's check-like structures into `checks`."""
+    initial_len = len(checks)
     layers = data.get("layers")
     if isinstance(layers, dict):
         for layer, items in layers.items():
@@ -237,6 +242,12 @@ def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str,
                                 "source": rel,
                             }
                         )
+    elif isinstance(flat, list):
+        for item in flat:
+            if isinstance(item, dict):
+                rec = _normalize_check(item, layer=str(item.get("level") or "checks"), source=rel)
+                if rec:
+                    checks.append(rec)
 
     # Some graders expose a bare `failed_checks` / `errors` list of names.
     for key in ("failed_checks", "failures", "errors"):
@@ -261,6 +272,29 @@ def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str,
                     rec["ok"] = False
                 if rec:
                     checks.append(rec)
+
+    # Flat single-result reports like native.json: {"overall": "FAIL", "detail": "atom_to_site uses unknown reference IDs"}
+    if len(checks) == initial_len:
+        status_val = _first_value(
+            data,
+            ("overall", "status", "result", "scientific_status", "state", "verdict"),
+        )
+        if _status_verdict(status_val) == "fail":
+            detail = _text(_first_value(data, ("detail", "reason", "message", "error")) or "")
+            if detail:
+                name_match = re.match(r"^([A-Za-z0-9_.-]+)", detail)
+                check_name = name_match.group(1) if name_match else "diagnostic_check"
+                layer = rel.split(".")[0].split("/")[-1] or "diagnostic"
+                checks.append(
+                    {
+                        "layer": layer,
+                        "name": check_name,
+                        "ok": False,
+                        "detail": detail,
+                        "core": True,
+                        "source": rel,
+                    }
+                )
 
 
 def _walk_checks(data: Any, rel: str, checks: List[Dict[str, Any]], depth: int = 0) -> None:

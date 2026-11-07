@@ -95,35 +95,43 @@ Multi-trial jobs additionally emit `job_summary.md` (bilingual), `job_summary.zh
 
 以任务引用调用本技能（例如 `/case failure analyzer task208`）时会启用任务号模式。`scripts/task_ref.py` 会把该引用解析为最新匹配的 trial、其 job 目录，以及包含 `task.toml` 的任务定义目录。`--jobs-root`（或 `$CFA_JOBS_ROOT`，随后依次为当前目录及其父目录）限定搜索范围；数字匹配为精确匹配，因此 `task208` 绝不会解析成 `task2080`。
 
-**输出落点**：报告统一落到 `<bench_root>/failure-report/<task_id>/`。`bench_root` 由解析出的 trial 路径推导（`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`；扁平 `<bench>/jobs/...` → `<bench>`），bench 级目录下只保留按任务划分的子目录：
+**输出落点**：报告统一落到 `<bench_root>/failure-report/<task_id>/`。`bench_root` 由解析出的 trial 路径推导（`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`；扁平 `<bench>/jobs/...` → `<bench>`）。bench 级目录下包含一个全局看板，以及每个已分析任务一个子目录：
 
 ```text
 <bench_root>/failure-report/
+├── INDEX.md                          # 全局看板：大类分布统计 + 各任务裁决链接
 ├── task207/
-│   ├── task207.md / task207.zh.md / task207.en.md
-│   ├── task207.summary.md / task207.summary.json
-│   ├── task207.evidence.json / task207.analysis.json / task207.candidate-hypotheses.json
+│   ├── task207.md                    # 主归因报告（干净 Markdown）
+│   ├── task207.en.md                 # 仅 --lang bilingual 时生成的英文版
+│   ├── summary.md                    # 根因速览卡片（与 stdout 完全一致）
+│   ├── skill-prescription.md         # 仅在发现智能体能力缺口时生成
+│   ├── data/
+│   │   ├── evidence.json
+│   │   ├── analysis.json
+│   │   ├── summary.json
+│   │   └── candidate-hypotheses.json
+│   ├── trials/<trial_name>/          # 多试次轻量归档（仅保留结论）
 │   └── .cfa_manifest.json
 └── task208/
     └── ...
 ```
 
-该任务目录位于所有已声明输入根（job 目录、任务定义、trial 目录）之外，`scripts/staging.py` 的隔离检查仍会拒绝与输入相同、位于输入内或作为输入父目录的输出。每个任务通过自己文件夹内的 `.cfa_manifest.json` 发布，因此重跑某一任务不会触碰其他任务的目录或用户自建文件。`--report-dir` 覆盖精确的落点文件夹，`--no-verdict-stdout` 则抑制打印出来的回答。
+该任务目录位于所有已声明输入根（job 目录、任务定义、trial 目录）之外，`scripts/staging.py` 的隔离检查仍会拒绝与输入相同、位于输入内或作为输入父目录的输出。每个任务通过自己文件夹内的 `.cfa_manifest.json` 发布，因此重跑某一任务不会触碰其他任务的目录或用户自建文件。`--report-dir` 覆盖精确的落点文件夹，`--no-verdict-stdout` 则抑制打印出来的回答。`cfa index` 以原子方式重建 `INDEX.md`。
 
-所有产物都以规范化的任务标签为前缀：
+机器可读 JSON 全部下沉到 `data/`，顶层只保留干净的 Markdown。分层模式不会生成冗余的 `.zh.md` 副本（请求 `zh` 时只产出 `task207.md`）；`cfa inspect` 读取 `data/summary.json` 与 `data/evidence.json`。
 
 | 文件 | 内容 |
 |---|---|
-| `task208.md`、`task208.zh.md`、`task208.en.md` | 完整的中英双语因果审计报告，含 4 个强制 `## <N>.` 小节（结构不变） |
-| `task208.summary.md` | 结论卡，与 stdout 逐字节一致 |
-| `task208.summary.json` | 机器可读的结论卡（`cfa-verdict-card-v1`） |
-| `task208.evidence.json`、`task208.analysis.json`、`task208.candidate-hypotheses.json` | 结构化证据 / 归因 |
-| `task208.skill-prescription*.md` | 仅在发现智能体能力缺口时生成 |
+| `task208.md`、`task208.en.md` | 完整因果审计报告，含 4 个强制 `## <N>.` 小节（双语模式额外产出英文版） |
+| `summary.md` | 结论卡，与 stdout 逐字节一致 |
+| `data/summary.json` | 机器可读的结论卡（`cfa-verdict-card-v1`） |
+| `data/evidence.json`、`data/analysis.json`、`data/candidate-hypotheses.json` | 结构化证据 / 归因 / 候选假设 |
+| `skill-prescription.md` | 仅在发现智能体能力缺口时生成 |
 | `.cfa_manifest.json` | 任务目录内的发布清单，将清理范围限定在本任务文件内 |
 
-路径模式（`--job` + `--output`）保留旧有的无前缀文件名。
+路径模式（`--job` + `--output`）保留旧有的无前缀文件名（`report.md`、`evidence.json` 等）。
 
-### 结论卡 (`task208.summary.md` / stdout)
+### 结论卡 (`summary.md` / stdout)
 
 该卡**就是**直接回答；CLI 将其打印到 stdout，随后追加 `REPORT_DIR: <path>`，因此调用方无需打开任何文件即可作答。其顺序为刚性约束（承载结论语义）：
 

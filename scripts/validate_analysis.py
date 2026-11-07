@@ -108,6 +108,8 @@ def collect_valid_evidence_ids(evidence: Dict[str, Any]) -> Set[str]:
             ids.add(str(s["source_ref"]))
         if s.get("agent_ref"):
             ids.add(str(s["agent_ref"]))
+        if s.get("agent_artifact_ref"):
+            ids.add(str(s["agent_artifact_ref"]))
     return ids
 
 
@@ -121,6 +123,9 @@ def collect_positive_agent_evidence_ids(evidence: Dict[str, Any]) -> Set[str]:
     for c in evidence.get("contract_observations") or []:
         if c.get("alignment") == "agent_mismatch" and c.get("contract_id"):
             pos_ids.add(c["contract_id"])
+    for anchor in (evidence.get("causal_anchors") or {}).values():
+        if isinstance(anchor, dict) and anchor.get("event_id"):
+            pos_ids.add(str(anchor["event_id"]))
     for s in evidence.get("scientific_observations") or []:
         # Scientific observation is only positive agent evidence if unrecovered in agent trajectory
         if not s.get("recovered", False) and str(s.get("source_ref", "")).startswith("trajectory:"):
@@ -128,16 +133,27 @@ def collect_positive_agent_evidence_ids(evidence: Dict[str, Any]) -> Set[str]:
                 pos_ids.add(s["sci_id"])
             if s.get("source_ref"):
                 pos_ids.add(str(s["source_ref"]))
-        # A verifier recompute divergence corroborated against the agent's own reported
-        # value is positive agent evidence even though the observation originates in the
-        # verifier log: the observation binds the divergence to the agent's delivered metric.
-        if not s.get("recovered", False) and s.get("agent_reported_matches"):
+        # A verifier recompute divergence corroborated against the agent's own
+        # delivered value is positive agent evidence even though the observation
+        # originates in the verifier log: the observation binds the divergence to
+        # the agent's delivered metric. Absolute divergences corroborate by value
+        # equality; delta divergences corroborate by a structured artifact value.
+        artifact_bound_delta = (
+            s.get("is_delta_divergence")
+            and s.get("agent_reported_value") is not None
+            and bool(s.get("agent_artifact_ref") or s.get("agent_ref"))
+        )
+        if not s.get("recovered", False) and (
+            s.get("agent_reported_matches") or artifact_bound_delta
+        ):
             if s.get("sci_id"):
                 pos_ids.add(s["sci_id"])
             if s.get("source_ref"):
                 pos_ids.add(str(s["source_ref"]))
             if s.get("agent_ref"):
                 pos_ids.add(str(s["agent_ref"]))
+            if s.get("agent_artifact_ref"):
+                pos_ids.add(str(s["agent_artifact_ref"]))
     return pos_ids
 
 
@@ -313,11 +329,12 @@ def validate_all(
                 if not isinstance(hyp, dict):
                     continue
                 if hyp.get("category") == cat:
-                    matched_primary = True
-                    if cat != "unknown" and not (hyp.get("evidence_for") or []):
-                        errors.append(
-                            f"Primary hypothesis {hyp.get('hypothesis_id')!r} ({cat}) must list non-empty `evidence_for`."
-                        )
+                    if not matched_primary:
+                        matched_primary = True
+                        if cat != "unknown" and not (hyp.get("evidence_for") or []):
+                            errors.append(
+                                f"Primary hypothesis {hyp.get('hypothesis_id')!r} ({cat}) must list non-empty `evidence_for`."
+                            )
                 for h_ref in (hyp.get("evidence_for") or []) + (hyp.get("evidence_against") or []):
                     if h_ref not in valid_ids:
                         errors.append(
@@ -415,6 +432,39 @@ def validate_all(
     # 9. Optional report.md section & non-empty body validation
     if report_text is not None:
         errors.extend(validate_report_sections(report_text, verdict=analysis.get("verdict")))
+
+    # 10. Readable prose: an analysis sentence must not ship a raw verifier
+    # JSON envelope (Harbor `verify.log` often dumps the whole report object).
+    fud = analysis.get("first_unrecovered_deviation") or {}
+    for field, value in (
+        ("first_unrecovered_deviation.summary", fud.get("summary")),
+        ("primary_root_cause.summary", prc.get("summary")),
+    ):
+        if (
+            isinstance(value, str)
+            and value.lstrip().startswith("{")
+            and re.search(r'"(?:schema_version|message|status|scientific_status)"\s*:', value)
+        ):
+            errors.append(
+                f"RAW_VERIFIER_PAYLOAD violation: {field} begins with a raw JSON envelope; "
+                "use the extracted human-readable message."
+            )
+
+    # 11. `AGENT_SELF_CHECK_GAP` must be backed by an actual self-check
+    # execution (a trajectory signal or a `self_check` causal anchor).
+    if prc.get("code") == "AGENT_SELF_CHECK_GAP":
+        anchors = evidence.get("causal_anchors") or {}
+        self_check_anchor = anchors.get("self_check") if isinstance(anchors, dict) else None
+        has_signal = any(
+            isinstance(sig, dict) and sig.get("signal_type") == "self_verification_executed"
+            for sig in (evidence.get("behavioral_signals") or [])
+        )
+        has_anchor = isinstance(self_check_anchor, dict) and bool(self_check_anchor.get("event_id"))
+        if not (has_signal or has_anchor):
+            errors.append(
+                "SELF_CHECK_GAP_EVIDENCE violation: AGENT_SELF_CHECK_GAP requires a "
+                "`self_verification_executed` signal or a `causal_anchors.self_check` execution anchor."
+            )
 
     return len(errors) == 0, errors
 

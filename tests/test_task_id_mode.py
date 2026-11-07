@@ -328,6 +328,29 @@ class VerdictCardTests(unittest.TestCase):
         card = build_verdict_card({"runtime": {}}, analysis)
         self.assertNotIn("schema_version", card["primary_root_cause"]["summary"])
 
+    def test_stored_causal_anchors_are_used_verbatim(self) -> None:
+        stored = {
+            "self_check": {
+                "event_id": "trajectory:step:70:tool:0",
+                "uncovered_failed_checks": ["spin_selection"],
+            }
+        }
+        evidence = {
+            "runtime": {"agent_started": True, "verifier_started": True},
+            "timeline": [],
+            "causal_anchors": stored,
+        }
+        card = build_verdict_card(evidence, self._analysis(), task_id="task208")
+        self.assertEqual(card["causal_anchors"], stored)
+
+    def test_documented_task_id_layout_matches_implementation(self) -> None:
+        skill = (ROOT_DIR / "SKILL.md").read_text(encoding="utf-8")
+        schema = (ROOT_DIR / "references" / "report-schema.md").read_text(encoding="utf-8")
+        self.assertIn("data/", skill)
+        self.assertIn("data/evidence.json", schema)
+        self.assertNotIn("task208.evidence.json", schema)
+        self.assertNotIn("task<id>.summary.md", skill)
+
 
 class IsolationExceptionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -421,9 +444,12 @@ class TaskIdCliTests(unittest.TestCase):
         self.assertFalse((out / "task208.zh.md").exists())
         data_files = {p.name for p in (out / "data").iterdir()}
         self.assertTrue(
-            {"evidence.json", "analysis.json", "summary.json", "candidate-hypotheses.json"}.issubset(
-                data_files
-            )
+            {
+                "evidence.json",
+                "analysis.json",
+                "summary.json",
+                "candidate-hypotheses.json",
+            }.issubset(data_files)
         )
         card = json.loads((out / "data" / "summary.json").read_text(encoding="utf-8"))
         self.assertEqual(len(card["four_categories"]), 4)

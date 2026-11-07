@@ -46,6 +46,7 @@ from render_report import (
 from render_verdict import build_verdict_card, render_verdict_card_markdown
 from runtime_state import resolve_trajectory_path
 from task_ref import TaskRef, TaskRefError, REPORT_DIR_NAME, resolve_task_ref
+from trace_causal_anchors import trace_causal_anchors
 from staging import (
     acquire_publish_lock,
     cleanup_orphaned_cfa_tmp_files,
@@ -273,6 +274,96 @@ def _reconcile_delivered_deliverables(
     return reconciled
 
 
+def _verifier_fault_message(report: Dict[str, Any]) -> str:
+    """Human-readable evaluator fault text from a normalized verifier report."""
+    for message in report.get("messages") or []:
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:500]
+    summary = str(report.get("summary") or "").strip()
+    if summary:
+        return summary[:500]
+    return str(report.get("status") or "ERROR")
+
+
+def _is_unscored_evaluator_fault(report: Dict[str, Any]) -> bool:
+    """True for a verifier that aborted unscored with an evaluator-side fault.
+
+    Harbor graders write `status: ERROR` / `ENV_INVALID` with `reward: null`
+    and deliberately emit no `reward.txt`. `audit_contract.py` only detects
+    crashes from a plain `verify.log`; layered `verify.json` reports need this
+    structured path so Gate 3 can attribute a verifier defect instead of
+    falling through to `unknown`.
+    """
+    status = str(report.get("status") or "").strip().upper()
+    scientific_status = str(report.get("scientific_status") or "").strip().upper()
+    if (
+        status not in {"ERROR", "ENV_INVALID", "INCONCLUSIVE"}
+        and scientific_status != "INCONCLUSIVE"
+    ):
+        return False
+    if report.get("scorable") is True or report.get("eligible_for_success_ranking") is True:
+        return False
+    if report.get("reward") is not None:
+        return False
+    origin = report.get("failure_origin")
+    if isinstance(origin, dict):
+        code = str(origin.get("reason_code") or "").lower()
+    elif isinstance(origin, str):
+        code = origin.lower()
+    else:
+        code = ""
+    if "evaluator" in code or "infrastructure" in code:
+        return True
+    return status in {"ERROR", "ENV_INVALID"}
+
+
+def _attach_unscored_verifier_fault(
+    report: Optional[Dict[str, Any]],
+    verifier_observations: List[Dict[str, Any]],
+) -> None:
+    """Bind an unscored structured verifier error to a crash observation."""
+    if not isinstance(report, dict) or not _is_unscored_evaluator_fault(report):
+        return
+    message = _verifier_fault_message(report)
+    fail_log = next(
+        (obs for obs in verifier_observations if obs.get("obs_id") == "ver:fail_log"), None
+    )
+    if fail_log is None:
+        verifier_observations.append(
+            {
+                "obs_id": "ver:fail_log",
+                "type": "verifier_fail_message",
+                "summary": message[:240],
+                "matched_text": message[:500],
+                "source_file": "verifier/verify.json",
+                "source_pointer": "status",
+            }
+        )
+    else:
+        # `test-stdout.txt` often starts with library warnings; the structured
+        # report carries the actual evaluator exception.
+        fail_log["summary"] = message[:240]
+        fail_log["matched_text"] = message[:500]
+    if any(obs.get("obs_id") == "ver:internal_crash" for obs in verifier_observations):
+        return
+    verifier_observations.append(
+        {
+            "obs_id": "ver:internal_crash",
+            "type": "verifier_internal_crash",
+            "subtype": "recompute_defect",
+            "code": "VERIFIER_RECOMPUTE_DEFECT",
+            "summary": f"Verifier crashed internally: {message[:200]}",
+            "matched_text": message[:400],
+            "hazard_detected": True,
+            "failure_binding": "direct",
+            "binding_evidence": ["ver:fail_log"],
+            "triggered": True,
+            "source_file": "verifier/verify.json",
+            "source_pointer": "status",
+        }
+    )
+
+
 def collect_case_evidence(
     trial_inv: Dict[str, Any],
     job_dir: Path,
@@ -307,6 +398,8 @@ def collect_case_evidence(
     )
 
     verifier_report = build_verifier_report(trial_dir)
+    if verifier_report is not None:
+        _attach_unscored_verifier_fault(verifier_report, contract_res["verifier_observations"])
 
     sci_res = extract_scientific_errors(
         trial_dir=trial_dir,
@@ -376,6 +469,9 @@ def collect_case_evidence(
             )
     if verifier_check_stats is not None:
         evidence["verifier_check_stats"] = verifier_check_stats
+    anchors = trace_causal_anchors(evidence)
+    if anchors:
+        evidence["causal_anchors"] = anchors
     cand_hyps = generate_candidate_hypotheses(evidence)
     return evidence, norm_traj, contract_res, cand_hyps
 
@@ -513,6 +609,27 @@ def build_causal_attribution(
         if isinstance(trace, dict):
             trace["reconciled_competing_hypotheses"] = True
         result = _enrich_with_verifier_report(result, evidence)
+        prc = result.get("primary_root_cause") or {}
+        fud = result.get("first_unrecovered_deviation")
+        if (
+            isinstance(fud, dict)
+            and fud.get("status") != "identified"
+            and prc.get("category") == "agent"
+        ):
+            anchors = evidence.get("causal_anchors") or {}
+            algo_anchor = anchors.get("algorithm_or_param_definition")
+            deliv_anchor = anchors.get("deliverable_generation")
+            chosen_anchor = algo_anchor or deliv_anchor
+            if chosen_anchor:
+                fud["status"] = "identified"
+                fud["event_ref"] = chosen_anchor.get("event_id")
+                fud["summary"] = (
+                    f"Agent formulated computational parameters/logic at `{chosen_anchor.get('step_id')}` "
+                    f"({chosen_anchor.get('target_path', 'code')}) leading to subsequent verification failure."
+                    if chosen_anchor is algo_anchor
+                    else f"Agent executed deliverable generation at `{chosen_anchor.get('step_id')}` "
+                    f"resulting in verification failure."
+                )
     return result
 
 
@@ -595,9 +712,11 @@ def _artifact_name(logical: str, basename: Optional[str]) -> str:
     """
     Map a canonical artifact name to its on-disk name.
 
-    With `basename=None` (legacy mode) names are unchanged. In task-ID mode
-    `basename="task208"` produces `task208.md`, `task208.zh.md`,
-    `task208.analysis.json`, `task208.summary.md`, etc.
+    With `basename=None` (flat path mode) names are unchanged. A non-None
+    `basename` yields the legacy prefixed names (`task208.md`,
+    `task208.analysis.json`, ...). Hierarchical task-ID mode no longer writes
+    those prefixed files — it uses `data/*.json` plus clean top-level Markdown —
+    but the mapping is retained for cleanup and manifest compatibility.
     """
     if not basename:
         return logical
@@ -652,7 +771,11 @@ def write_outputs(
                 "candidate_hypotheses": analysis.get("competing_hypotheses") or [],
             }
         if effective_cand_hyps is not None:
-            cand_file = "data/candidate-hypotheses.json" if is_hierarchical else name("candidate-hypotheses.json")
+            cand_file = (
+                "data/candidate-hypotheses.json"
+                if is_hierarchical
+                else name("candidate-hypotheses.json")
+            )
             planned_files.add(cand_file)
         if analysis is not None:
             an_file = "data/analysis.json" if is_hierarchical else name("analysis.json")
@@ -672,10 +795,16 @@ def write_outputs(
             if not is_hierarchical:
                 planned_files.add(name("report.zh.md"))
         if skill_md and sp:
-            main_skill = "skill-prescription.md" if is_hierarchical else name("skill-prescription.md")
+            main_skill = (
+                "skill-prescription.md" if is_hierarchical else name("skill-prescription.md")
+            )
             planned_files.add(main_skill)
             if lang == "bilingual":
-                en_skill = "skill-prescription.en.md" if is_hierarchical else name("skill-prescription.en.md")
+                en_skill = (
+                    "skill-prescription.en.md"
+                    if is_hierarchical
+                    else name("skill-prescription.en.md")
+                )
                 planned_files.add(en_skill)
                 if not is_hierarchical:
                     planned_files.add(name("skill-prescription.zh.md"))
@@ -685,47 +814,95 @@ def write_outputs(
 
     # 2. Lifecycle cleanup: purge stale artifacts from prior runs
     known_names = {name(logical) for logical in KNOWN_TRIAL_ARTIFACTS}
-    known_names.update({
-        name("summary.json"), name("summary.md"),
-        "summary.md", "summary.json",
-        "data/evidence.json", "data/analysis.json", "data/summary.json", "data/candidate-hypotheses.json",
-    })
+    known_names.update(
+        {
+            name("summary.json"),
+            name("summary.md"),
+            "summary.md",
+            "summary.json",
+            "data/evidence.json",
+            "data/analysis.json",
+            "data/summary.json",
+            "data/candidate-hypotheses.json",
+        }
+    )
     if is_hierarchical:
-        known_names.update({
-            f"{basename}.zh.md", f"{basename}.en.md", f"{basename}.evidence.json",
-            f"{basename}.analysis.json", f"{basename}.summary.json", f"{basename}.summary.md",
-            f"{basename}.candidate-hypotheses.json",
-        })
+        known_names.update(
+            {
+                f"{basename}.zh.md",
+                f"{basename}.en.md",
+                f"{basename}.evidence.json",
+                f"{basename}.analysis.json",
+                f"{basename}.summary.json",
+                f"{basename}.summary.md",
+                f"{basename}.candidate-hypotheses.json",
+            }
+        )
     for stale_file in known_names - planned_files:
         stale_path = out_dir / stale_file
         if stale_path.is_file():
             stale_path.unlink()
 
     # 3. Write planned artifacts
-    ev_target = (out_dir / "data" / "evidence.json") if is_hierarchical else (out_dir / name("evidence.json"))
-    if ("data/evidence.json" in planned_files or name("evidence.json") in planned_files) and archive_evidence:
+    ev_target = (
+        (out_dir / "data" / "evidence.json")
+        if is_hierarchical
+        else (out_dir / name("evidence.json"))
+    )
+    if (
+        "data/evidence.json" in planned_files or name("evidence.json") in planned_files
+    ) and archive_evidence:
         ev_target.write_text(json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    cand_target = (out_dir / "data" / "candidate-hypotheses.json") if is_hierarchical else (out_dir / name("candidate-hypotheses.json"))
-    if ("data/candidate-hypotheses.json" in planned_files or name("candidate-hypotheses.json") in planned_files) and effective_cand_hyps is not None:
-        cand_target.write_text(json.dumps(effective_cand_hyps, indent=2, ensure_ascii=False), encoding="utf-8")
+    cand_target = (
+        (out_dir / "data" / "candidate-hypotheses.json")
+        if is_hierarchical
+        else (out_dir / name("candidate-hypotheses.json"))
+    )
+    if (
+        "data/candidate-hypotheses.json" in planned_files
+        or name("candidate-hypotheses.json") in planned_files
+    ) and effective_cand_hyps is not None:
+        cand_target.write_text(
+            json.dumps(effective_cand_hyps, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
-    an_target = (out_dir / "data" / "analysis.json") if is_hierarchical else (out_dir / name("analysis.json"))
-    if ("data/analysis.json" in planned_files or name("analysis.json") in planned_files) and analysis is not None:
+    an_target = (
+        (out_dir / "data" / "analysis.json")
+        if is_hierarchical
+        else (out_dir / name("analysis.json"))
+    )
+    if (
+        "data/analysis.json" in planned_files or name("analysis.json") in planned_files
+    ) and analysis is not None:
         an_target.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    sum_json_target = (out_dir / "data" / "summary.json") if is_hierarchical else (out_dir / name("summary.json"))
-    if verdict_card is not None and ("data/summary.json" in planned_files or name("summary.json") in planned_files):
-        sum_json_target.write_text(json.dumps(verdict_card, indent=2, ensure_ascii=False), encoding="utf-8")
+    sum_json_target = (
+        (out_dir / "data" / "summary.json") if is_hierarchical else (out_dir / name("summary.json"))
+    )
+    if verdict_card is not None and (
+        "data/summary.json" in planned_files or name("summary.json") in planned_files
+    ):
+        sum_json_target.write_text(
+            json.dumps(verdict_card, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     sum_md_target = (out_dir / "summary.md") if is_hierarchical else (out_dir / name("summary.md"))
-    if verdict_md is not None and ("summary.md" in planned_files or name("summary.md") in planned_files):
+    if verdict_md is not None and (
+        "summary.md" in planned_files or name("summary.md") in planned_files
+    ):
         sum_md_target.write_text(verdict_md, encoding="utf-8")
 
     if has_markdown and analysis is not None:
         sp = analysis.get("skill_prescription")
-        main_report_target = (out_dir / f"{basename}.md") if is_hierarchical else (out_dir / name("report.md"))
-        main_skill_target = (out_dir / "skill-prescription.md") if is_hierarchical else (out_dir / name("skill-prescription.md"))
+        main_report_target = (
+            (out_dir / f"{basename}.md") if is_hierarchical else (out_dir / name("report.md"))
+        )
+        main_skill_target = (
+            (out_dir / "skill-prescription.md")
+            if is_hierarchical
+            else (out_dir / name("skill-prescription.md"))
+        )
 
         if lang == "zh":
             zh_report = render_report_markdown(evidence, analysis, lang="zh", output_format=fmt)
@@ -736,7 +913,9 @@ def write_outputs(
                 zh_skill = render_skill_prescription_markdown(sp, lang="zh")
                 main_skill_target.write_text(zh_skill, encoding="utf-8")
                 if not is_hierarchical:
-                    (out_dir / name("skill-prescription.zh.md")).write_text(zh_skill, encoding="utf-8")
+                    (out_dir / name("skill-prescription.zh.md")).write_text(
+                        zh_skill, encoding="utf-8"
+                    )
         elif lang == "en":
             en_report = render_report_markdown(evidence, analysis, lang="en", output_format=fmt)
             main_report_target.write_text(en_report, encoding="utf-8")
@@ -746,20 +925,44 @@ def write_outputs(
                 en_skill = render_skill_prescription_markdown(sp, lang="en")
                 main_skill_target.write_text(en_skill, encoding="utf-8")
                 if not is_hierarchical:
-                    (out_dir / name("skill-prescription.en.md")).write_text(en_skill, encoding="utf-8")
+                    (out_dir / name("skill-prescription.en.md")).write_text(
+                        en_skill, encoding="utf-8"
+                    )
         else:  # bilingual
-            bi_report = render_report_markdown(evidence, analysis, lang="bilingual", output_format=fmt)
+            bi_report = render_report_markdown(
+                evidence, analysis, lang="bilingual", output_format=fmt
+            )
             main_report_target.write_text(bi_report, encoding="utf-8")
-            en_report_target = (out_dir / f"{basename}.en.md") if is_hierarchical else (out_dir / name("report.en.md"))
-            en_report_target.write_text(render_report_markdown(evidence, analysis, lang="en", output_format=fmt), encoding="utf-8")
+            en_report_target = (
+                (out_dir / f"{basename}.en.md")
+                if is_hierarchical
+                else (out_dir / name("report.en.md"))
+            )
+            en_report_target.write_text(
+                render_report_markdown(evidence, analysis, lang="en", output_format=fmt),
+                encoding="utf-8",
+            )
             if not is_hierarchical:
-                (out_dir / name("report.zh.md")).write_text(render_report_markdown(evidence, analysis, lang="zh", output_format=fmt), encoding="utf-8")
+                (out_dir / name("report.zh.md")).write_text(
+                    render_report_markdown(evidence, analysis, lang="zh", output_format=fmt),
+                    encoding="utf-8",
+                )
             if skill_md and sp:
-                main_skill_target.write_text(render_skill_prescription_markdown(sp, lang="bilingual"), encoding="utf-8")
-                en_skill_target = (out_dir / "skill-prescription.en.md") if is_hierarchical else (out_dir / name("skill-prescription.en.md"))
-                en_skill_target.write_text(render_skill_prescription_markdown(sp, lang="en"), encoding="utf-8")
+                main_skill_target.write_text(
+                    render_skill_prescription_markdown(sp, lang="bilingual"), encoding="utf-8"
+                )
+                en_skill_target = (
+                    (out_dir / "skill-prescription.en.md")
+                    if is_hierarchical
+                    else (out_dir / name("skill-prescription.en.md"))
+                )
+                en_skill_target.write_text(
+                    render_skill_prescription_markdown(sp, lang="en"), encoding="utf-8"
+                )
                 if not is_hierarchical:
-                    (out_dir / name("skill-prescription.zh.md")).write_text(render_skill_prescription_markdown(sp, lang="zh"), encoding="utf-8")
+                    (out_dir / name("skill-prescription.zh.md")).write_text(
+                        render_skill_prescription_markdown(sp, lang="zh"), encoding="utf-8"
+                    )
 
 
 def _degraded_diagnostic_counts(evidence: Dict[str, Any]) -> Dict[str, int]:
@@ -1175,7 +1378,11 @@ def main() -> None:
                     if task_ref is not None
                     else (staging_dir / inv["trial_name"])
                 )
-                archive_ev = args.archive_evidence if (task_ref is not None and args.phase != "collect") else True
+                archive_ev = (
+                    args.archive_evidence
+                    if (task_ref is not None and args.phase != "collect")
+                    else True
+                )
                 if args.phase == "collect":
                     ev, _, _, cand_hyps = collect_case_evidence(
                         inv, job_dir=job_dir, max_log_bytes=args.max_log_bytes

@@ -93,35 +93,43 @@ When `evidence.verifier_report` is present, Section 2 includes the normalized ve
 
 Invoking the skill with a task reference (e.g. `/case failure analyzer task208`) uses task-ID mode. `scripts/task_ref.py` resolves the reference to the newest matching trial, its job directory, and the task definition directory containing `task.toml`. `--jobs-root` (or `$CFA_JOBS_ROOT`, then the current directory and its parent) bounds the search; numeric matching is exact, so `task208` never resolves to `task2080`.
 
-**Output landing**: reports land in `<bench_root>/failure-report/<task_id>/`, next to the benchmark's case folders. `bench_root` is derived from the resolved trial (`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`; flat `<bench>/jobs/...` → `<bench>`), and the bench-level folder contains only one subfolder per analyzed task:
+**Output landing**: reports land in `<bench_root>/failure-report/<task_id>/`, next to the benchmark's case folders. `bench_root` is derived from the resolved trial (`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`; flat `<bench>/jobs/...` → `<bench>`). The bench-level folder holds one global board and one subfolder per analyzed task:
 
 ```text
 <bench_root>/failure-report/
+├── INDEX.md                          # Global board: category distribution + per-task verdict links
 ├── task207/
-│   ├── task207.md / task207.zh.md / task207.en.md
-│   ├── task207.summary.md / task207.summary.json
-│   ├── task207.evidence.json / task207.analysis.json / task207.candidate-hypotheses.json
+│   ├── task207.md                    # Main causal audit (clean Markdown)
+│   ├── task207.en.md                 # English edition only when --lang bilingual
+│   ├── summary.md                    # Verdict card, identical to stdout
+│   ├── skill-prescription.md         # Only when an agent capability gap was found
+│   ├── data/
+│   │   ├── evidence.json
+│   │   ├── analysis.json
+│   │   ├── summary.json
+│   │   └── candidate-hypotheses.json
+│   ├── trials/<trial_name>/          # Multi-trial archive (lightweight conclusions)
 │   └── .cfa_manifest.json
 └── task208/
     └── ...
 ```
 
-The per-task folder sits outside every declared input root (job directory, task definition, trial directory), so the isolation check in `scripts/staging.py` still rejects output equal to / inside / a parent of an input. Each task publishes through its own `.cfa_manifest.json`, so re-analysing one task never touches another task's folder or unmanaged user files. `--report-dir` overrides the exact landing folder, `--no-verdict-stdout` suppresses the printed answer.
+The per-task folder sits outside every declared input root (job directory, task definition, trial directory), so the isolation check in `scripts/staging.py` still rejects output equal to / inside / a parent of an input. Each task publishes through its own `.cfa_manifest.json`, so re-analysing one task never touches another task's folder or unmanaged user files. `--report-dir` overrides the exact landing folder, `--no-verdict-stdout` suppresses the printed answer. `cfa index` rebuilds `INDEX.md` atomically.
 
-All artifacts are prefixed with the canonical task label:
+Machine-readable JSON is sunk into `data/`; the top level keeps only clean Markdown. Hierarchical mode never emits a redundant `.zh.md` copy (a `zh` request produces only `task207.md`), and `cfa inspect` reads `data/summary.json` / `data/evidence.json`.
 
 | File | Contents |
 |---|---|
-| `task208.md`, `task208.zh.md`, `task208.en.md` | Full bilingual causal audit with the 4 mandatory `## <N>.` sections (unchanged structure) |
-| `task208.summary.md` | The verdict card, byte-identical to stdout |
-| `task208.summary.json` | Machine-readable verdict card (`cfa-verdict-card-v1`) |
-| `task208.evidence.json`, `task208.analysis.json`, `task208.candidate-hypotheses.json` | Structured evidence / attribution |
-| `task208.skill-prescription*.md` | Only when an agent capability gap was found |
+| `task208.md`, `task208.en.md` | Full causal audit with the 4 mandatory `## <N>.` sections (bilingual mode adds the English edition) |
+| `summary.md` | The verdict card, byte-identical to stdout |
+| `data/summary.json` | Machine-readable verdict card (`cfa-verdict-card-v1`) |
+| `data/evidence.json`, `data/analysis.json`, `data/candidate-hypotheses.json` | Structured evidence / attribution / hypotheses |
+| `skill-prescription.md` | Only when an agent capability gap was found |
 | `.cfa_manifest.json` | Publish manifest inside the task folder; scopes cleanup to this task's files |
 
-Path mode (`--job` + `--output`) keeps the legacy unprefixed names.
+Path mode (`--job` + `--output`) keeps the legacy unprefixed names (`report.md`, `evidence.json`, ...).
 
-### Verdict Card (`task208.summary.md` / stdout)
+### Verdict Card (`summary.md` / stdout)
 
 The card **is** the direct answer; the CLI prints it to stdout followed by `REPORT_DIR: <path>`, so a caller can answer without opening a file. Its order is load-bearing:
 

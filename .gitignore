@@ -7,6 +7,10 @@ __pycache__/
 .venv/
 .zcode/
 .zcodeignore
+# Local smoke/dev output and benchmark-side report boards are never committed.
+.dev/
+failure-report/
+# Legacy dev-output root from older checkouts.
 failure-analysis/
 uv.lock
 

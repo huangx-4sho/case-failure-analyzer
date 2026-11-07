@@ -19,12 +19,46 @@ from ..families import (
     matches_family as _matches_family,
 )
 from confidence import attach_confidence_metadata
+from report_style import clean_prose, extract_verifier_message
 from runtime_state import SCHEMA_VERSION
 
 import re
 from typing import Any, Dict, Optional
 
 from ..context import AttributionContext
+
+
+def _readable_failure_text(
+    fail_text: str,
+    evidence: Optional[Dict[str, Any]] = None,
+    limit: int = 220,
+) -> str:
+    """Never leak a raw (often truncated) verifier JSON envelope into prose."""
+    message = extract_verifier_message(fail_text, limit=limit)
+    if message:
+        return message
+    cleaned = clean_prose(fail_text, limit=limit)
+    if cleaned and cleaned != "(raw verifier payload omitted)" and not cleaned.startswith("{"):
+        return cleaned
+
+    # Harbor `verify.log` sometimes dumps a truncated JSON envelope with no
+    # parseable `message`; the normalized report still carries the named checks.
+    stats = (evidence or {}).get("verifier_check_stats") or {}
+    report = (evidence or {}).get("verifier_report") or {}
+    failed_checks = [c for c in (report.get("failed_checks") or []) if isinstance(c, dict)]
+    named = []
+    for check in failed_checks:
+        detail = str(check.get("detail") or check.get("summary") or "").strip()
+        name = str(check.get("name") or "").strip()
+        named.append(f"{name}: {detail}" if detail else name)
+    if not named:
+        named = [str(item) for item in stats.get("failed_check_summaries") or [] if item]
+    if named:
+        return clean_prose("; ".join(named), limit=limit)
+    names = [str(name) for name in stats.get("failed_check_names") or [] if name]
+    if names:
+        return clean_prose("verifier named failed checks: " + ", ".join(names), limit=limit)
+    return cleaned
 
 
 def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
@@ -34,6 +68,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     dep_search_sigs = ctx.dep_search_sigs
     fail_log_obs = ctx.fail_log_obs
     fail_text = ctx.fail_text
+    failure_excerpt = _readable_failure_text(fail_text, evidence=ctx.evidence, limit=220)
     premature_sigs = ctx.premature_sigs
     repeated_fail_sigs = ctx.repeated_fail_sigs
     runtime = ctx.runtime
@@ -50,25 +85,61 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     for s in unrecovered_sci_obs:
         if str(s.get("source_ref", "")).startswith("trajectory:"):
             ev_refs.append(s["sci_id"])
-    for sig in signals[:3]:
-        ev_refs.append(sig["signal_id"])
+    # Dependency-discovery signals are exploration, not causal evidence for a
+    # scored numerical failure; never let them occupy one of the three slots.
+    added_signals = 0
+    for sig in signals:
+        if sig.get("signal_type") == "dependency_search_attempted":
+            continue
+        if sig.get("signal_id"):
+            ev_refs.append(sig["signal_id"])
+            added_signals += 1
+        if added_signals >= 3:
+            break
     for c in agent_mismatch_contracts:
         ev_refs.append(c["contract_id"])
     if fail_log_obs:
         ev_refs.append("ver:fail_log")
+    ev_refs = list(dict.fromkeys(ref for ref in ev_refs if ref))
+
+    causal_anchors = ctx.evidence.get("causal_anchors") or {}
+    algo_anchor = causal_anchors.get("algorithm_or_param_definition")
+    deliv_anchor = causal_anchors.get("deliverable_generation")
+    self_check_anchor = causal_anchors.get("self_check") or {}
+    for ref_key in ("event_id", "script_event_ref"):
+        ref = self_check_anchor.get(ref_key)
+        if ref and ref not in ev_refs:
+            ev_refs.append(str(ref))
+    if deliv_anchor and deliv_anchor.get("event_id"):
+        ref = str(deliv_anchor["event_id"])
+        if ref not in ev_refs:
+            ev_refs.append(ref)
+    elif algo_anchor and algo_anchor.get("event_id"):
+        ref = str(algo_anchor["event_id"])
+        if ref not in ev_refs:
+            ev_refs.append(ref)
+    anchor_fud_ref = (
+        algo_anchor.get("event_id")
+        if algo_anchor
+        else (deliv_anchor.get("event_id") if deliv_anchor else None)
+    )
+
+    debugging_fail_sigs = [
+        s for s in signals if s.get("signal_type") == "iterative_debugging_failure"
+    ]
 
     # Subcase 5a: Repeated failed action after unrecovered scientific software error (e.g. SCF nonconvergence)
-    if unrecovered_sci_obs and repeated_fail_sigs:
+    if unrecovered_sci_obs and (repeated_fail_sigs or debugging_fail_sigs):
         subcase_id = "5a"
         first_sci = unrecovered_sci_obs[0]
-        rep_sig = repeated_fail_sigs[0]
+        rep_sig = repeated_fail_sigs[0] if repeated_fail_sigs else debugging_fail_sigs[0]
         subtype = "error_diagnosis"
         code = "AGENT_ERROR_DIAGNOSIS"
         summary = (
             f"Software emitted `{first_sci['error_family']}` ({first_sci['software']}), "
             f"but agent failed to diagnose the physical/input cause and repeatedly re-executed the failing setup (`{rep_sig['signal_id']}`)."
         )
-        fud_ref = rep_sig["event_ref"]
+        fud_ref = anchor_fud_ref or rep_sig["event_ref"]
         skill_prescription = {
             "recommended_skill": {
                 "name": f"{first_sci['software']}-{first_sci['error_family'].replace('_', '-')}-diagnosis",
@@ -155,7 +226,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         subcase_id = "5d"
         subtype = "task_understanding" if not premature_sigs else "premature_termination"
         code = "AGENT_TASK_UNDERSTANDING" if not premature_sigs else "AGENT_PREMATURE_TERMINATION"
-        summary = f"Agent failed to satisfy explicit output file or JSON schema requirements (`{fail_text[:160] or 'missing required output'}`)."
+        summary = f"Agent failed to satisfy explicit output file or JSON schema requirements (`{_readable_failure_text(fail_text, evidence=ctx.evidence, limit=160) or 'missing required output'}`)."
         fud_ref = (
             premature_sigs[0]["event_ref"]
             if premature_sigs
@@ -170,22 +241,81 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     elif (unverified_output_sigs or signals) and fail_text:
         subcase_id = "5e"
         fud_ref = (
-            unverified_output_sigs[0]["event_ref"]
-            if unverified_output_sigs
-            else (
-                signals[0]["event_ref"]
-                if signals
-                else (timeline[-1]["event_id"] if timeline else "ver:fail_log")
-            )
+            anchor_fud_ref
+            or (unverified_output_sigs[0]["event_ref"] if unverified_output_sigs else None)
+            or (signals[0]["event_ref"] if signals else None)
+            or (timeline[-1]["event_id"] if timeline else "ver:fail_log")
         )
         skill_prescription = None
 
-        if re.search(r"(?:spin-polarized|UKS|LSD|theory|functional)", fail_text, re.IGNORECASE):
+        if any(s.get("signal_type") == "self_verification_executed" for s in ctx.signals):
+            subtype = "self_check_gap"
+            code = "AGENT_SELF_CHECK_GAP"
+            has_anchor = bool(self_check_anchor.get("event_id"))
+            uncovered = list(self_check_anchor.get("uncovered_failed_checks") or [])
+            covered = list(self_check_anchor.get("checked_failed_checks") or [])
+            script = self_check_anchor.get("script_path") or "the self-check script"
+            check_event = self_check_anchor.get("event_id") or "self-check execution"
+            passed = bool(self_check_anchor.get("self_check_passed"))
+            if has_anchor:
+                prefix = (
+                    f"Agent ran self-verification at `{check_event}` and reported success"
+                    if passed
+                    else f"Agent ran self-verification at `{check_event}` without a pass marker"
+                )
+                if uncovered:
+                    gap_sentence = (
+                        f"its script `{script}` omits verifier-required checks: "
+                        f"{', '.join(uncovered)}"
+                        + (f" (covered: {', '.join(covered)})" if covered else "")
+                    )
+                else:
+                    gap_sentence = (
+                        f"its script `{script}` did not reproduce the verifier's "
+                        f"independent recomputation criteria"
+                    )
+            else:
+                prefix = "Agent ran self-verification"
+                gap_sentence = (
+                    "no self-check script source was captured, so its criteria cannot be "
+                    "confirmed against the verifier's named failed checks"
+                )
+            summary = (
+                f"{prefix}, but {gap_sentence}; "
+                f"verifier rejected submitted outputs: {failure_excerpt}"
+            )
+            guidance = [
+                "Include all task specification criteria and independent ground-truth checks in pre-submission validation."
+            ]
+            if uncovered:
+                guidance.append(
+                    "Explicitly reproduce the verifier's named checks before submission: "
+                    f"{', '.join(uncovered)}."
+                )
+            skill_prescription = {
+                "recommended_skill": {
+                    "name": "verification-criteria-alignment",
+                    "trigger": ["Agent self-verification passes but benchmark verifier fails"],
+                    "capability_gap": [
+                        "Agent self-check omitted benchmark-mandated validation criteria or independent recomputation."
+                    ],
+                    "required_guidance": guidance,
+                    "anti_patterns": [
+                        "Do not conclude verification based only on internal consistency without checking task acceptance criteria."
+                    ],
+                    "evidence_cases": [f"{case_id}:{fud_ref}"],
+                }
+            }
+        elif re.search(
+            r"(?:spin(?:[-_]polarized|_selection)?|UKS|LSD|theory|functional)",
+            fail_text,
+            re.IGNORECASE,
+        ):
             subtype = "scientific_method_selection"
             code = "AGENT_SCIENTIFIC_METHOD_SELECTION"
             summary = (
                 f"Agent failed to select appropriate scientific theory/method "
-                f"(e.g. spin-polarization for open-shell systems): {fail_text[:200]}"
+                f"(e.g. spin-polarization for open-shell systems): {failure_excerpt}"
             )
             skill_prescription = {
                 "recommended_skill": {
@@ -212,7 +342,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             code = "AGENT_SCIENTIFIC_PARAMETER_SELECTION"
             summary = (
                 f"Agent selected simulation parameters violating numerical stability, cutoff convergence, "
-                f"or grid sampling limits: {fail_text[:200]}"
+                f"or grid sampling limits: {failure_excerpt}"
             )
             skill_prescription = {
                 "recommended_skill": {
@@ -239,7 +369,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             code = "AGENT_PLANNING"
             summary = (
                 f"Agent failed in workflow orchestration or context state preservation "
-                f"(e.g. modified pinned assets or mismatched outdir): {fail_text[:200]}"
+                f"(e.g. modified pinned assets or mismatched outdir): {failure_excerpt}"
             )
             skill_prescription = {
                 "recommended_skill": {
@@ -262,7 +392,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             code = "AGENT_TOOL_USE"
             summary = (
                 f"Agent input-generation script or tool call omitted required simulation parameters "
-                f"or contained syntax errors: {fail_text[:200]}"
+                f"or contained syntax errors: {failure_excerpt}"
             )
             skill_prescription = {
                 "recommended_skill": {
@@ -283,7 +413,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             code = "AGENT_TASK_UNDERSTANDING"
             summary = (
                 f"Agent misunderstood task specification or physical conventions "
-                f"(e.g. data fitting window): {fail_text[:200]}"
+                f"(e.g. data fitting window): {failure_excerpt}"
             )
             skill_prescription = {
                 "recommended_skill": {
@@ -308,7 +438,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             target = f"`{declared[0]}`" if declared else "`results.json`"
             summary = (
                 f"Agent wrote {target} without sanity validation, "
-                f"producing inaccurate physical/numerical values: {fail_text[:200]}"
+                f"producing inaccurate physical/numerical values: {failure_excerpt}"
             )
             skill_prescription = None
     else:
@@ -403,7 +533,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         "failure_manifestation": {
             "type": "verifier_check_failed" if verifier_started else "agent_execution_failed",
-            "summary": fail_text[:240] if fail_text else summary,
+            "summary": failure_excerpt if fail_text else summary,
         },
         "primary_root_cause": prc,
         "contributing_factors": [],

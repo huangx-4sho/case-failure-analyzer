@@ -72,7 +72,7 @@ case-failure-analyzer/
     └── test_*.py                # Unit, decision-table & characterization tests
 ```
 
-`.venv/`, `__pycache__/`, `*.egg-info/`, `.ruff_cache/`, and `failure-analysis/` are local build/run/IDE artifacts excluded by `.gitignore`.
+`.venv/`, `__pycache__/`, `*.egg-info/`, `.ruff_cache/` and `.dev/` are local build/run/IDE artifacts excluded by `.gitignore`. Benchmark-side `failure-report/` boards are generated outside the repo and are excluded as well; the shipped skill contains only `SKILL.md`, `agents/`, `scripts/` and `references/`.
 
 ---
 
@@ -88,7 +88,7 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
 python3 "$SKILL_DIR/scripts/analyze_case.py" \
   --job jobs/<job_name> \
   --task tasks/<task_name> \
-  --output failure-analysis/<case_id> \
+  --output <output-dir>/<case_id> \
   --lang bilingual
 ```
 
@@ -102,7 +102,7 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 - `--format`: Output format: `both` (default), `json`, or `markdown`.
 - `--phase`: Execution phase: `all` (default: full pipeline + conservative attribution + reports) or `collect` (evidence + candidate hypotheses only).
 
-Outputs generated in `failure-analysis/<case_id>/`:
+Outputs generated in `<output-dir>/<case_id>/`:
 
 - `evidence.json`: Objective per-trial artifacts, unified `runtime_state`, normalized trajectory timeline, contract audit matrix, and scientific error observations.
 - `candidate-hypotheses.json`: Competing root-cause hypotheses with heuristic evidence strength scores.
@@ -122,7 +122,7 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
 python3 "$SKILL_DIR/scripts/analyze_case.py" \
   --job jobs/<job_name> \
   --task tasks/<task_name> \
-  --output failure-analysis/<case_id> \
+  --output <output-dir>/<case_id> \
   --phase collect
 ```
 
@@ -134,15 +134,15 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
 [ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.agents/skills/case-failure-analyzer"
 python3 "$SKILL_DIR/scripts/validate_analysis.py" \
-  --evidence failure-analysis/<case_id>/evidence.json \
-  --analysis failure-analysis/<case_id>/analysis.json \
-  --report  failure-analysis/<case_id>/report.md
+  --evidence <output-dir>/<case_id>/evidence.json \
+  --analysis <output-dir>/<case_id>/analysis.json \
+  --report  <output-dir>/<case_id>/report.md
 
 python3 "$SKILL_DIR/scripts/render_report.py" \
-  --evidence failure-analysis/<case_id>/evidence.json \
-  --analysis failure-analysis/<case_id>/analysis.json \
-  --output-report failure-analysis/<case_id>/report.md \
-  --output-prescription failure-analysis/<case_id>/skill-prescription.md \
+  --evidence <output-dir>/<case_id>/evidence.json \
+  --analysis <output-dir>/<case_id>/analysis.json \
+  --output-report <output-dir>/<case_id>/report.md \
+  --output-prescription <output-dir>/<case_id>/skill-prescription.md \
   --lang bilingual
 ```
 
@@ -184,7 +184,7 @@ python3 -m pytest -q          # only after `make dev`
 
 ## Exporting Production Skill
 
-Export a clean, production-ready skill tree (`SKILL.md`, `agents/`, `scripts/`, `references/`) excluding test suites (`tests/`), local documentation mirrors (`docs/`), and developer build configurations (`Makefile`, `pyproject.toml`, `uv.lock`, `.ruff_cache`, `.venv`, `.git`, `failure-analysis/`, etc.):
+Export a clean, production-ready skill tree (`SKILL.md`, `agents/`, `scripts/`, `references/`) excluding test suites (`tests/`), local documentation mirrors (`docs/`), and developer build configurations (`Makefile`, `pyproject.toml`, `uv.lock`, `.ruff_cache`, `.venv`, `.git`, `.dev/`, legacy `failure-analysis/`, etc.):
 
 ```bash
 # Export to default destination ($CODEX_HOME/skills/case-failure-analyzer or ~/.codex/skills/case-failure-analyzer)

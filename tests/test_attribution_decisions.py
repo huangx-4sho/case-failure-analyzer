@@ -1552,6 +1552,267 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         self.assertEqual(prc["code"], "AGENT_RESULT_VALIDATION")
         self.assertIn("`charges.csv`", prc["summary"])
 
+    def test_gate4_delta_divergence_attribution(self) -> None:
+        ev = _evidence(
+            contract_observations=[
+                _contract(
+                    "consistent",
+                    contract_id="contract:charge",
+                    item="results.json:values.charge",
+                )
+            ],
+            scientific_observations=[
+                _sci(
+                    "verifier_recompute_divergence",
+                    sci_id="sci:recompute_divergence:1",
+                    metric="charge",
+                    reported_value=1.59869e-06,
+                    recomputed_value=0.0,
+                    tolerance=1.00001e-10,
+                    check_kind="reference_mismatch",
+                    is_delta_divergence=True,
+                    agent_reported_value=0.898982845013923,
+                    agent_ref="trajectory:step:55",
+                    agent_artifact_ref="art:artifacts/app/outputs/charges.csv:L628",
+                    agent_reported_matches=False,
+                    source_ref="verifier:raw-verifier.json:neutral_stationary",
+                    discriminating=True,
+                )
+            ],
+            verifier_observations=[
+                _fail_log(
+                    "neutral_stationary: R02-M01/site000003 charge differs from independent frozen EQeq replay by 1.59869e-06 e beyond its decimal serialization bound 1.00001e-10 e"
+                )
+            ],
+            timeline=[_agent_event(event_id="trajectory:step:55")],
+        )
+        ev["verifier_check_stats"] = {
+            "total_checks": 2,
+            "failed_checks": 1,
+            "single_failure": True,
+            "widespread_failure": False,
+            "failed_check_summaries": [
+                "neutral_stationary: R02-M01/site000003 charge differs from independent frozen EQeq replay by 1.59869e-06 e"
+            ],
+        }
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        prc = an["primary_root_cause"]
+        self.assertEqual(prc["category"], "agent")
+        self.assertEqual(prc["code"], "AGENT_RESULT_VALIDATION")
+        self.assertEqual(prc["subtype"], "result_validation")
+        self.assertGreaterEqual(prc["confidence"], 0.75)
+        self.assertIn("0.898982845013923", prc["summary"])
+        self.assertNotIn("self-report matches", json.dumps(an["excluded_hypotheses"]))
+        self.assertEqual(an["first_unrecovered_deviation"]["status"], "identified")
+        self.assertEqual(an["first_unrecovered_deviation"]["event_ref"], "trajectory:step:55")
+
+    def test_gate4_unbound_delta_divergence_does_not_blame_agent(self) -> None:
+        ev = _evidence(
+            scientific_observations=[
+                _sci(
+                    "verifier_recompute_divergence",
+                    sci_id="sci:recompute_divergence:1",
+                    metric="charge",
+                    reported_value=1.59869e-06,
+                    recomputed_value=0.0,
+                    tolerance=1.00001e-10,
+                    check_kind="reference_mismatch",
+                    is_delta_divergence=True,
+                    agent_reported_value=None,
+                    agent_ref=None,
+                    agent_artifact_ref=None,
+                    agent_reported_matches=False,
+                    source_ref="verifier:raw-verifier.json:neutral_stationary",
+                    discriminating=True,
+                )
+            ],
+            verifier_observations=[
+                _fail_log(
+                    "neutral_stationary: R02-M01/site000003 charge differs from independent frozen EQeq replay by 1.59869e-06 e"
+                )
+            ],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        self.assertEqual(an["primary_root_cause"]["category"], "unknown")
+
+    def test_gate6_self_verification_routes_to_self_check_gap(self) -> None:
+        ev = _evidence(
+            behavioral_signals=[_sig("self_verification_executed", event_ref="trajectory:step:70")],
+            verifier_observations=[
+                _fail_log(
+                    "spin_selection: atomic energy/spin differs from independent native calculation"
+                )
+            ],
+            verifier_check_stats={
+                "total_checks": 2,
+                "failed_checks": 1,
+                "single_failure": True,
+                "failed_check_names": ["spin_selection"],
+                "failed_check_summaries": [
+                    "spin_selection: atomic energy/spin differs from independent native calculation"
+                ],
+            },
+            causal_anchors={
+                "algorithm_or_param_definition": {
+                    "event_id": "trajectory:step:6:tool:0",
+                    "step_id": "trajectory:step:6",
+                },
+                "self_check": {
+                    "event_id": "trajectory:step:70:tool:0",
+                    "script_path": "/app/outputs/native/verify_outputs.py",
+                    "script_event_ref": "trajectory:step:62:tool:0",
+                    "self_check_passed": True,
+                    "checked_failed_checks": [],
+                    "uncovered_failed_checks": ["spin_selection"],
+                },
+            },
+            timeline=[
+                _agent_event(event_id="trajectory:step:6:tool:0"),
+                _agent_event(event_id="trajectory:step:70:tool:0"),
+                _agent_event(event_id="trajectory:step:62:tool:0"),
+            ],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        prc = an["primary_root_cause"]
+        self.assertEqual(prc["category"], "agent")
+        self.assertEqual(prc["code"], "AGENT_SELF_CHECK_GAP")
+        self.assertEqual(prc["subtype"], "self_check_gap")
+        self.assertIn("spin_selection", prc["summary"])
+        self.assertIn("verify_outputs.py", prc["summary"])
+        self.assertEqual(an["first_unrecovered_deviation"]["event_ref"], "trajectory:step:6:tool:0")
+
+    def test_gate5_unlinked_deliverable_anchor_stays_unknown(self) -> None:
+        ev = _evidence(
+            verifier_observations=[_fail_log("FAIL: verifier rejected outputs")],
+            metadata={"declared_deliverables": ["/app/outputs"]},
+            causal_anchors={
+                "deliverable_generation": {
+                    "event_id": "trajectory:step:9:tool:0",
+                    "command": "python prepare.py --input /opt/data",
+                    "observation_snippet": "prepared inputs",
+                }
+            },
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        self.assertEqual(an["primary_root_cause"]["category"], "unknown")
+        self.assertEqual(an["primary_root_cause"]["code"], "UNKNOWN_INSUFFICIENT_EVIDENCE")
+
+    def test_gate5_linked_deliverable_anchor_continues_to_gate6(self) -> None:
+        ev = _evidence(
+            behavioral_signals=[_sig("unverified_output")],
+            verifier_observations=[_fail_log("FAIL: wrong value")],
+            metadata={"declared_deliverables": ["/app/outputs"]},
+            causal_anchors={
+                "deliverable_generation": {
+                    "event_id": "trajectory:step:9:tool:0",
+                    "command": "python analysis.py --output /app/outputs",
+                }
+            },
+            timeline=[_agent_event(event_id="trajectory:step:9:tool:0")],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        self.assertEqual(an["primary_root_cause"]["category"], "agent")
+
+    def test_gate6_self_check_gap_without_anchor_does_not_fabricate_coverage(self) -> None:
+        ev = _evidence(
+            behavioral_signals=[_sig("self_verification_executed", event_ref="trajectory:step:70")],
+            verifier_observations=[
+                _fail_log(
+                    "spin_selection: atomic energy/spin differs from independent native calculation"
+                )
+            ],
+            verifier_check_stats={
+                "total_checks": 2,
+                "failed_checks": 1,
+                "single_failure": True,
+                "failed_check_names": ["spin_selection"],
+                "failed_check_summaries": [
+                    "spin_selection: atomic energy/spin differs from independent native calculation"
+                ],
+            },
+            timeline=[_agent_event(event_id="trajectory:step:70")],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        summary = an["primary_root_cause"]["summary"]
+        self.assertEqual(an["primary_root_cause"]["code"], "AGENT_SELF_CHECK_GAP")
+        self.assertIn("no self-check script source was captured", summary)
+        self.assertNotIn("it passed", summary)
+        self.assertNotIn("omits verifier-required checks", summary)
+
+    def test_gate6_self_check_gap_respects_missing_pass_marker(self) -> None:
+        ev = _evidence(
+            behavioral_signals=[_sig("self_verification_executed", event_ref="trajectory:step:70")],
+            verifier_observations=[_fail_log("FAIL: verifier rejected outputs")],
+            verifier_check_stats={
+                "total_checks": 2,
+                "failed_checks": 1,
+                "single_failure": True,
+                "failed_check_names": ["spin_selection"],
+                "failed_check_summaries": ["spin_selection: FAIL"],
+            },
+            causal_anchors={
+                "self_check": {
+                    "event_id": "trajectory:step:70:tool:0",
+                    "script_path": "/app/outputs/native/verify_outputs.py",
+                    "script_event_ref": "trajectory:step:62:tool:0",
+                    "self_check_passed": False,
+                    "checked_failed_checks": [],
+                    "uncovered_failed_checks": ["spin_selection"],
+                }
+            },
+            timeline=[
+                _agent_event(event_id="trajectory:step:70:tool:0"),
+                _agent_event(event_id="trajectory:step:62:tool:0"),
+            ],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        summary = an["primary_root_cause"]["summary"]
+        self.assertIn("without a pass marker", summary)
+        self.assertNotIn("and reported success", summary)
+
+    def test_unscored_verifier_error_routes_to_verifier_defect(self) -> None:
+        ev = _evidence(
+            missing_artifacts=[],
+            verifier_observations=[
+                {
+                    "obs_id": "ver:fail_log",
+                    "type": "verifier_fail_message",
+                    "summary": "TypeError: string indices must be integers, not 'str'",
+                    "matched_text": "TypeError: string indices must be integers, not 'str'",
+                    "source_file": "verifier/verify.json",
+                },
+                {
+                    "obs_id": "ver:internal_crash",
+                    "type": "verifier_internal_crash",
+                    "subtype": "recompute_defect",
+                    "code": "VERIFIER_RECOMPUTE_DEFECT",
+                    "summary": "Verifier crashed internally: TypeError: string indices must be integers, not 'str'",
+                    "matched_text": "TypeError: string indices must be integers, not 'str'",
+                    "hazard_detected": True,
+                    "failure_binding": "direct",
+                    "triggered": True,
+                    "source_file": "verifier/verify.json",
+                },
+            ],
+            verifier_report={
+                "status": "ERROR",
+                "scientific_status": "INCONCLUSIVE",
+                "scorable": False,
+                "reward": None,
+                "failure_origin": {"reason_code": "evaluator"},
+                "messages": ["TypeError: string indices must be integers, not 'str'"],
+                "failed_checks": [],
+                "summary": "TypeError: string indices must be integers, not 'str'",
+            },
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        prc = an["primary_root_cause"]
+        self.assertEqual(prc["category"], "verifier")
+        self.assertEqual(prc["code"], "VERIFIER_RECOMPUTE_DEFECT")
+        self.assertEqual(an["first_unrecovered_deviation"]["event_ref"], "ver:internal_crash")
+        ok, errors = validate_all(ev, an)
+        self.assertTrue(ok, errors)
+
 
 if __name__ == "__main__":
     unittest.main()

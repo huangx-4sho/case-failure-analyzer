@@ -13,10 +13,12 @@ Outputs structured `scientific_observations` with `candidate_causes`, `aliases`,
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import math
 import re
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from pathlib import Path, PurePosixPath
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 
 REGISTRY_PATH = Path(__file__).resolve().parent.parent / "references" / "error-families.json"
@@ -36,6 +38,53 @@ _VERIFIER_LOG_REL_PATHS = (
 # Raw ATIF trajectory.json files larger than this are skipped for agent-side
 # corroboration (corroboration is best-effort; never load unbounded files).
 MAX_TRAJECTORY_JSON_BYTES = 4_000_000
+
+# Deliverable files probed for the agent's actually delivered metric value.
+# Only structured CSV/TSV/JSON records are mined, because only those can bind a
+# value to the named record in the verifier message (`R02-M01/site000003`).
+# Free prose is never searched for numbers: that is how a verifier's own delta
+# used to be misread as the agent's delivered value.
+_DELIVERABLE_DELIMITERS = {".csv": ",", ".tsv": "\t"}
+MAX_DELIVERABLE_BYTES = 8_000_000
+_MAX_DELIVERABLE_FILES = 200
+_MAX_DELIVERABLE_ROWS = 200_000
+_MAX_JSON_NODES = 20_000
+
+# Unit suffixes stripped when matching a metric name (`charge`) to a column or
+# JSON key (`charge_e`, `charge_eV`); only exact base-token equality counts.
+_UNIT_TOKENS = frozenset(
+    {
+        "e",
+        "ev",
+        "eh",
+        "hartree",
+        "kcal",
+        "kj",
+        "mol",
+        "a",
+        "ang",
+        "angstrom",
+        "nm",
+        "ps",
+        "fs",
+        "k",
+        "bar",
+        "gpa",
+        "mpa",
+    }
+)
+
+# Record identifiers such as `R02-M01` / `site000003`: contain both a letter
+# and a digit, so units (`eV`), ranks (`L3`), and bare numbers are excluded.
+_SELECTOR_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    r"(?=[A-Za-z0-9_.-]{3,})"
+    r"(?=[A-Za-z0-9_.-]*[A-Za-z])"
+    r"(?=[A-Za-z0-9_.-]*\d)"
+    r"[A-Za-z][A-Za-z0-9_.-]*"
+    r"(?![A-Za-z0-9_.-])"
+)
+_SELECTOR_STOP_RE = re.compile(r"^L\d+$", re.IGNORECASE)
 
 
 def load_error_family_registry(registry_path: Path = REGISTRY_PATH) -> Dict[str, Dict[str, Any]]:
@@ -252,6 +301,7 @@ def extract_scientific_errors(
     #    no software-specific family pattern matches. Observations are appended
     #    after the family observations, continuing the `sci:N` ordinal sequence
     #    as `sci:recompute_divergence:<n>`.
+    seen_divergence_keys: Set[Tuple[Any, Any, Any, Any]] = set()
     if trial_dir:
         trajectory_steps = _load_trajectory_steps(trial_dir)
         for rel_vlog in _VERIFIER_LOG_REL_PATHS:
@@ -261,11 +311,27 @@ def extract_scientific_errors(
             source_label = (
                 f"verifier:{vpath.name}" if rel_vlog.startswith("verifier/") else vpath.name
             )
+            numbered_lines = _read_numbered_lines(vpath)
+            # If the log is a single raw JSON report dump, let Section 5's structured parser handle it
+            if len(numbered_lines) <= 5 and any(
+                ln.strip().startswith("{") and ln.strip().endswith("}") for _, ln in numbered_lines
+            ):
+                continue
             for divergence in extract_verifier_divergences(
-                _read_numbered_lines(vpath),
+                numbered_lines,
                 trajectory_steps=trajectory_steps,
                 source_label=source_label,
+                trial_dir=trial_dir,
             ):
+                div_key = (
+                    divergence.get("metric"),
+                    divergence.get("reported_value"),
+                    divergence.get("recomputed_value"),
+                    divergence.get("tolerance"),
+                )
+                if div_key in seen_divergence_keys:
+                    continue
+                seen_divergence_keys.add(div_key)
                 dedup_key = divergence["matched_text"]
                 if dedup_key in seen:
                     continue
@@ -312,40 +378,62 @@ def extract_scientific_errors(
 
                 hit = _match_divergence_line(detail)
                 if hit is not None:
-                    dedup_key = detail
-                    if dedup_key not in seen:
-                        seen.add(dedup_key)
-                        agent_matches, agent_value, agent_ref = _corroborate_agent_reported_value(
-                            hit["metric"],
-                            hit["reported_raw"],
-                            hit["reported_value"],
-                            trajectory_steps,
-                        )
-                        observations.append(
-                            {
-                                "sci_id": f"sci:recompute_divergence:{sci_counter}",
-                                "software": VERIFIER_SOFTWARE_LABEL,
-                                "error_family": VERIFIER_DIVERGENCE_FAMILY,
-                                "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
-                                "reference_anchor": None,
-                                "matched_text": detail,
-                                "source_ref": source_ref,
-                                "metric": hit["metric"],
-                                "reported_value": hit["reported_value"],
-                                "recomputed_value": hit["recomputed_value"],
-                                "tolerance": hit["tolerance"],
-                                "check_kind": hit["check_kind"],
-                                "agent_reported_value": agent_value,
-                                "agent_ref": agent_ref,
-                                "agent_reported_matches": agent_matches,
-                                "discriminating": (
-                                    hit["reported_value"] is not None and hit["recomputed_value"] is not None
-                                ),
-                                "candidate_causes": [],
-                                "required_discriminating_evidence": list(VERIFIER_DIVERGENCE_EVIDENCE),
-                            }
-                        )
-                        sci_counter += 1
+                    div_key = (
+                        hit.get("metric"),
+                        hit.get("reported_value"),
+                        hit.get("recomputed_value"),
+                        hit.get("tolerance"),
+                    )
+                    if div_key not in seen_divergence_keys:
+                        seen_divergence_keys.add(div_key)
+                        dedup_key = detail
+                        if dedup_key not in seen:
+                            seen.add(dedup_key)
+                            agent_matches, agent_value, agent_ref, agent_artifact_ref = (
+                                _corroborate_agent_reported_value(
+                                    hit["metric"],
+                                    hit["reported_raw"],
+                                    hit["reported_value"],
+                                    trajectory_steps,
+                                    is_delta_divergence=hit.get("is_delta_divergence", False),
+                                    trial_dir=trial_dir,
+                                    match_text=detail,
+                                )
+                            )
+                            observations.append(
+                                {
+                                    "sci_id": f"sci:recompute_divergence:{sci_counter}",
+                                    "software": VERIFIER_SOFTWARE_LABEL,
+                                    "error_family": VERIFIER_DIVERGENCE_FAMILY,
+                                    "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
+                                    "reference_anchor": None,
+                                    "matched_text": detail,
+                                    "source_ref": source_ref,
+                                    "metric": hit["metric"],
+                                    "reported_value": hit["reported_value"],
+                                    "recomputed_value": hit["recomputed_value"],
+                                    "tolerance": hit["tolerance"],
+                                    "check_kind": hit["check_kind"],
+                                    **(
+                                        {"is_delta_divergence": True}
+                                        if hit.get("is_delta_divergence")
+                                        else {}
+                                    ),
+                                    "agent_reported_value": agent_value,
+                                    "agent_ref": agent_ref,
+                                    "agent_artifact_ref": agent_artifact_ref,
+                                    "agent_reported_matches": agent_matches,
+                                    "discriminating": (
+                                        hit["reported_value"] is not None
+                                        and hit["recomputed_value"] is not None
+                                    ),
+                                    "candidate_causes": [],
+                                    "required_discriminating_evidence": list(
+                                        VERIFIER_DIVERGENCE_EVIDENCE
+                                    ),
+                                }
+                            )
+                            sci_counter += 1
 
         for msg in verifier_report.get("messages") or []:
             if not isinstance(msg, str):
@@ -355,37 +443,57 @@ def extract_scientific_errors(
                 continue
             hit = _match_divergence_line(msg_str)
             if hit is not None:
-                seen.add(msg_str)
-                agent_matches, agent_value, agent_ref = _corroborate_agent_reported_value(
-                    hit["metric"],
-                    hit["reported_raw"],
-                    hit["reported_value"],
-                    trajectory_steps,
+                div_key = (
+                    hit.get("metric"),
+                    hit.get("reported_value"),
+                    hit.get("recomputed_value"),
+                    hit.get("tolerance"),
                 )
-                observations.append(
-                    {
-                        "sci_id": f"sci:recompute_divergence:{sci_counter}",
-                        "software": VERIFIER_SOFTWARE_LABEL,
-                        "error_family": VERIFIER_DIVERGENCE_FAMILY,
-                        "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
-                        "reference_anchor": None,
-                        "matched_text": msg_str,
-                        "source_ref": "verifier:report:messages",
-                        "metric": hit["metric"],
-                        "reported_value": hit["reported_value"],
-                        "recomputed_value": hit["recomputed_value"],
-                        "tolerance": hit["tolerance"],
-                        "check_kind": hit["check_kind"],
-                        "agent_reported_value": agent_value,
-                        "agent_ref": agent_ref,
-                        "agent_reported_matches": agent_matches,
-                        "discriminating": (
-                            hit["reported_value"] is not None and hit["recomputed_value"] is not None
-                        ),
-                        "candidate_causes": [],
-                        "required_discriminating_evidence": list(VERIFIER_DIVERGENCE_EVIDENCE),
-                    }
-                )
+                if div_key not in seen_divergence_keys:
+                    seen_divergence_keys.add(div_key)
+                    seen.add(msg_str)
+                    agent_matches, agent_value, agent_ref, agent_artifact_ref = (
+                        _corroborate_agent_reported_value(
+                            hit["metric"],
+                            hit["reported_raw"],
+                            hit["reported_value"],
+                            trajectory_steps,
+                            is_delta_divergence=hit.get("is_delta_divergence", False),
+                            trial_dir=trial_dir,
+                            match_text=msg_str,
+                        )
+                    )
+                    observations.append(
+                        {
+                            "sci_id": f"sci:recompute_divergence:{sci_counter}",
+                            "software": VERIFIER_SOFTWARE_LABEL,
+                            "error_family": VERIFIER_DIVERGENCE_FAMILY,
+                            "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
+                            "reference_anchor": None,
+                            "matched_text": msg_str,
+                            "source_ref": "verifier:report:messages",
+                            "metric": hit["metric"],
+                            "reported_value": hit["reported_value"],
+                            "recomputed_value": hit["recomputed_value"],
+                            "tolerance": hit["tolerance"],
+                            "check_kind": hit["check_kind"],
+                            **(
+                                {"is_delta_divergence": True}
+                                if hit.get("is_delta_divergence")
+                                else {}
+                            ),
+                            "agent_reported_value": agent_value,
+                            "agent_ref": agent_ref,
+                            "agent_artifact_ref": agent_artifact_ref,
+                            "agent_reported_matches": agent_matches,
+                            "discriminating": (
+                                hit["reported_value"] is not None
+                                and hit["recomputed_value"] is not None
+                            ),
+                            "candidate_causes": [],
+                            "required_discriminating_evidence": list(VERIFIER_DIVERGENCE_EVIDENCE),
+                        }
+                    )
                 sci_counter += 1
 
     return {"scientific_observations": observations}
@@ -443,6 +551,7 @@ VERIFIER_DIVERGENCE_EVIDENCE = (
     "recomputed_value",
     "tolerance",
     "agent_reported_value",
+    "agent_artifact_ref",
 )
 
 _NUMBER = r"[-+0-9.eE]+"
@@ -486,8 +595,11 @@ _DIVERGENCE_PATTERNS: List[Tuple[re.Pattern[str], str, bool]] = [
     (_P4_FAIL_INEQUALITY, "recompute_divergence", True),
 ]
 
-# Only numeric FAIL/exception lines are considered divergence candidates.
-_DIVERGENCE_LINE_MARKER = re.compile(r"FAIL|\bTraceback\b|\w*Error\b|\bException\b|\bassert\b")
+# Only numeric FAIL/exception/mismatch lines are considered divergence candidates.
+_DIVERGENCE_LINE_MARKER = re.compile(
+    r"FAIL|\bTraceback\b|\w*Error\b|\bException\b|\bassert\b|differs from|mismatch",
+    re.IGNORECASE,
+)
 _HAS_DIGIT = re.compile(r"\d")
 
 # Best-effort metric extraction: prefer known metric keywords, else the first
@@ -627,6 +739,7 @@ def _match_divergence_line(line: str) -> Optional[Dict[str, Any]]:
         }
         if "delta" in gd:
             res["delta_value"] = delta
+            res["is_delta_divergence"] = True
         return res
     return None
 
@@ -651,20 +764,301 @@ def _value_string_candidates(raw: Optional[str], parsed: Any) -> List[str]:
     return unique
 
 
+def _metric_tokens(value: Any) -> List[str]:
+    """Lower-case base tokens of a metric/key, with unit suffixes removed."""
+    return [
+        token
+        for token in re.split(r"[^a-z0-9]+", str(value or "").lower())
+        if token and token not in _UNIT_TOKENS
+    ]
+
+
+def _metric_key_matches(metric: Optional[str], key: Any) -> bool:
+    """True when `key` names the same quantity as `metric` (`charge`/`charge_e`)."""
+    metric_tokens = _metric_tokens(metric)
+    key_tokens = _metric_tokens(key)
+    return bool(metric_tokens) and metric_tokens == key_tokens
+
+
+def _selector_tokens(text: str, metric: Optional[str]) -> List[str]:
+    """Record identifiers in a verifier message (`R02-M01`, `site000003`)."""
+    metric_norm = (metric or "").strip().lower()
+    tokens: List[str] = []
+    for match in _SELECTOR_TOKEN_RE.finditer(text or ""):
+        token = match.group(0)
+        if _SELECTOR_STOP_RE.match(token) or token.lower() == metric_norm:
+            continue
+        if token not in tokens:
+            tokens.append(token)
+    return tokens[:8]
+
+
+def _artifact_container_path(artifact_ref: Optional[str]) -> Optional[str]:
+    """Map `art:app/outputs/charges.csv:L628` to the container path."""
+    if not artifact_ref or not artifact_ref.startswith("art:"):
+        return None
+    body = re.sub(r":L\d+$", "", artifact_ref[4:])
+    parts = body.split("/")
+    if parts and parts[0] == "artifacts":
+        parts = parts[1:]
+    if len(parts) >= 2 and parts[0] == "app":
+        return "/" + "/".join(parts)
+    return None
+
+
+def _parse_csv_delivered_value(
+    path: Path,
+    metric: Optional[str],
+    selectors: List[str],
+    trial_dir: Path,
+) -> Optional[Tuple[float, str]]:
+    """Read a metric value bound to every named record from a CSV/TSV file."""
+    delimiter = _DELIVERABLE_DELIMITERS.get(path.suffix.lower())
+    if delimiter is None or not selectors:
+        return None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter=delimiter)
+            header = [name for name in (reader.fieldnames or []) if name]
+            metric_columns = [name for name in header if _metric_key_matches(metric, name)]
+            if not metric_columns:
+                return None
+            token_columns: Dict[str, Set[str]] = {token: set() for token in selectors}
+            rows: List[Tuple[int, Dict[str, str]]] = []
+            for row in reader:
+                if reader.line_num > _MAX_DELIVERABLE_ROWS:
+                    break
+                values = {
+                    name: ("" if value is None else str(value).strip())
+                    for name, value in row.items()
+                    if name
+                }
+                hit = False
+                for token in selectors:
+                    for column in header:
+                        if values.get(column) == token:
+                            token_columns[token].add(column)
+                            hit = True
+                if hit:
+                    rows.append((reader.line_num, values))
+    except (OSError, csv.Error):
+        return None
+
+    # Every identifier in the verifier message must bind to exactly one column.
+    # A token that appears in no column (or in several) means we cannot prove the
+    # row is the same record, so abstain rather than match on a subset.
+    if any(len(columns) != 1 for columns in token_columns.values()):
+        return None
+    bound = {token: next(iter(columns)) for token, columns in token_columns.items()}
+    selected = [
+        (line, values)
+        for line, values in rows
+        if all(values.get(column) == token for token, column in bound.items())
+    ]
+    if not selected:
+        return None
+
+    numeric: List[Tuple[float, int]] = []
+    for line, values in selected:
+        for column in metric_columns:
+            try:
+                value = float(values.get(column, ""))
+            except ValueError:
+                continue
+            if math.isfinite(value):
+                numeric.append((value, line))
+                break
+    if not numeric:
+        return None
+    # Conflicting values for the same record cannot be resolved truthfully.
+    if len({round(value, 15) for value, _ in numeric}) != 1:
+        return None
+    value, line = numeric[0]
+    try:
+        rel_path = path.relative_to(trial_dir).as_posix()
+    except ValueError:
+        rel_path = path.name
+    return value, f"art:{rel_path}:L{line}"
+
+
+def _iter_json_metric_records(
+    node: Any,
+    metric: Optional[str],
+    selectors: List[str],
+    path: str = "$",
+) -> Iterator[Tuple[float, str]]:
+    """Yield metric values from JSON records that carry every selector."""
+    stack: List[Tuple[Any, str]] = [(node, path)]
+    visited = 0
+    while stack:
+        current, current_path = stack.pop()
+        visited += 1
+        if visited > _MAX_JSON_NODES:
+            return
+        if isinstance(current, dict):
+            metric_keys = [key for key in current if _metric_key_matches(metric, key)]
+            if metric_keys and selectors:
+                scalars = {
+                    str(value).strip()
+                    for value in current.values()
+                    if isinstance(value, (str, int, float)) and not isinstance(value, bool)
+                }
+                if all(token in scalars for token in selectors):
+                    for key in metric_keys:
+                        value = current[key]
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            yield float(value), f"{current_path}.{key}"
+            for key, value in current.items():
+                stack.append((value, f"{current_path}.{key}"))
+        elif isinstance(current, list):
+            for index, value in enumerate(current):
+                stack.append((value, f"{current_path}[{index}]"))
+
+
+def _find_delivered_metric_value(
+    trial_dir: Optional[Path],
+    metric: Optional[str],
+    match_text: str,
+) -> Optional[Tuple[float, str]]:
+    """Locate the agent's actually delivered value for `metric`.
+
+    Searches structured deliverable files under `<trial>/artifacts` for a record
+    that carries every identifier in the verifier message and returns that
+    record's metric value. Returns `None` when no unique bound value exists;
+    the caller must then abstain rather than reuse the verifier's delta.
+    """
+    if trial_dir is None or not metric:
+        return None
+    root = trial_dir / "artifacts"
+    if not root.is_dir():
+        return None
+    selectors = _selector_tokens(match_text, metric)
+    if not selectors:
+        return None
+
+    candidates: List[Tuple[float, str]] = []
+    scanned = 0
+    for path in sorted(root.rglob("*")):
+        if scanned >= _MAX_DELIVERABLE_FILES:
+            break
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in _DELIVERABLE_DELIMITERS and suffix != ".json":
+            continue
+        try:
+            if path.stat().st_size > MAX_DELIVERABLE_BYTES:
+                continue
+        except OSError:
+            continue
+        scanned += 1
+        if suffix == ".json":
+            try:
+                data = json.loads(path.read_bytes().decode("utf-8", errors="replace"))
+            except (OSError, ValueError):
+                continue
+            try:
+                rel_path = path.relative_to(trial_dir).as_posix()
+            except ValueError:
+                rel_path = path.name
+            for value, json_path in _iter_json_metric_records(data, metric, selectors):
+                if math.isfinite(value):
+                    candidates.append((value, f"art:{rel_path}:{json_path}"))
+        else:
+            hit = _parse_csv_delivered_value(path, metric, selectors, trial_dir)
+            if hit is not None:
+                candidates.append(hit)
+
+    if not candidates:
+        return None
+    if len({round(value, 15) for value, _ in candidates}) != 1:
+        return None
+    return candidates[0]
+
+
+def _find_metric_execution_ref(
+    trajectory_steps: Optional[List[Tuple[Any, str]]],
+    metric: Optional[str],
+    artifact_ref: Optional[str],
+) -> Optional[str]:
+    """Reference the earliest execution step that produced the bound artifact."""
+    artifact_path = _artifact_container_path(artifact_ref)
+    artifact_name = PurePosixPath(artifact_path).name.lower() if artifact_path else ""
+    artifact_dir = str(PurePosixPath(artifact_path).parent).lower() if artifact_path else ""
+    metric_lower = (metric or "").strip().lower()
+
+    producers: List[str] = []
+    mentions: List[str] = []
+    for step_id, serialized in trajectory_steps or []:
+        if not serialized:
+            continue
+        tool_text = serialized
+        observation = ""
+        try:
+            payload = json.loads(serialized)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            tool_text = json.dumps(payload.get("tool_calls") or [], ensure_ascii=False)
+            observation = str(payload.get("observation") or "")
+        tool_low = tool_text.lower()
+        ref = f"trajectory:step:{step_id}"
+        if metric_lower and metric_lower in (tool_low + "\n" + observation.lower()):
+            mentions.append(ref)
+
+        writes_artifact = bool(artifact_name and artifact_name in tool_low)
+        writes_output_dir = bool(
+            artifact_dir
+            and artifact_dir in tool_low
+            and (
+                "--output" in tool_low
+                or " -o " in tool_low
+                or re.search(r"(?<!\d)>(?!>)", tool_low)
+                or " cp " in tool_low
+                or "tee " in tool_low
+            )
+        )
+        if writes_artifact or writes_output_dir:
+            producers.append(ref)
+    if producers:
+        return producers[0]
+    return mentions[0] if mentions else None
+
+
 def _corroborate_agent_reported_value(
     metric: Optional[str],
     reported_raw: Optional[str],
     reported_value: Any,
     trajectory_steps: Optional[List[Tuple[Any, str]]],
-) -> Tuple[bool, Any, Optional[str]]:
-    """Search serialized trajectory steps for the metric + reported value pair.
+    is_delta_divergence: bool = False,
+    trial_dir: Optional[Path] = None,
+    match_text: str = "",
+) -> Tuple[bool, Any, Optional[str], Optional[str]]:
+    """Bind a divergence to the agent's own delivered value.
 
-    A step corroborates when both the metric name and one string form of the
-    reported value occur within the same step's serialized text. Unparseable
-    reported values are never corroborated.
+    Returns `(matches, agent_value, agent_ref, agent_artifact_ref)`.
+
+    - For absolute divergences, `matches` is true only when the metric and one
+      string form of the verifier-reported value occur in the same execution
+      step's command/tool output.
+    - For delta divergences the verifier reports a deviation, not an absolute
+      agent value. The agent value is read from a structured deliverable record
+      that carries every identifier in the verifier message; `matches` stays
+      false because there is no absolute value to compare. When no such record
+      exists, all fields are `None` — the verifier's delta is NEVER returned as
+      the agent's value.
     """
+    if is_delta_divergence:
+        delivered = _find_delivered_metric_value(trial_dir, metric, match_text)
+        if delivered is None:
+            return False, None, None, None
+        value, artifact_ref = delivered
+        agent_ref = _find_metric_execution_ref(trajectory_steps, metric, artifact_ref)
+        return False, value, agent_ref, artifact_ref
+
     if reported_value is None or not trajectory_steps:
-        return False, None, None
+        return False, None, None, None
+
     value_candidates = _value_string_candidates(reported_raw, reported_value)
     for idx, (step_id, step_text) in enumerate(trajectory_steps):
         if not step_text:
@@ -672,16 +1066,20 @@ def _corroborate_agent_reported_value(
         metric_present = metric is None or metric in step_text
         if metric_present and any(cand in step_text for cand in value_candidates):
             ref_id = step_id if step_id is not None else idx + 1
-            return True, reported_value, f"trajectory:step:{ref_id}"
-    return False, None, None
+            return True, reported_value, f"trajectory:step:{ref_id}", None
+    return False, None, None, None
 
 
 def _load_trajectory_steps(trial_dir: Optional[Path]) -> List[Tuple[Any, str]]:
-    """Load (step_id, serialized step text) pairs from the trial's raw trajectory.
+    """Load (step_id, execution text) pairs from the trial's raw trajectory.
 
-    The raw ATIF `agent/trajectory.json` is used (not the normalized events) so
-    corroboration sees the agent's own verbatim numbers. Any read/parse failure
-    yields an empty list: corroboration is best-effort and must never fabricate.
+    Only execution payloads are serialized: tool calls and their observations.
+    Assistant messages and reasoning/thinking text are deliberately excluded —
+    a final answer that mentions a number is not evidence that the agent
+    produced it, and must never be bound as the delivered value.
+
+    Any read/parse failure yields an empty list: corroboration is best-effort
+    and must never fabricate.
     """
     if trial_dir is None:
         return []
@@ -697,12 +1095,27 @@ def _load_trajectory_steps(trial_dir: Optional[Path]) -> List[Tuple[Any, str]]:
         return []
     serialized: List[Tuple[Any, str]] = []
     for step in steps:
-        step_id = step.get("step_id") if isinstance(step, dict) else None
+        if not isinstance(step, dict):
+            continue
+        observation = step.get("observation")
+        if isinstance(observation, (dict, list)):
+            observation = json.dumps(observation, ensure_ascii=False, default=str)
+        observation = str(observation or "")
+        tool_calls = step.get("tool_calls") or []
+        command = step.get("command") or ""
+        if not tool_calls and not observation and not command:
+            continue
+        payload = {
+            "tool_calls": tool_calls,
+            "observation": observation,
+        }
+        if command:
+            payload["command"] = command
         try:
-            text = json.dumps(step, ensure_ascii=False, default=str)
+            text = json.dumps(payload, ensure_ascii=False, default=str)
         except (TypeError, ValueError):
-            text = str(step)
-        serialized.append((step_id, text))
+            text = str(payload)
+        serialized.append((step.get("step_id"), text))
     return serialized
 
 
@@ -737,6 +1150,7 @@ def extract_verifier_divergences(
     numbered_lines: List[Tuple[int, str]],
     trajectory_steps: Optional[List[Tuple[Any, str]]] = None,
     source_label: str = "verifier:verify.log",
+    trial_dir: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     """Parse numbered verifier-log lines into recompute-divergence observations.
 
@@ -744,7 +1158,8 @@ def extract_verifier_divergences(
     that contain a digit and a FAIL/exception marker are considered; each line
     is matched against P1..P4 in order and yields at most one observation.
     `trajectory_steps` (from `_load_trajectory_steps`) enables best-effort
-    agent-side corroboration of the reported value.
+    agent-side corroboration; `trial_dir` lets delta divergences bind to the
+    agent's actually delivered value in `artifacts/`.
     """
     results: List[Dict[str, Any]] = []
     for lineno, raw_line in numbered_lines:
@@ -756,11 +1171,16 @@ def extract_verifier_divergences(
         hit = _match_divergence_line(line)
         if hit is None:
             continue
-        agent_matches, agent_value, agent_ref = _corroborate_agent_reported_value(
-            hit["metric"],
-            hit["reported_raw"],
-            hit["reported_value"],
-            trajectory_steps,
+        agent_matches, agent_value, agent_ref, agent_artifact_ref = (
+            _corroborate_agent_reported_value(
+                hit["metric"],
+                hit["reported_raw"],
+                hit["reported_value"],
+                trajectory_steps,
+                is_delta_divergence=hit.get("is_delta_divergence", False),
+                trial_dir=trial_dir,
+                match_text=line,
+            )
         )
         results.append(
             {
@@ -775,8 +1195,10 @@ def extract_verifier_divergences(
                 "recomputed_value": hit["recomputed_value"],
                 "tolerance": hit["tolerance"],
                 "check_kind": hit["check_kind"],
+                **({"is_delta_divergence": True} if hit.get("is_delta_divergence") else {}),
                 "agent_reported_value": agent_value,
                 "agent_ref": agent_ref,
+                "agent_artifact_ref": agent_artifact_ref,
                 "agent_reported_matches": agent_matches,
                 "discriminating": (
                     hit["reported_value"] is not None and hit["recomputed_value"] is not None

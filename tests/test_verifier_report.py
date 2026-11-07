@@ -402,5 +402,58 @@ class VerifierReportAttributionTests(unittest.TestCase):
         self.assertEqual(stats["failed_check_names"], ["neutral_stationary"])
 
 
+class UnscoredVerifierFaultTests(unittest.TestCase):
+    def test_structured_error_becomes_verifier_crash_observation(self) -> None:
+        from analyze_case import _attach_unscored_verifier_fault
+
+        report = {
+            "schema_version": "verifier-report-1",
+            "status": "ERROR",
+            "scientific_status": "INCONCLUSIVE",
+            "scorable": False,
+            "reward": None,
+            "eligible_for_success_ranking": False,
+            "failure_origin": {"reason_code": "evaluator"},
+            "messages": ["TypeError: string indices must be integers, not 'str'"],
+            "summary": "TypeError: string indices mus",
+        }
+        observations = [
+            {
+                "obs_id": "ver:fail_log",
+                "type": "verifier_fail_message",
+                "summary": "Warning on use of the timeseries module",
+                "matched_text": "Warning on use of the timeseries module ...",
+                "source_file": "verifier/verify.log",
+            }
+        ]
+        _attach_unscored_verifier_fault(report, observations)
+        self.assertEqual(len(observations), 2)
+        crash = observations[1]
+        self.assertEqual(crash["obs_id"], "ver:internal_crash")
+        self.assertEqual(crash["code"], "VERIFIER_RECOMPUTE_DEFECT")
+        self.assertEqual(crash["failure_binding"], "direct")
+        self.assertIn("TypeError", observations[0]["matched_text"])
+
+        # Idempotent: never duplicate the crash observation.
+        _attach_unscored_verifier_fault(report, observations)
+        self.assertEqual(len(observations), 2)
+
+    def test_scored_failure_does_not_create_crash(self) -> None:
+        from analyze_case import _attach_unscored_verifier_fault
+
+        report = {
+            "status": "SCORED",
+            "scientific_status": "FAIL",
+            "scorable": True,
+            "reward": 0.0,
+            "eligible_for_success_ranking": True,
+            "failure_origin": {"reason_code": "scientific_criterion_failed"},
+            "messages": ["check failed"],
+        }
+        observations: list = []
+        _attach_unscored_verifier_fault(report, observations)
+        self.assertEqual(observations, [])
+
+
 if __name__ == "__main__":
     unittest.main()

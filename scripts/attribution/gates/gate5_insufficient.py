@@ -21,9 +21,50 @@ from ..families import (
 from confidence import attach_confidence_metadata
 import re
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..context import AttributionContext
+
+
+def _anchor_text(anchor: Dict[str, Any]) -> str:
+    """Searchable execution text of a causal anchor."""
+    return " ".join(
+        str(anchor.get(key) or "")
+        for key in ("target_path", "command", "observation_snippet", "script_path")
+    )
+
+
+def _failed_check_names(evidence: Dict[str, Any]) -> List[str]:
+    """Named failing checks from normalized stats or the structured report."""
+    names: List[str] = []
+    stats = evidence.get("verifier_check_stats")
+    if isinstance(stats, dict):
+        names.extend(str(name) for name in stats.get("failed_check_names") or [] if name)
+    report = evidence.get("verifier_report")
+    if isinstance(report, dict):
+        for check in report.get("failed_checks") or []:
+            if isinstance(check, dict) and check.get("name"):
+                names.append(str(check["name"]))
+    return list(dict.fromkeys(names))
+
+
+def _anchor_links_failure(anchor: Dict[str, Any], evidence: Dict[str, Any]) -> bool:
+    """True when the anchor writes a declared deliverable or names a failed check.
+
+    A bare "some deliverable anchor exists" is not enough: the anchor must
+    literally reference the task's declared output path or a named failing
+    verifier check, otherwise an unrelated script write would route every
+    failed trial to agent blame.
+    """
+    text = _anchor_text(anchor)
+    if not text.strip():
+        return False
+    declared = (evidence.get("metadata") or {}).get("declared_deliverables") or []
+    for item in declared:
+        token = str(item or "").strip().rstrip("/")
+        if token and token in text:
+            return True
+    return any(name.lower() in text.lower() for name in _failed_check_names(evidence))
 
 
 def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
@@ -44,8 +85,30 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
     unverified_output_sigs = ctx.unverified_output_sigs
     verifier_started = ctx.verifier_started
 
+    has_self_check_gap = bool(
+        any(s.get("signal_type") == "self_verification_executed" for s in ctx.signals)
+        and (ctx.named_check_failure or unrecovered_sci_obs)
+    )
+    has_debugging_failure = bool(
+        any(s.get("signal_type") == "iterative_debugging_failure" for s in ctx.signals)
+        and unrecovered_sci_obs
+    )
+    deliverable_anchor = (evidence.get("causal_anchors") or {}).get("deliverable_generation")
+    has_deliverable_anchor = bool(
+        isinstance(deliverable_anchor, dict)
+        and (ctx.named_check_failure or unrecovered_sci_obs)
+        and _anchor_links_failure(deliverable_anchor, evidence)
+    )
+    has_divergence_with_named_failure = bool(
+        unrecovered_sci_obs and (ctx.named_check_failure or ctx.sole_blocker_candidate)
+    )
+
     has_positive_agent_evidence = bool(
         (unrecovered_sci_obs and repeated_fail_sigs)
+        or has_self_check_gap
+        or has_debugging_failure
+        or has_deliverable_anchor
+        or has_divergence_with_named_failure
         or (
             any(_matches_family(s, DEPENDENCY_DISCOVERY_FAMILIES) for s in unrecovered_sci_obs)
             and not dep_search_sigs
@@ -82,6 +145,9 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
                 "premature_completion": len(premature_sigs),
                 "agent_mismatch_contracts": len(agent_mismatch_contracts),
                 "agent_timeline_events": len(agent_timeline_events),
+                "self_check_gap": has_self_check_gap,
+                "debugging_failure": has_debugging_failure,
+                "deliverable_anchor_linked": has_deliverable_anchor,
             },
         )
         return None
@@ -135,6 +201,9 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
             "premature_completion": len(premature_sigs),
             "agent_mismatch_contracts": len(agent_mismatch_contracts),
             "agent_timeline_events": len(agent_timeline_events),
+            "self_check_gap": has_self_check_gap,
+            "debugging_failure": has_debugging_failure,
+            "deliverable_anchor_linked": has_deliverable_anchor,
         },
     )
 
@@ -165,7 +234,14 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
         "recommended_actions": [
             {
                 "owner": "Infra",
-                "action": "Collect complete `agent/trajectory.json` and detailed `verifier/verify.log` tracebacks to disambiguate competing hypotheses.",
+                "action": (
+                    "Collect complete `agent/trajectory.json` and detailed `verifier/verify.log` tracebacks to disambiguate competing hypotheses."
+                    if not any(
+                        a.get("artifact_id") == "art:trajectory_json" and a.get("exists")
+                        for a in evidence.get("artifacts") or []
+                    )
+                    else "Inspect detailed verifier diagnostic logs or review task specification to disambiguate competing hypotheses."
+                ),
             }
         ],
         "skill_prescription": None,

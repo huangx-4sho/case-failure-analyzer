@@ -89,7 +89,7 @@ Entrypoint: `python3 scripts/analyze_case.py`
   - `analysis.json`: Structured attribution (`failure-analysis-v1`) with root cause code, failure stage, and evidence pointers.
   - `report.md` (bilingual), `report.zh.md` (Chinese), `report.en.md` (English): High-signal audit reports with evidence file pointers (lightweight 2-section view < 30 lines for passed trials).
   - `skill-prescription.md`: Bilingual domain skill prescription (generated **only** for reusable Agent capability gaps).
-- **Task-ID artifacts**: `task<id>.*` inside `<bench_root>/failure-report/<task_id>/` (see Task-ID Quick Answer), including the `task<id>.summary.md` verdict card printed to stdout.
+- **Task-ID artifacts**: `<bench_root>/failure-report/<task_id>/` holds clean top-level Markdown (`<task_id>.md`, `summary.md`, optional `skill-prescription.md`) plus all machine JSON under `data/` (see Task-ID Quick Answer). The verdict card printed to stdout is `summary.md`.
 - **Multi-Trial Batch Board**:
   - `job_summary.md`: Markdown summary dashboard table showing verdicts, categories, root causes, and failure stages across all trials.
   - `job_summary.json`: Batch aggregated statistics and per-trial summary records.
@@ -110,7 +110,7 @@ For harbor jobs (`jobs/<timestamp>/<trial>/` + sibling `task.toml`, `artifacts/`
    python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout>
    # or via analyze_case:
    python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkout>
-   python3 scripts/analyze_case.py --job jobs/<job_name> --task tasks/<task_name> --output failure-report/<case_id>
+   python3 scripts/analyze_case.py --job jobs/<job_name> --task tasks/<task_name> --output <output-dir>/<case_id>
    ```
 2. **Answer / Review Reports**: In Task-ID mode, relay the stdout verdict card as the answer (see Required Answer Shape). Otherwise inspect `report.md` (or `job_summary.md` for batch jobs), then referenced evidence files via file pointers.
 3. **Validate & Refine (Optional Model-in-the-Loop)**: When modifying hypotheses or refining attributions, edit `analysis.json` and validate machine-checkable hard rules:
@@ -124,9 +124,12 @@ For harbor jobs (`jobs/<timestamp>/<trial>/` + sibling `task.toml`, `artifacts/`
 - **Pre-startup Boundary**: When `runtime.agent_started == false`, attribution MUST be `infra` (if fatal setup error) or `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`). Blaming `agent` is **STRICTLY FORBIDDEN**.
 - **Verifier-Not-Run Boundary**: When the verifier never started (`verifier_started == false` / `reward == null`), a `sig:premature_completion` trajectory heuristic alone is NOT positive agent evidence. A post-agent, pre-verifier runner fault (Gate 1c) MUST be `infra` primary with the missing deliverable as a contributing factor; a causal `INFRA_AGENT_TIMEOUT` outranks the downstream collection crash. Never report "verifier ran to completion" when `verifier_started == false`.
 - **Deliverable Contract**: On harbor tasks, judge completion against `task.toml` `artifacts`, not `results.json`. A named failing verifier check outranks a generic completion heuristic in Gate 6.
-- **Verifier Crash Priority**: An unhandled verifier crash/exception (`FileNotFoundError`, syntax error, recompute crash) MUST be attributed to `verifier` (`VERIFIER_RECOMPUTE_DEFECT`), never `agent`.
+- **Verifier Crash Priority**: An unhandled verifier crash/exception (`FileNotFoundError`, syntax error, recompute crash) MUST be attributed to `verifier` (`VERIFIER_RECOMPUTE_DEFECT`), never `agent`. This also covers structured `verify.json` reports with `status: ERROR` / `ENV_INVALID`, `scorable: false` and `reward: null` (Harbor then raises `RewardFileNotFoundError` because no `reward.txt` is written); CFA normalizes these into a `ver:internal_crash` observation so Gate 3 fires.
 - **Positive Agent Evidence Requirement**: Attributing failure to `agent` requires explicit positive deviation (`behavioral_signals`, contract violation, unrecovered trajectory scientific error). `reward == 0` or verifier `FAIL` alone is insufficient.
 - **Closed-Loop Corroboration**: Numerical divergence claims require closed-loop cross-corroboration between prompt requirements, verifier AST rules, and runtime error logs; uncorroborated claims abstain to `unknown`.
+- **Delta Divergence Integrity**: A verifier delta (`differs from ... by <delta> beyond bound <tol>`) is a deviation, **not** the agent's delivered value. Bind `agent_reported_value` only from a structured deliverable record (`artifacts/**/*.csv|tsv|json`) whose row carries every identifier named in the verifier message; corroboration/FUD may point only to tool calls, file writes, or command outputs — never `final_response` / `agent_thought`. With no unique delivered value, abstain instead of reusing the verifier's delta.
+- **Self-check Coverage Gap**: When the agent's own verification script passes but the verifier names failing checks, emit a `self_check` causal anchor that records `checked_failed_checks` / `uncovered_failed_checks`, and attribute `agent` / `self_check_gap` / `AGENT_SELF_CHECK_GAP` in Gate 6.
+- **Causal Anchor FUD**: For Agent attributions, `first_unrecovered_deviation.event_ref` must be an execution anchor (`deliverable_generation` or `algorithm_or_param_definition`), never a final-answer step.
 - **Skill Prescription Scope**: `skill_prescription` is **FORBIDDEN** unless `primary_root_cause.category` is `agent`.
 - **Evidence Pointer Integrity**: All `evidence_refs` in `analysis.json` must resolve to valid observation IDs in `evidence.json`.
 

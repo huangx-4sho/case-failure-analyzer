@@ -41,7 +41,8 @@ _SKIP_DIRS = {
     "verifier",
     "agent",
     "failure-report",
-    "failure-analysis",
+    ".dev",
+    "failure-analysis",  # legacy dev-output root, kept for older checkouts
 }
 
 

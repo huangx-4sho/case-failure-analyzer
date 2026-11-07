@@ -9,8 +9,8 @@ code) breakdown under the winning category.
 
 The card is deliberately evidence-backed. Every line comes from `analysis.json`
 / `evidence.json`; nothing is inferred from the task number. It is rendered both
-to stdout (so the skill answers immediately) and to `task208.summary.md`, while
-the machine-readable form goes to `task208.summary.json`.
+to stdout (so the skill answers immediately) and to `summary.md`, while
+the machine-readable form goes to `data/summary.json`.
 """
 
 from __future__ import annotations
@@ -350,7 +350,13 @@ def build_verdict_card(
     selected = trace.get("selected") or {}
 
     from trace_causal_anchors import trace_causal_anchors
-    anchors = trace_causal_anchors(evidence)
+
+    stored_anchors = evidence.get("causal_anchors")
+    anchors = (
+        stored_anchors
+        if isinstance(stored_anchors, dict) and stored_anchors
+        else trace_causal_anchors(evidence)
+    )
 
     return {
         "schema_version": "cfa-verdict-card-v1",
@@ -479,6 +485,7 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
 
     if card.get("causal_anchors"):
         from trace_causal_anchors import render_causal_anchors_markdown
+
         lines.extend(render_causal_anchors_markdown(card["causal_anchors"], lang=lang))
 
     if card.get("evidence_refs"):

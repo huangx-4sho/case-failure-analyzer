@@ -832,15 +832,15 @@ def _render_evidence_file_pointers(
     if output_format in ("json", "both"):
         if lang == "zh":
             lines.append(
-                "- **完整证据与归因数据**: `evidence.json`（时间线、契约观测）与 `analysis.json`（归因推导）\n"
+                "- **完整证据与归因数据**: `data/evidence.json`（时间线、契约观测）与 `data/analysis.json`（归因推导）\n"
             )
         elif lang == "en":
             lines.append(
-                "- **Full evidence & analysis**: `evidence.json` (timeline, contract observations) and `analysis.json` (attribution)\n"
+                "- **Full evidence & analysis**: `data/evidence.json` (timeline, contract observations) and `data/analysis.json` (attribution)\n"
             )
         else:
             lines.append(
-                "- **完整证据与归因数据 (Full evidence & analysis)**: `evidence.json` 与 `analysis.json` (Timeline & contracts / Attribution)\n"
+                "- **完整证据与归因数据 (Full evidence & analysis)**: `data/evidence.json` 与 `data/analysis.json` (Timeline & contracts / Attribution)\n"
             )
     else:
         if lang == "zh":
@@ -962,7 +962,13 @@ def _render_chinese_bilingual_core(
     lines.extend(_render_verifier_report_block(evidence, lang=lang))
 
     from trace_causal_anchors import trace_causal_anchors, render_causal_anchors_markdown
-    anchors = trace_causal_anchors(evidence)
+
+    stored_anchors = evidence.get("causal_anchors")
+    anchors = (
+        stored_anchors
+        if isinstance(stored_anchors, dict) and stored_anchors
+        else trace_causal_anchors(evidence)
+    )
     if anchors:
         lines.extend(render_causal_anchors_markdown(anchors, lang=lang))
 
@@ -1081,11 +1087,11 @@ def _render_chinese_bilingual_core(
     if sigs:
         if include_en_labels:
             lines.append(
-                f"- **行为信号 (Behavioral signals)**: {len(sigs)} 项，详见 `evidence.json` / {len(sigs)} recorded"
+                f"- **行为信号 (Behavioral signals)**: {len(sigs)} 项，详见 `data/evidence.json` / {len(sigs)} recorded"
             )
         else:
             lines.append(
-                f"- **行为信号**: {len(sigs)} 项，明细见 `evidence.json` 的 `behavioral_signals`"
+                f"- **行为信号**: {len(sigs)} 项，明细见 `data/evidence.json` 的 `behavioral_signals`"
             )
     lines.append("")
 
@@ -1204,7 +1210,13 @@ def _render_english_edition(
     lines.extend(_render_verifier_report_block(evidence, lang="en"))
 
     from trace_causal_anchors import trace_causal_anchors, render_causal_anchors_markdown
-    anchors = trace_causal_anchors(evidence)
+
+    stored_anchors = evidence.get("causal_anchors")
+    anchors = (
+        stored_anchors
+        if isinstance(stored_anchors, dict) and stored_anchors
+        else trace_causal_anchors(evidence)
+    )
     if anchors:
         lines.extend(render_causal_anchors_markdown(anchors, lang="en"))
 
@@ -1286,7 +1298,7 @@ def _render_english_edition(
     sigs = evidence.get("behavioral_signals") or []
     if sigs:
         lines.append(
-            f"- **Behavioral signals**: {len(sigs)} recorded (details in `evidence.json` → `behavioral_signals`)"
+            f"- **Behavioral signals**: {len(sigs)} recorded (details in `data/evidence.json` → `behavioral_signals`)"
         )
     lines.append("")
 
@@ -1463,13 +1475,15 @@ def _render_passed_edition(
     if output_format in ("json", "both"):
         if lang == "en":
             lines.append(
-                "- **Full evidence & analysis**: see `evidence.json` and `analysis.json`.\n"
+                "- **Full evidence & analysis**: see `data/evidence.json` and `data/analysis.json`.\n"
             )
         elif lang == "zh":
-            lines.append("- **完整证据与归因数据**: 参见 `evidence.json` 与 `analysis.json`。\n")
+            lines.append(
+                "- **完整证据与归因数据**: 参见 `data/evidence.json` 与 `data/analysis.json`。\n"
+            )
         else:
             lines.append(
-                "- **完整证据与归因数据 (Full evidence & analysis)**: 参见 `evidence.json` 与 `analysis.json`。\n"
+                "- **完整证据与归因数据 (Full evidence & analysis)**: 参见 `data/evidence.json` 与 `data/analysis.json`。\n"
             )
     else:
         if lang == "en":

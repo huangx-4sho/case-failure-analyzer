@@ -18,7 +18,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,7 +26,6 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
-from report_style import subtype_label
 from staging import acquire_publish_lock
 
 
@@ -66,8 +64,10 @@ def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
                         "confidence": prc.get("confidence"),
                         "failure_reason": card.get("failure_reason") or "—",
                         "has_data_dir": (task_dir / "data").is_dir(),
-                        "has_report": (task_dir / f"{task_dir.name}.md").is_file() or (task_dir / "report.md").is_file(),
-                        "has_summary": (task_dir / "summary.md").is_file() or (task_dir / f"{task_dir.name}.summary.md").is_file(),
+                        "has_report": (task_dir / f"{task_dir.name}.md").is_file()
+                        or (task_dir / "report.md").is_file(),
+                        "has_summary": (task_dir / "summary.md").is_file()
+                        or (task_dir / f"{task_dir.name}.summary.md").is_file(),
                     }
             except Exception:
                 pass
@@ -93,7 +93,8 @@ def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
                         "confidence": prc.get("confidence"),
                         "failure_reason": prc.get("summary") or "—",
                         "has_data_dir": (task_dir / "data").is_dir(),
-                        "has_report": (task_dir / f"{task_dir.name}.md").is_file() or (task_dir / "report.md").is_file(),
+                        "has_report": (task_dir / f"{task_dir.name}.md").is_file()
+                        or (task_dir / "report.md").is_file(),
                         "has_summary": (task_dir / "summary.md").is_file(),
                     }
             except Exception:

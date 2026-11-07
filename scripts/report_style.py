@@ -208,6 +208,7 @@ STAGE_LABELS_EN = {
 #: fragment used when the report needs prose instead of an enum value.
 SUBTYPE_LABELS = {
     "result_validation": ("结果未复核", "Result not validated"),
+    "self_check_gap": ("自检覆盖不足", "Self-verification coverage gap"),
     "task_understanding": ("任务理解偏差", "Task misunderstood"),
     "hidden_contract": ("隐含契约未满足", "Hidden contract unmet"),
     "schema_mismatch": ("产物结构不符", "Output schema mismatch"),
@@ -251,6 +252,10 @@ SUBTYPE_PHRASES = {
     ("agent", "result_validation"): (
         "结果产物未经数值自检即写入，验证器独立复算后检出偏差",
         "results were written without a numerical self-check, and independent recomputation detected the deviation",
+    ),
+    ("agent", "self_check_gap"): (
+        "智能体执行了自检但覆盖口径存在盲区，未覆盖验证器全部判定准则",
+        "the agent ran self-verification but its criteria had coverage gaps and missed verifier rules",
     ),
     ("agent", "task_understanding"): (
         "对题目要求或科学约定的理解与规格不一致",
@@ -410,6 +415,10 @@ SUBTYPE_REMEDIATIONS = {
         "交付前对关键数值做独立复算，并核对量纲、符号与守恒关系是否和验证口径一致",
         "Independently recompute the key values and check dimensions, signs, and conservation "
         "against the verifier's definition before delivering final deliverables",
+    ),
+    ("agent", "self_check_gap"): (
+        "在交付前对齐验证标准，将独立复算与全套判定规则纳入自检脚本",
+        "Align validation criteria with task requirements and include independent recomputation in self-checks",
     ),
     ("agent", "task_understanding"): (
         "重新对齐题目要求与交付物契约，逐条确认显式要求都已落到产物中",

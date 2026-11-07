@@ -17,7 +17,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
@@ -74,11 +74,34 @@ def cmd_audit(argv: List[str]) -> int:
         sys.argv = orig_argv
 
 
+def _find_benchmark_roots(explicit_root: Optional[Path] = None) -> List[Path]:
+    if explicit_root:
+        return [Path(explicit_root).resolve()]
+    env_root = os.environ.get("CFA_JOBS_ROOT")
+    if env_root:
+        return [Path(env_root).resolve()]
+    cwd = Path.cwd().resolve()
+    for p in [cwd, *cwd.parents]:
+        if (p / REPORT_DIR_NAME).is_dir() or (p / ".git").is_dir():
+            return [p]
+        try:
+            if any(c.is_dir() and re.match(r"^\d{2}-", c.name) for c in p.iterdir()):
+                return [p]
+        except (OSError, PermissionError):
+            continue
+    return []
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Strictly read-only inspection of a case's verdict card or evidence."""
-    explicit_root = args.jobs_root or os.environ.get("CFA_JOBS_ROOT")
-    cwd = Path.cwd()
-    roots = [Path(explicit_root)] if explicit_root else [cwd, cwd.parent]
+    roots = _find_benchmark_roots(args.jobs_root)
+    if not roots:
+        print(
+            f"ERROR: could not locate benchmark jobs or failure-report root from '{Path.cwd()}'. "
+            "Please specify --jobs-root or run within a benchmark repository.",
+            file=sys.stderr,
+        )
+        return 2
 
     task_ref = None
     last_error = None
@@ -95,7 +118,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
     report_dir = task_ref.report_dir
     if not report_dir.is_dir():
-        print(f"ERROR: report directory not found: {report_dir}. Run 'cfa audit {args.task_id}' first.", file=sys.stderr)
+        print(
+            f"ERROR: report directory not found: {report_dir}. Run 'cfa audit {args.task_id}' first.",
+            file=sys.stderr,
+        )
         return 1
 
     # Locate summary or report file
@@ -151,15 +177,18 @@ def cmd_index(args: argparse.Namespace) -> int:
     """Atomic recomputation of failure-report/INDEX.md."""
     report_root = args.report_root
     if report_root is None:
-        explicit_root = os.environ.get("CFA_JOBS_ROOT")
-        cwd = Path.cwd()
-        candidates = [Path(explicit_root) / REPORT_DIR_NAME] if explicit_root else [cwd / REPORT_DIR_NAME, cwd.parent / REPORT_DIR_NAME]
-        for c in candidates:
-            if c.is_dir():
-                report_root = c
+        roots = _find_benchmark_roots(None)
+        for r in roots:
+            cand = r / REPORT_DIR_NAME
+            if cand.is_dir():
+                report_root = cand
                 break
         if report_root is None:
-            print("ERROR: --report-root not specified and no default failure-report directory found.", file=sys.stderr)
+            print(
+                "ERROR: --report-root not specified and no default failure-report directory found. "
+                "Please specify --report-root or run within a benchmark repository.",
+                file=sys.stderr,
+            )
             return 2
 
     index_path = update_failure_report_index(report_root)
@@ -178,9 +207,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="subcommand", help="Available commands")
 
     # audit subcommand
-    audit_parser = subparsers.add_parser("audit", help="Run case failure audit and generate reports")
+    subparsers.add_parser("audit", help="Run case failure audit and generate reports")
     # inspect subcommand
-    inspect_parser = subparsers.add_parser("inspect", help="Read-only inspection of audit conclusions and anchors")
+    inspect_parser = subparsers.add_parser(
+        "inspect", help="Read-only inspection of audit conclusions and anchors"
+    )
     inspect_parser.add_argument("task_id", help="Task ID to inspect (e.g. task208)")
     inspect_parser.add_argument(
         "--section",
@@ -188,13 +219,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="verdict",
         help="Report section or data to inspect (default: verdict)",
     )
-    inspect_parser.add_argument("--jobs-root", type=Path, default=None, help="Benchmark checkout root")
-    inspect_parser.add_argument("--report-dir", type=Path, default=None, help="Report directory override")
-    inspect_parser.add_argument("--no-redact", action="store_true", help="Disable automatic sensitive token masking")
+    inspect_parser.add_argument(
+        "--jobs-root", type=Path, default=None, help="Benchmark checkout root"
+    )
+    inspect_parser.add_argument(
+        "--report-dir", type=Path, default=None, help="Report directory override"
+    )
+    inspect_parser.add_argument(
+        "--no-redact", action="store_true", help="Disable automatic sensitive token masking"
+    )
 
     # index subcommand
     index_parser = subparsers.add_parser("index", help="Recompute failure report INDEX.md")
-    index_parser.add_argument("--report-root", type=Path, default=None, help="Path to failure-report/ root")
+    index_parser.add_argument(
+        "--report-root", type=Path, default=None, help="Path to failure-report/ root"
+    )
 
     if not argv or "-h" in argv or "--help" in argv and len(argv) == 1:
         parser.print_help()

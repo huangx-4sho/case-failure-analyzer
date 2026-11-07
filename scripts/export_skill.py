@@ -41,6 +41,7 @@ EXCLUDED_NAMES = {
     "__pycache__",
     ".DS_Store",
     ".git",
+    ".dev",
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
@@ -211,7 +212,7 @@ def collect_export_files(source_root: Path = REPO_ROOT) -> Dict[str, Path]:
     if skill_md.is_file():
         files["SKILL.md"] = skill_md
 
-    for comp in ["agents", "scripts", "references"]:
+    for comp in MANAGED_COMPONENTS[1:]:
         comp_dir = source_root / comp
         if not comp_dir.is_dir():
             continue

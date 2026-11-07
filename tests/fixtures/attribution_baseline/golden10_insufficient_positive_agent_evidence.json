@@ -69,7 +69,7 @@
   "recommended_actions": [
     {
       "owner": "Infra",
-      "action": "Collect complete `agent/trajectory.json` and detailed `verifier/verify.log` tracebacks to disambiguate competing hypotheses."
+      "action": "Inspect detailed verifier diagnostic logs or review task specification to disambiguate competing hypotheses."
     }
   ],
   "skill_prescription": null

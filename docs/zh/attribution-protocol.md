@@ -42,7 +42,7 @@ $$\text{Infra (启动前环境)} \longrightarrow \text{Case (题目资产/配置
 6. **Gate 3: 评测器缺陷 (`gate3_verifier_defect`)**：评测器自身内部崩溃（`VERIFIER_RECOMPUTE_DEFECT`）或完成直接因果绑定的解析正则缺陷（`failure_binding == "direct"`），归因为 `verifier`。
 7. **Gate 4: 数值漂移与容差缺陷 (`gate4_numerical_divergence`)**：结构化瞬时轨迹发散但系综均值守恒吻合、且三方契约闭环成立时，归因为 `verifier` (`VERIFIER_TOLERANCE_TOO_STRICT`)。
 8. **Gate 5: 正面证据不足门控 (`gate5_insufficient_positive_evidence`)**：若 Trial 失败但缺乏指向 Agent 行为的正面因果证据，保守弃判并退化至 `unknown`，防止误怪 Agent（仅有 `reward == 0` 或 `verify.log` 中的 `FAIL` 不构成正面证据）。这是 Agent 归因前的保守兜底。
-9. **Gate 6: Agent 主观决策与操作错误 (`gate6_agent_primary`)**：在满足 5 项必要条件且具备正面行为信号时归因为 `agent`。该 Gate 必然命中，从而终结整条判定链。
+9. **Gate 6: Agent 主观决策与操作错误 (`gate6_agent_primary`)**：在满足 5 项必要条件且具备正面行为信号时归因为 `agent`。若智能体自检通过、但验证器给出了具名失败检查，则 5e 子情形使用 `self_check_gap` 亚类（`AGENT_SELF_CHECK_GAP`），并记录自检脚本覆盖了哪些具名检查、遗漏了哪些。该 Gate 必然命中，从而终结整条判定链。
 
 | 阶段顺序 | 对应门控 | 适用范围 / 触发条件 | 归因类别 | 绝对禁止项 |
 | :--- | :--- | :--- | :--- | :--- |

@@ -96,6 +96,128 @@ class TestPositiveAgentEvidenceFromCorroboratedDivergence(unittest.TestCase):
         self.assertIn("sci:1", pos)
         self.assertIn("trajectory:step:5", pos)
 
+    def test_artifact_bound_delta_counts_as_positive(self) -> None:
+        obs = _divergence_observation(
+            is_delta_divergence=True,
+            agent_reported_matches=False,
+            agent_reported_value=0.898982845013923,
+            agent_ref="trajectory:step:55",
+            agent_artifact_ref="art:artifacts/app/outputs/charges.csv:L628",
+        )
+        evidence = {"scientific_observations": [obs]}
+        self.assertIn(
+            "art:artifacts/app/outputs/charges.csv:L628", collect_valid_evidence_ids(evidence)
+        )
+        pos = collect_positive_agent_evidence_ids(evidence)
+        self.assertIn("sci:recompute_divergence:1", pos)
+        self.assertIn("trajectory:step:55", pos)
+
+    def test_delta_without_bound_value_does_not_count(self) -> None:
+        obs = _divergence_observation(
+            is_delta_divergence=True,
+            agent_reported_matches=False,
+            agent_reported_value=None,
+            agent_ref=None,
+            agent_artifact_ref=None,
+        )
+        pos = collect_positive_agent_evidence_ids({"scientific_observations": [obs]})
+        self.assertNotIn("sci:recompute_divergence:1", pos)
+
+
+def _validator_evidence(**overrides):
+    evidence = {
+        "case_id": "c",
+        "artifacts": [{"artifact_id": "art:trial_result", "exists": True}],
+        "runtime": {"agent_started": True, "verifier_started": True, "verdict": "failed"},
+        "timeline": [{"event_id": "trajectory:step:1:tool:0"}],
+        "error_observations": [],
+        "contract_observations": [],
+        "verifier_observations": [],
+        "scientific_observations": [],
+        "missing_artifacts": [],
+        "behavioral_signals": [
+            {
+                "signal_id": "sig:s",
+                "signal_type": "unverified_output",
+                "event_ref": "trajectory:step:1:tool:0",
+            }
+        ],
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def _validator_analysis(**overrides):
+    analysis = {
+        "schema_version": "failure-analysis-v1",
+        "case_id": "c",
+        "verdict": "failed",
+        "failure_stage": "agent_execution",
+        "detection_stage": "verifier_execution",
+        "first_unrecovered_deviation": {
+            "status": "identified",
+            "event_ref": "trajectory:step:1:tool:0",
+            "summary": "delivered value was wrong",
+        },
+        "failure_manifestation": {"type": "verifier_check_failed", "summary": "check failed"},
+        "primary_root_cause": {
+            "category": "agent",
+            "subtype": "result_validation",
+            "code": "AGENT_RESULT_VALIDATION",
+            "confidence": 0.8,
+            "confidence_band": "high",
+        },
+        "contributing_factors": [],
+        "competing_hypotheses": [
+            {
+                "hypothesis_id": "H1",
+                "category": "agent",
+                "claim": "delivered value was wrong",
+                "evidence_for": ["sig:s"],
+                "evidence_against": [],
+            }
+        ],
+        "evidence_refs": ["sig:s"],
+        "excluded_hypotheses": [],
+        "recommended_actions": [],
+        "skill_prescription": None,
+    }
+    analysis.update(overrides)
+    return analysis
+
+
+class TestNewValidatorIntegrityRules(unittest.TestCase):
+    def test_raw_verifier_json_in_fud_is_rejected(self) -> None:
+        from validate_analysis import validate_all
+
+        analysis = _validator_analysis()
+        analysis["first_unrecovered_deviation"]["summary"] = (
+            '{"schema_version": "qeq-verifier-report-1", "message": "spin_selection: FAIL"}'
+        )
+        ok, errors = validate_all(_validator_evidence(), analysis)
+        self.assertFalse(ok)
+        self.assertTrue(any("RAW_VERIFIER_PAYLOAD" in e for e in errors), errors)
+
+    def test_self_check_gap_requires_self_check_evidence(self) -> None:
+        from validate_analysis import validate_all
+
+        analysis = _validator_analysis()
+        analysis["primary_root_cause"]["subtype"] = "self_check_gap"
+        analysis["primary_root_cause"]["code"] = "AGENT_SELF_CHECK_GAP"
+        ok, errors = validate_all(_validator_evidence(), analysis)
+        self.assertTrue(any("SELF_CHECK_GAP_EVIDENCE" in e for e in errors), errors)
+
+        evidence = _validator_evidence(
+            causal_anchors={
+                "self_check": {
+                    "event_id": "trajectory:step:70:tool:0",
+                    "uncovered_failed_checks": ["spin_selection"],
+                }
+            }
+        )
+        _, errors = validate_all(evidence, analysis)
+        self.assertFalse(any("SELF_CHECK_GAP_EVIDENCE" in e for e in errors), errors)
+
 
 class TestVerifierNotRunPrematureBlame(unittest.TestCase):
     def test_premature_completion_alone_fails_when_verifier_not_started(self) -> None:

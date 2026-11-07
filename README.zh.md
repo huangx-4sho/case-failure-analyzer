@@ -72,7 +72,7 @@ case-failure-analyzer/
     └── test_*.py                # 单元、决策表与特征化测试
 ```
 
-`.venv/`、`__pycache__/`、`*.egg-info/`、`.ruff_cache/`、`failure-analysis/` 为本地构建/运行/IDE 产物，已被 `.gitignore` 排除。
+`.venv/`、`__pycache__/`、`*.egg-info/`、`.ruff_cache/`、`.dev/` 为本地构建/运行/IDE 产物，已被 `.gitignore` 排除；bench 侧生成的 `failure-report/` 看板同样不纳入仓库。实际分发的 skill 只包含 `SKILL.md`、`agents/`、`scripts/` 与 `references/`。
 
 ---
 
@@ -88,7 +88,7 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
 python3 "$SKILL_DIR/scripts/analyze_case.py" \
   --job jobs/<job_name> \
   --task tasks/<task_name> \
-  --output failure-analysis/<case_id> \
+  --output <output-dir>/<case_id> \
   --lang bilingual
 ```
 
@@ -102,7 +102,7 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 - `--format`：输出格式：`both`（默认）、`json` 或 `markdown`。
 - `--phase`：执行阶段：`all`（默认：全流水线+保守归因+报告渲染）或 `collect`（仅采集客观证据与候选假设）。
 
-在 `failure-analysis/<case_id>/` 目录下生成的输出文件：
+在 `<output-dir>/<case_id>/` 目录下生成的输出文件：
 - `evidence.json`：单 Trial 客观产物清单、统一运行态 `runtime_state`、标准化轨迹时间线、三方契约审计矩阵及科学软件错误观测。
 - `candidate-hypotheses.json`：带启发式证据强度评分的竞争根因假设列表。
 - `analysis.json`：因果归因结构化结果（`failure-analysis-v1`）——在 `--phase all` 下默认生成保守的确定性草稿。
@@ -121,7 +121,7 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
 python3 "$SKILL_DIR/scripts/analyze_case.py" \
   --job jobs/<job_name> \
   --task tasks/<task_name> \
-  --output failure-analysis/<case_id> \
+  --output <output-dir>/<case_id> \
   --phase collect
 ```
 
@@ -133,15 +133,15 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
 [ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.agents/skills/case-failure-analyzer"
 python3 "$SKILL_DIR/scripts/validate_analysis.py" \
-  --evidence failure-analysis/<case_id>/evidence.json \
-  --analysis failure-analysis/<case_id>/analysis.json \
-  --report  failure-analysis/<case_id>/report.md
+  --evidence <output-dir>/<case_id>/evidence.json \
+  --analysis <output-dir>/<case_id>/analysis.json \
+  --report  <output-dir>/<case_id>/report.md
 
 python3 "$SKILL_DIR/scripts/render_report.py" \
-  --evidence failure-analysis/<case_id>/evidence.json \
-  --analysis failure-analysis/<case_id>/analysis.json \
-  --output-report failure-analysis/<case_id>/report.md \
-  --output-prescription failure-analysis/<case_id>/skill-prescription.md \
+  --evidence <output-dir>/<case_id>/evidence.json \
+  --analysis <output-dir>/<case_id>/analysis.json \
+  --output-report <output-dir>/<case_id>/report.md \
+  --output-prescription <output-dir>/<case_id>/skill-prescription.md \
   --lang bilingual
 ```
 
@@ -183,7 +183,7 @@ python3 -m pytest -q          # 仅在执行 `make dev` 之后
 
 ## 导出生产技能
 
-将生产纯净技能目录（`SKILL.md`、`agents/`、`scripts/`、`references/`）同步导出到目标目录，自动排除单元测试与测试固件（`tests/`）、本地文档镜像（`docs/`）以及开发工程配置（`Makefile`, `pyproject.toml`, `uv.lock`, `.ruff_cache`, `.venv`, `.git`, `failure-analysis/` 等）：
+将生产纯净技能目录（`SKILL.md`、`agents/`、`scripts/`、`references/`）同步导出到目标目录，自动排除单元测试与测试固件（`tests/`）、本地文档镜像（`docs/`）以及开发工程配置（`Makefile`, `pyproject.toml`, `uv.lock`, `.ruff_cache`, `.venv`, `.git`, `.dev/`、旧版 `failure-analysis/` 等）：
 
 ```bash
 # 导出到默认目录（$CODEX_HOME/skills/case-failure-analyzer 或 ~/.codex/skills/case-failure-analyzer）

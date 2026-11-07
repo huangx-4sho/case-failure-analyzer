@@ -1,26 +1,36 @@
 {
-  "schema_version": "ATIF-v1.7",
-  "session_id": "fixture-ase-custom-calculator",
-  "agent": "claude-code",
-  "steps": [
+ "schema_version": "ATIF-v1.7",
+ "session_id": "fixture-ase-custom-calculator",
+ "agent": "claude-code",
+ "steps": [
+  {
+   "step_id": 11,
+   "timestamp": "2026-09-28T08:29:00.000Z",
+   "source": "agent",
+   "message": "Running BFGS relaxation of the copper cluster; convergence criteria not yet reached."
+  },
+  {
+   "step_id": 12,
+   "timestamp": "2026-09-28T08:29:30.000Z",
+   "source": "agent",
+   "message": "BFGS optimizer step: max_force = 0.02863 eV/A, below the 0.05 threshold, relaxation converged.",
+   "tool_calls": [
     {
-      "step_id": 11,
-      "timestamp": "2026-09-28T08:29:00.000Z",
-      "source": "agent",
-      "message": "Running BFGS relaxation of the copper cluster; convergence criteria not yet reached."
-    },
-    {
-      "step_id": 12,
-      "timestamp": "2026-09-28T08:29:30.000Z",
-      "source": "agent",
-      "message": "BFGS optimizer step: max_force = 0.02863 eV/A, below the 0.05 threshold, relaxation converged."
-    },
-    {
-      "step_id": 13,
-      "timestamp": "2026-09-28T08:30:00.000Z",
-      "source": "user",
-      "message": "Deliverables complete."
+     "tool_call_id": "call_00_fixture_bfgs",
+     "function_name": "Bash",
+     "arguments": {
+      "command": "python relax.py --max-force 0.05"
+     }
     }
-  ],
-  "final_metrics": {}
+   ],
+   "observation": "BFGS optimizer step: max_force = 0.02863 eV/A, below the 0.05 threshold, relaxation converged."
+  },
+  {
+   "step_id": 13,
+   "timestamp": "2026-09-28T08:30:00.000Z",
+   "source": "user",
+   "message": "Deliverables complete."
+  }
+ ],
+ "final_metrics": {}
 }
