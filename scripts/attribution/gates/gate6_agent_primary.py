@@ -23,7 +23,7 @@ from report_style import clean_prose, extract_verifier_message
 from runtime_state import SCHEMA_VERSION
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..context import AttributionContext
 
@@ -81,6 +81,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     verifier_started = ctx.verifier_started
 
     # Positive Agent Evidence Attribution
+    contributing_factors: List[Dict[str, Any]] = []
     ev_refs = []
     for s in unrecovered_sci_obs:
         if str(s.get("source_ref", "")).startswith("trajectory:"):
@@ -110,19 +111,67 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         ref = self_check_anchor.get(ref_key)
         if ref and ref not in ev_refs:
             ev_refs.append(str(ref))
-    if deliv_anchor and deliv_anchor.get("event_id"):
-        ref = str(deliv_anchor["event_id"])
-        if ref not in ev_refs:
-            ev_refs.append(ref)
-    elif algo_anchor and algo_anchor.get("event_id"):
-        ref = str(algo_anchor["event_id"])
-        if ref not in ev_refs:
-            ev_refs.append(ref)
-    anchor_fud_ref = (
-        algo_anchor.get("event_id")
-        if algo_anchor
-        else (deliv_anchor.get("event_id") if deliv_anchor else None)
+    for a in (deliv_anchor, algo_anchor):
+        if isinstance(a, dict) and a.get("event_id"):
+            ref = str(a["event_id"])
+            if ref not in ev_refs:
+                ev_refs.append(ref)
+
+    # Collect failed check names for anchor matching
+    stats = ctx.evidence.get("verifier_check_stats") or {}
+    report = ctx.evidence.get("verifier_report") or {}
+    failed_check_names = set(stats.get("failed_check_names") or [])
+    for c in report.get("failed_checks") or []:
+        if isinstance(c, dict) and c.get("name"):
+            failed_check_names.add(str(c["name"]).strip())
+        elif isinstance(c, str):
+            failed_check_names.add(c.strip())
+
+    deliv_matched = bool(
+        isinstance(deliv_anchor, dict) and deliv_anchor.get("matched_failed_checks")
     )
+    algo_matched = bool(isinstance(algo_anchor, dict) and algo_anchor.get("matched_failed_checks"))
+
+    deliv_text = (
+        f"{deliv_anchor.get('command', '')} {deliv_anchor.get('target_path', '')}"
+        if isinstance(deliv_anchor, dict)
+        else ""
+    )
+    algo_text = (
+        f"{algo_anchor.get('command', '')} {algo_anchor.get('target_path', '')}"
+        if isinstance(algo_anchor, dict)
+        else ""
+    )
+
+    deliv_has_check_name = False
+    algo_has_check_name = False
+    if failed_check_names:
+        for name in failed_check_names:
+            if not name:
+                continue
+            name_lower = name.lower()
+            if name_lower in deliv_text.lower():
+                deliv_has_check_name = True
+            if name_lower in algo_text.lower():
+                algo_has_check_name = True
+
+    prefer_deliv = (
+        isinstance(deliv_anchor, dict)
+        and bool(deliv_anchor.get("event_id"))
+        and (
+            (deliv_matched and not algo_matched)
+            or (deliv_has_check_name and not algo_has_check_name)
+        )
+    )
+
+    if prefer_deliv:
+        anchor_fud_ref = deliv_anchor.get("event_id")
+    else:
+        anchor_fud_ref = (
+            algo_anchor.get("event_id")
+            if algo_anchor
+            else (deliv_anchor.get("event_id") if deliv_anchor else None)
+        )
 
     debugging_fail_sigs = [
         s for s in signals if s.get("signal_type") == "iterative_debugging_failure"
@@ -238,8 +287,17 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         )
         skill_prescription = None
     # Subcase 5e: Inaccurate output / calculation error backed by behavioral signals
-    elif (unverified_output_sigs or signals) and fail_text:
+    elif (unverified_output_sigs or signals) and (fail_text or failure_excerpt):
         subcase_id = "5e"
+        combined_fail_text = f"{fail_text}\n{failure_excerpt}"
+        report_failed_checks = [
+            c
+            for c in ((ctx.evidence.get("verifier_report") or {}).get("failed_checks") or [])
+            if isinstance(c, dict)
+        ]
+        all_schema_or_id = bool(report_failed_checks) and all(
+            c.get("failure_kind") == "schema_or_id" for c in report_failed_checks
+        )
         fud_ref = (
             anchor_fud_ref
             or (unverified_output_sigs[0]["event_ref"] if unverified_output_sigs else None)
@@ -247,6 +305,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             or (timeline[-1]["event_id"] if timeline else "ver:fail_log")
         )
         skill_prescription = None
+        contributing_factors = []
 
         if any(s.get("signal_type") == "self_verification_executed" for s in ctx.signals):
             subtype = "self_check_gap"
@@ -306,6 +365,51 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                     "evidence_cases": [f"{case_id}:{fud_ref}"],
                 }
             }
+
+            # Check if fail_text ALSO matches a specific scientific domain issue
+            # Add to contributing_factors so both the self-check gap and scientific discrepancy are surfaced
+            cf_subtype = None
+            cf_code = None
+            cf_summary = None
+            if re.search(
+                r"(?:spin(?:[-_]polarized|_selection)?|UKS|LSD|theory|functional)",
+                combined_fail_text,
+                re.IGNORECASE,
+            ):
+                cf_subtype = "scientific_method_selection"
+                cf_code = "AGENT_SCIENTIFIC_METHOD_SELECTION"
+                cf_summary = f"Underlying method selection discrepancy: {failure_excerpt}"
+            elif re.search(
+                r"(?:timestep.*?too large|stability limit|expected \d+ irreducible k-points|max_force.*?!=|differential step|energy_parameters|cutoff)",
+                combined_fail_text,
+                re.IGNORECASE,
+            ):
+                cf_subtype = "scientific_parameter_selection"
+                cf_code = "AGENT_SCIENTIFIC_PARAMETER_SELECTION"
+                cf_summary = f"Underlying simulation parameter discrepancy: {failure_excerpt}"
+            elif all_schema_or_id or re.search(
+                r"(?:unknown reference id|uses unknown .*? id|schema mismatch|missing (?:required )?(?:field|column|key)s?|shape mismatch|dtype mismatch)",
+                combined_fail_text,
+                re.IGNORECASE,
+            ):
+                cf_subtype = "schema_mismatch"
+                cf_code = "AGENT_SCHEMA_MISMATCH"
+                cf_summary = f"Underlying deliverable schema/reference mismatch: {failure_excerpt}"
+
+            if cf_code and cf_subtype and cf_summary:
+                cf = attach_confidence_metadata(
+                    {
+                        "category": "agent",
+                        "subtype": cf_subtype,
+                        "code": cf_code,
+                        "summary": cf_summary,
+                    },
+                    direct_causal_evidence=len(ev_refs),
+                    cross_source_corroboration=(
+                        1 if (sci_obs or signals or ctx.agent_timeline_events) else 0
+                    ),
+                )
+                contributing_factors.append(cf)
         elif re.search(
             r"(?:spin(?:[-_]polarized|_selection)?|UKS|LSD|theory|functional)",
             fail_text,
@@ -431,6 +535,22 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                     "evidence_cases": [f"{case_id}:{fud_ref}"],
                 }
             }
+        elif all_schema_or_id or re.search(
+            r"(?:unknown reference id|uses unknown .*? id|schema mismatch|missing (?:required )?(?:field|column|key)s?|shape mismatch|dtype mismatch)",
+            combined_fail_text,
+            re.IGNORECASE,
+        ):
+            subtype = "schema_mismatch"
+            code = "AGENT_SCHEMA_MISMATCH"
+            if isinstance(deliv_anchor, dict) and deliv_anchor.get("event_id") and deliv_matched:
+                fud_ref = str(deliv_anchor["event_id"])
+            declared = (ctx.evidence.get("metadata") or {}).get("declared_deliverables") or []
+            target = f"`{declared[0]}`" if declared else "`results.json`"
+            summary = (
+                f"Agent delivered {target} with a structural, representation, "
+                f"or reference-ID mismatch against the verifier contract: {failure_excerpt}"
+            )
+            skill_prescription = None
         else:
             subtype = "result_validation"
             code = "AGENT_RESULT_VALIDATION"
@@ -449,6 +569,22 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         )
         return None
 
+    # Check if multiple failed checks share identical summary/detail (coupled calculation)
+    loc = ctx.check_localization
+    if loc == "widespread":
+        stats = ctx.evidence.get("verifier_check_stats") or {}
+        report = ctx.evidence.get("verifier_report") or {}
+        failed_checks = [c for c in (report.get("failed_checks") or []) if isinstance(c, dict)]
+        details = [str(c.get("detail") or c.get("summary") or "").strip() for c in failed_checks]
+        details = [d for d in details if d]
+        summaries = [
+            str(s).strip() for s in (stats.get("failed_check_summaries") or []) if str(s).strip()
+        ]
+        if (len(details) > 1 and len(set(details)) == 1) or (
+            len(summaries) > 1 and len(set(summaries)) == 1
+        ):
+            loc = None
+
     # A single failing check does not prove the agent decision is the sole
     # blocker; no blind counterfactual bonus here.
     cross_source = 1 if (sci_obs or signals or ctx.agent_timeline_events) else 0
@@ -462,7 +598,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=cross_source,
-        check_localization=ctx.check_localization,
+        check_localization=loc,
         hypothesis_separation=ctx.hypothesis_separation,
     )
     h1 = attach_confidence_metadata(
@@ -478,7 +614,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=cross_source,
-        check_localization=ctx.check_localization,
+        check_localization=loc,
         hypothesis_separation=ctx.hypothesis_separation,
     )
     h2 = attach_confidence_metadata(
@@ -536,7 +672,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             "summary": failure_excerpt if fail_text else summary,
         },
         "primary_root_cause": prc,
-        "contributing_factors": [],
+        "contributing_factors": contributing_factors,
         "competing_hypotheses": [h1, h2],
         "evidence_refs": ev_refs,
         "excluded_hypotheses": [

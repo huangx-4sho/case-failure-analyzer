@@ -23,7 +23,12 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
-from report_style import localize_engine_text, remediation, subtype_label
+from report_style import (
+    localize_engine_text,
+    remediation,
+    render_error_matrix_table,
+    subtype_label,
+)
 
 #: Fixed peer-level order. `unknown` is an auxiliary bucket, not a peer cause.
 PEER_CATEGORIES = ("agent", "verifier", "case", "infra")
@@ -105,8 +110,10 @@ def _failure_reason(evidence: Dict[str, Any], analysis: Dict[str, Any]) -> str:
     if isinstance(report, dict) and report.get("summary"):
         return _text(report["summary"])
     fm = analysis.get("failure_manifestation") or {}
-    if fm.get("summary"):
+    if isinstance(fm, dict) and fm.get("summary"):
         return _text(fm["summary"])
+    if isinstance(fm, str) and fm.strip():
+        return _text(fm)
     return _text((analysis.get("primary_root_cause") or {}).get("summary"))
 
 
@@ -377,9 +384,19 @@ def build_verdict_card(
         "four_categories": categories,
         "subcategories": subcategories,
         "causal_anchors": anchors,
+        "confidence_breakdown": prc.get("confidence_breakdown"),
+        "scientific_observations": list(evidence.get("scientific_observations") or []),
         "named_failed_checks": [
-            {"layer": c.get("layer"), "name": c.get("name"), "detail": _text(c.get("detail"), 300)}
-            for c in named[:5]
+            {
+                "layer": c.get("layer"),
+                "name": c.get("name"),
+                "detail": _text(c.get("detail"), 300),
+                "core": bool(c.get("core")),
+                "source": c.get("source"),
+                "failure_kind": c.get("failure_kind"),
+                "artifact_comparison": c.get("artifact_comparison") or c.get("evidence"),
+            }
+            for c in named[:8]
         ],
         "evidence_refs": list(analysis.get("evidence_refs") or [])[:8],
         "recommended_actions": _recommended_actions(analysis, prc),
@@ -440,7 +457,33 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
             "candidate": "候选假设",
         }
 
-    lines: List[str] = [title, "", lead, "", f"{reason_hdr}: {card['failure_reason']}", ""]
+    lines: List[str] = [title, "", lead]
+    cb = card.get("confidence_breakdown")
+    if cb and isinstance(cb, dict) and cb.get("factors"):
+        badge = "🟢" if float(conf or 0) >= 0.65 else ("🟡" if float(conf or 0) >= 0.40 else "🔴")
+        points = cb.get("points")
+        denom = cb.get("denominator", 10)
+        score_label = f"`{points}/{denom} 分`" if not is_en else f"`{points}/{denom} pts`"
+        factor_parts = []
+        for f in cb.get("factors") or []:
+            delta = f.get("delta", 0)
+            lbl = f.get("label_en") if is_en else (f.get("label_zh") or f.get("key"))
+            sign = f"+{delta}" if delta > 0 else str(delta)
+            icon = "✓" if delta > 0 else ("⚠️" if delta < 0 else "—")
+            factor_parts.append(f"{icon} {lbl}({sign})")
+        parts_str = " · ".join(factor_parts)
+        cb_line = (
+            f"{badge} {score_label} · {parts_str}" if factor_parts else f"{badge} {score_label}"
+        )
+        missing = cb.get("missing_to_raise") or []
+        if missing and float(conf or 0) < 0.75:
+            gap_label = "提分缺口：" if not is_en else "Gap to raise: "
+            gap_items = "、".join(missing) if not is_en else ", ".join(missing)
+            cb_line += f"（{gap_label}{gap_items}）" if not is_en else f" ({gap_label}{gap_items})"
+        cb_hdr = "**Confidence breakdown**" if is_en else "**可信度拆解**"
+        lines.append(f"{cb_hdr}: {cb_line}")
+
+    lines += ["", f"{reason_hdr}: {card['failure_reason']}", ""]
     if card.get("selected_gate"):
         lines += [f"> {gate_hdr}: `{card['selected_gate']}` · {report_line}", ""]
 
@@ -477,11 +520,21 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
         )
     lines.append("")
 
-    if card.get("named_failed_checks"):
-        lines += [checks_hdr + ":"]
-        for c in card["named_failed_checks"]:
-            lines.append(f"- `[{c.get('layer') or 'L?'}] {c.get('name')}` — {c.get('detail')}")
-        lines.append("")
+    if card.get("named_failed_checks") or card.get("scientific_observations"):
+        ev_tmp = {
+            "verifier_report": {"failed_checks": card.get("named_failed_checks") or []},
+            "scientific_observations": card.get("scientific_observations") or [],
+        }
+        matrix = render_error_matrix_table(ev_tmp, lang=lang)
+        if matrix:
+            lines += [checks_hdr + ":"]
+            lines.extend(matrix)
+            lines.append("")
+        elif card.get("named_failed_checks"):
+            lines += [checks_hdr + ":"]
+            for c in card["named_failed_checks"]:
+                lines.append(f"- `[{c.get('layer') or 'L?'}] {c.get('name')}` — {c.get('detail')}")
+            lines.append("")
 
     if card.get("causal_anchors"):
         from trace_causal_anchors import render_causal_anchors_markdown

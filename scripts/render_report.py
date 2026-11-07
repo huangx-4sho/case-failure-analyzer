@@ -30,8 +30,12 @@ from report_style import (
     clean_prose,
     confidence_kind_label,
     evidence_strength_label,
+    format_confidence_breakdown,
     localize_engine_text,
     remediation,
+    render_error_matrix_table,
+    resolve_evidence_item,
+    resolve_key_evidence_summary,
     section_title,
     severity_label,
     stage_label,
@@ -43,6 +47,9 @@ __all__ = [
     "SECONDARY_ARTIFACT_BASENAMES",
     "filter_core_missing_artifacts",
     "format_evidence_list_text",
+    "render_error_matrix_table",
+    "resolve_evidence_item",
+    "resolve_key_evidence_summary",
     "render_job_summary_markdown",
     "render_report_markdown",
     "render_skill_prescription_markdown",
@@ -505,20 +512,34 @@ def _render_verifier_report_block(evidence: Dict[str, Any], lang: str = "bilingu
         )
     if failed:
         lines.append(f"- **{failed_label}** ({len(failed)}):\n")
-        for check in failed[:5]:
-            name = str(check.get("name") or "unnamed_check")
-            layer = str(check.get("layer") or "unspecified")
-            core = " [core]" if check.get("core") else ""
-            detail = clean_prose(check.get("detail"), 260)
-            source = check.get("source")
-            line = f"  - `[{layer}] {name}`{core}"
-            if detail:
-                line += f" — {detail}"
-            if source:
-                line += f" ({source_label}: `{source}`)"
-            lines.append(line + "\n")
-        if len(failed) > 5:
-            lines.append(f"  - … +{len(failed) - 5}\n")
+        table_lines = render_error_matrix_table(evidence, lang=lang)
+        if table_lines:
+            for tl in table_lines:
+                lines.append(tl + "\n")
+        else:
+            for check in failed[:5]:
+                name = str(check.get("name") or "unnamed_check")
+                layer = str(check.get("layer") or "unspecified")
+                core = " [core]" if check.get("core") else ""
+                detail = clean_prose(check.get("detail"), 260)
+                source = check.get("source")
+                line = f"  - `[{layer}] {name}`{core}"
+                if detail:
+                    line += f" — {detail}"
+                if source:
+                    line += f" ({source_label}: `{source}`)"
+                lines.append(line + "\n")
+            if len(failed) > 5:
+                lines.append(f"  - … +{len(failed) - 5}\n")
+    elif any(
+        s.get("error_family") == "verifier_recompute_divergence"
+        for s in (evidence.get("scientific_observations") or [])
+    ):
+        table_lines = render_error_matrix_table(evidence, lang=lang)
+        if table_lines:
+            lines.append(f"- **{failed_label}**:\n")
+            for tl in table_lines:
+                lines.append(tl + "\n")
     if low_diag:
         sep = "; " if lang == "en" else "；"
         reasons = sep.join(
@@ -621,8 +642,10 @@ def _render_evidence_file_pointers(
     # 4. Results
     res_json = art_map.get("results.json")
 
+    vrep_obj = evidence.get("verifier_report")
+    has_vrep = isinstance(vrep_obj, dict) and bool(vrep_obj)
     has_traj = bool((traj and traj.get("exists")) or (cc and cc.get("exists")))
-    has_vlog = bool((vlog and vlog.get("exists")) or (vout and vout.get("exists")))
+    has_vlog = bool((vlog and vlog.get("exists")) or (vout and vout.get("exists")) or has_vrep)
     has_task = bool((inst and inst.get("exists")) or (refs and refs.get("exists")))
     has_results = bool(res_json and res_json.get("exists"))
 
@@ -703,6 +726,28 @@ def _render_evidence_file_pointers(
                 else ("judgment log" if lang == "en" else "评测判定日志 / Judgment Log")
             )
             v_items.append(f"[trial] `verifier/verify.log` ({desc})")
+        elif has_vrep:
+            primary = str(vrep_obj.get("primary_report") or "verify.json")
+            sources = vrep_obj.get("source_files") or [primary]
+            shown_sources: List[str] = []
+            if primary:
+                shown_sources.append(primary)
+            for s in sources:
+                s_rel = str(s.get("rel_path") or "") if isinstance(s, dict) else str(s or "")
+                if s_rel and s_rel not in shown_sources:
+                    shown_sources.append(s_rel)
+            desc = (
+                "结构化验证报告"
+                if lang == "zh"
+                else (
+                    "structured verifier report"
+                    if lang == "en"
+                    else "结构化验证报告 / Structured Verifier Report"
+                )
+            )
+            for s in shown_sources[:3]:
+                p = f"verifier/{s}" if not str(s).startswith("verifier/") else str(s)
+                v_items.append(f"[trial] `{p}` ({desc})")
         elif vlog:
             m_tag = (
                 "【缺失】"
@@ -718,7 +763,7 @@ def _render_evidence_file_pointers(
                 else ("test stdout" if lang == "en" else "测试输出 / Test Stdout")
             )
             v_items.append(f"[trial] `verifier/test-stdout.txt` ({desc})")
-        elif vout and not vlog:
+        elif vout and not vlog and not has_vrep:
             m_tag = (
                 "【缺失】"
                 if lang == "zh"
@@ -914,6 +959,7 @@ def _render_chinese_bilingual_core(
     reward = runtime.get("reward")
     conf_kind_label = confidence_kind_label(conf_kind, "en" if include_en_labels else "zh")
     strength_label = evidence_strength_label(ev_strength, "en" if include_en_labels else "zh")
+    badge = "🟢" if conf_val >= 0.65 else ("🟡" if conf_val >= 0.40 else "🔴")
     if include_en_labels:
         lines.append(
             "| 项目 (Field) | 结论 (Finding) |\n"
@@ -921,7 +967,7 @@ def _render_chinese_bilingual_core(
             f"| **评测结论 (Verdict)** | `{verdict}` · 执行 `{exec_status}` · 验证 `{verification}` · reward `{reward}` |\n"
             f"| **主因 (Primary cause)** | `{cat}` {cat_zh} → {subtype_zh} `{subtype}` · `{code}` |\n"
             f"| **阶段 (Stages)** | 发生 {stage_label(f_stage, 'zh')} → 检出 {stage_label(d_stage, 'zh')} |\n"
-            f"| **置信度 (Confidence)** | **{conf_val:.2f}** · {conf_kind_label} · 证据强度 {strength_label} |\n"
+            f"| **置信度 (Confidence)** | {badge} **{conf_val:.2f}** · {conf_kind_label} · 证据强度 {strength_label} |\n"
         )
     else:
         lines.append(
@@ -930,8 +976,13 @@ def _render_chinese_bilingual_core(
             f"| **评测结论** | `{verdict}` · 执行 `{exec_status}` · 验证 `{verification}` · reward `{reward}` |\n"
             f"| **主因** | `{cat}` {cat_zh} → {subtype_zh} `{subtype}` · `{code}` |\n"
             f"| **阶段** | 发生 {stage_label(f_stage, 'zh')} → 检出 {stage_label(d_stage, 'zh')} |\n"
-            f"| **置信度** | **{conf_val:.2f}** · {conf_kind_label} · 证据强度 {strength_label} |\n"
+            f"| **置信度** | {badge} **{conf_val:.2f}** · {conf_kind_label} · 证据强度 {strength_label} |\n"
         )
+    cb_row = format_confidence_breakdown(
+        prc.get("confidence_breakdown"), conf_val, lang="bilingual" if include_en_labels else "zh"
+    )
+    if cb_row:
+        lines.append(cb_row)
 
     gate_warn = _render_gate_warning(
         runtime, verdict=verdict, lang="bilingual" if include_en_labels else "zh"
@@ -1006,6 +1057,15 @@ def _render_chinese_bilingual_core(
         )
 
     ev_refs = analysis.get("evidence_refs") or ["art:trial_result"]
+    ev_summary = resolve_key_evidence_summary(
+        ev_refs, evidence, lang="bilingual" if include_en_labels else "zh"
+    )
+    if ev_summary:
+        hdr = "### 核心实证清单 (Key Evidence Summary)" if include_en_labels else "### 核心实证清单"
+        lines.append(f"\n{hdr}\n")
+        for item in ev_summary:
+            lines.append(f"- {item}")
+        lines.append("")
     lines.append(
         "- **证据引用 (Evidence references)**: " + ", ".join(f"`{r}`" for r in ev_refs)
         if include_en_labels
@@ -1112,16 +1172,28 @@ def _render_chinese_bilingual_core(
     if sp and isinstance(sp, dict):
         rec_skill = sp.get("recommended_skill") or sp
         name = rec_skill.get("name")
-        gap_str = ", ".join(rec_skill.get("capability_gap") or [])
+        raw_gaps = rec_skill.get("capability_gap") or []
         if include_en_labels:
+            gap_str = ", ".join(str(g) for g in raw_gaps)
             lines.append(
                 f"- **技能处方 (Skill prescription)**: 建议新增/更新 `{name}` (Capability gap: {gap_str})"
             )
         else:
-            lines.append(f"- **技能处方**: 建议新增/更新 `{name}`（能力缺口: {gap_str}）")
+            gap_str = "；".join(localize_engine_text(str(g), "zh") for g in raw_gaps)
+            lines.append(f"- **技能处方**: 建议新增/更新 `{name}`（能力缺口：{gap_str}）")
 
     missing = evidence.get("missing_artifacts") or []
     if missing:
+        if isinstance(evidence.get("verifier_report"), dict) and evidence.get("verifier_report"):
+            missing = [
+                m
+                for m in missing
+                if not (
+                    m in ("verifier/verify.log", "verify.log")
+                    or m.endswith("/verify.log")
+                    or m.endswith(":verify.log")
+                )
+            ]
         core_missing, secondary_cnt = filter_core_missing_artifacts(missing)
         if core_missing:
             core_str = ", ".join(f"`{m}`" for m in core_missing)
@@ -1184,14 +1256,18 @@ def _render_english_edition(
     internal_cause = prc_summary or direct_cause or "N/A"
     manifestation_line = _manifestation_summary(evidence, direct_cause, "en")
     attribution_line = _attribution_sentence(prc, internal_cause, "en")
+    badge = "🟢" if conf_val >= 0.65 else ("🟡" if conf_val >= 0.40 else "🔴")
     lines.append(
         "| Field | Finding |\n"
         "|---|---|\n"
         f"| **Verdict** | `{verdict}` · execution `{exec_status}` · verification `{runtime.get('verification_status', 'unknown')}` · reward `{runtime.get('reward')}` |\n"
         f"| **Primary cause** | `{cat}` {cat_en} → {subtype_label(subtype, 'en')} `{subtype}` · `{code}` |\n"
         f"| **Stages** | occurred at {stage_label(f_stage, 'en')} → detected at {stage_label(d_stage, 'en')} |\n"
-        f"| **Confidence** | **{conf_val:.2f}** · {confidence_kind_label(conf_kind, 'en')} · evidence strength {evidence_strength_label(ev_strength, 'en')} |\n"
+        f"| **Confidence** | {badge} **{conf_val:.2f}** · {confidence_kind_label(conf_kind, 'en')} · evidence strength {evidence_strength_label(ev_strength, 'en')} |\n"
     )
+    cb_row = format_confidence_breakdown(prc.get("confidence_breakdown"), conf_val, lang="en")
+    if cb_row:
+        lines.append(cb_row)
 
     gate_warn = _render_gate_warning(runtime, verdict=verdict, lang="en")
     if gate_warn:
@@ -1244,6 +1320,12 @@ def _render_english_edition(
         )
 
     ev_refs = analysis.get("evidence_refs") or ["art:trial_result"]
+    ev_summary = resolve_key_evidence_summary(ev_refs, evidence, lang="en")
+    if ev_summary:
+        lines.append("\n### Key Evidence Summary\n")
+        for item in ev_summary:
+            lines.append(f"- {item}")
+        lines.append("")
     lines.append("- **Evidence references**: " + ", ".join(f"`{r}`" for r in ev_refs))
 
     lines.extend(_render_diagnostics_block(evidence, lang="en"))
@@ -1322,6 +1404,16 @@ def _render_english_edition(
 
     missing = evidence.get("missing_artifacts") or []
     if missing:
+        if isinstance(evidence.get("verifier_report"), dict) and evidence.get("verifier_report"):
+            missing = [
+                m
+                for m in missing
+                if not (
+                    m in ("verifier/verify.log", "verify.log")
+                    or m.endswith("/verify.log")
+                    or m.endswith(":verify.log")
+                )
+            ]
         core_missing, secondary_cnt = filter_core_missing_artifacts(missing)
         if core_missing:
             core_str = ", ".join(f"`{m}`" for m in core_missing)
@@ -1451,16 +1543,117 @@ def _render_passed_edition(
     if diagnostics_block:
         lines.append("\n".join(diagnostics_block) + "\n")
 
-    artifacts = evidence.get("artifacts") or []
-    existing = [a.get("rel_path") for a in artifacts if a.get("exists") and a.get("rel_path")]
-    if existing:
-        art_items = ", ".join(f"`{p}`" for p in existing)
+    vrep = evidence.get("verifier_report") or {}
+    if isinstance(vrep, dict):
+        passed_cnt = vrep.get("passed_check_count")
+        cov = vrep.get("verification_coverage")
+        limits = vrep.get("coverage_limits")
+        if passed_cnt is not None or cov is not None:
+            cov_parts = []
+            if passed_cnt is not None:
+                cov_parts.append(
+                    f"通过检查项 `{passed_cnt}`"
+                    if lang != "en"
+                    else f"passed checks `{passed_cnt}`"
+                )
+            if cov is not None:
+                cov_val = f"{cov:.1%}" if isinstance(cov, float) and cov <= 1.0 else str(cov)
+                cov_parts.append(f"覆盖率 `{cov_val}`" if lang != "en" else f"coverage `{cov_val}`")
+            if limits:
+                if isinstance(limits, list):
+                    lim_first = clean_prose(limits[0], 110) if limits else ""
+                    lim_extra = (
+                        f" 等 {len(limits)} 条"
+                        if len(limits) > 1 and lang != "en"
+                        else (f" (+{len(limits) - 1} more)" if len(limits) > 1 else "")
+                    )
+                    lim_str = f"{lim_first}{lim_extra}"
+                else:
+                    lim_str = clean_prose(limits, 120)
+                cov_parts.append(f"验证说明：{lim_str}" if lang != "en" else f"scope: {lim_str}")
+            if lang == "en":
+                lines.append(f"- **Check coverage**: {', '.join(cov_parts)}\n")
+            elif lang == "zh":
+                lines.append(f"- **检查覆盖**: {' · '.join(cov_parts)}\n")
+            else:
+                lines.append(f"- **检查覆盖 (Check coverage)**: {' · '.join(cov_parts)}\n")
+
+    sci = evidence.get("scientific_observations") or []
+    recovered_sci = [s for s in sci if s.get("recovered")]
+    if recovered_sci:
+        rec_cnt = len(recovered_sci)
         if lang == "en":
-            lines.append(f"- **Verified artifacts**: {art_items}\n")
+            lines.append(
+                f"- **Recovered warnings**: {rec_cnt} transient diagnostic warning(s) recovered cleanly\n"
+            )
         elif lang == "zh":
-            lines.append(f"- **已验证产物**: {art_items}\n")
+            lines.append(f"- **自愈警告**: 检出并自愈 {rec_cnt} 项瞬态运行警告\n")
         else:
-            lines.append(f"- **已验证产物 (Verified artifacts)**: {art_items}\n")
+            lines.append(
+                f"- **自愈警告 (Recovered warnings)**: 检出并自愈 {rec_cnt} 项瞬态运行警告 ({rec_cnt} recovered)\n"
+            )
+
+    artifacts = evidence.get("artifacts") or []
+    seen = set()
+    existing: List[str] = []
+    for a in artifacts:
+        p = a.get("rel_path")
+        if a.get("exists") and p and p not in seen:
+            seen.add(p)
+            existing.append(p)
+
+    noise_prefixes = (
+        "environment/assets/dependencies/",
+        "environment/assets/wheels/",
+    )
+    noise_suffixes = (".whl", ".deb", "SHA256SUMS", "lock.json")
+
+    clean_artifacts: List[str] = []
+    noise_count = 0
+    for p in existing:
+        if any(p.startswith(pr) or f"/{pr}" in p for pr in noise_prefixes) or any(
+            p.endswith(suf) for suf in noise_suffixes
+        ):
+            noise_count += 1
+        else:
+            clean_artifacts.append(p)
+
+    def _priority_score(p: str) -> int:
+        plow = p.lower()
+        if "artifacts/app/" in plow or plow.startswith("artifacts/"):
+            return 0
+        if plow.startswith("results.json") or plow.startswith("result.json"):
+            return 1
+        if plow.startswith("verifier/"):
+            return 2
+        if "agent/trajectory.json" in plow or "claude-code.txt" in plow:
+            return 3
+        if "instruction.md" in plow:
+            return 4
+        if "tests/verify.py" in plow or "refs.json" in plow:
+            return 5
+        return 6
+
+    sorted_artifacts = sorted(clean_artifacts, key=_priority_score)
+    displayed_artifacts = sorted_artifacts[:10]
+    omitted_count = (len(sorted_artifacts) - len(displayed_artifacts)) + noise_count
+
+    if displayed_artifacts:
+        art_items = ", ".join(f"`{p}`" for p in displayed_artifacts)
+        if omitted_count > 0:
+            suffix_zh = f" 等共 {len(existing)} 项产物（已折叠环境依赖包）"
+            suffix_en = f" (+{omitted_count} more; vendor wheels omitted)"
+            suffix_bi = f" 等共 {len(existing)} 项产物（已折叠环境依赖包 / +{omitted_count} more; vendor wheels omitted）"
+        else:
+            suffix_zh = ""
+            suffix_en = ""
+            suffix_bi = ""
+        if lang == "en":
+            lines.append(f"- **Verified artifacts**: {art_items}{suffix_en}\n")
+        elif lang == "zh":
+            lines.append(f"- **已验证产物**: {art_items}{suffix_zh}\n")
+        else:
+            lines.append(f"- **已验证产物 (Verified artifacts)**: {art_items}{suffix_bi}\n")
     else:
         if lang == "en":
             lines.append("- **Verified artifacts**: passed with no additional artifact records.\n")

@@ -99,6 +99,98 @@ MESSAGE_KEYS = ("message", "reason", "detail", "scope", "submission_criteria_sta
 NAME_KEYS = ("name", "criterion", "check", "id", "key")
 DETAIL_KEYS = ("detail", "summary", "actual", "message", "description", "reason")
 
+_ENV_RUNTIME_RE = re.compile(
+    r"\b(?:ENV_INVALID|FileNotFoundError|Traceback|Exception|Crash)\b|missing/damaged",
+    re.IGNORECASE,
+)
+_TRACE_PROV_RE = re.compile(
+    r"\b(?:trace|provenance|receipt|log|execution_or_analysis_trace)\b",
+    re.IGNORECASE,
+)
+_SCHEMA_ID_RE = re.compile(
+    r"unknown\s+reference\s+ids?|\b(?:schema|missing\s+field|missing\s+key|missing\s+column|shape\s+mismatch|dtype|type\s+mismatch|parse|invalid\s+format)\b",
+    re.IGNORECASE,
+)
+_NUMERICAL_KEYWORDS_RE = re.compile(
+    r"\b(?:differs\s+from|recomputed|tolerance|bound|mae|rmse|ev|hartree|kcal|deviation)\b|!=|(?:\d+(?:\.\d+)?\s*(?:[A-Za-z/]+)?\s*(?:deviation|error))",
+    re.IGNORECASE,
+)
+
+
+def _bounded_json_copy(obj: Any, max_depth: int = 5, max_items: int = 100) -> Any:
+    """Return a bounded, JSON-safe copy of evidence data."""
+    if max_depth <= 0:
+        return None
+    if isinstance(obj, (int, float, str, bool)) or obj is None:
+        return obj
+    if isinstance(obj, list):
+        return [_bounded_json_copy(x, max_depth - 1, max_items) for x in obj[:max_items]]
+    if isinstance(obj, dict):
+        res = {}
+        for i, (k, v) in enumerate(obj.items()):
+            if i >= max_items:
+                break
+            res[str(k)] = _bounded_json_copy(v, max_depth - 1, max_items)
+        return res
+    return str(obj)
+
+
+def _has_numeric_values(val: Any) -> bool:
+    """Return True if val contains any numeric scalar."""
+    if isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return True
+    if isinstance(val, (list, tuple, set)):
+        return any(_has_numeric_values(v) for v in val)
+    if isinstance(val, dict):
+        return any(_has_numeric_values(v) for v in val.values())
+    if isinstance(val, str):
+        return bool(re.search(r"\d", val))
+    return False
+
+
+def _classify_failure_kind(
+    name: str,
+    detail: str,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Classify the failure category of a failed check."""
+    name_str = name or ""
+    detail_str = detail or ""
+    combined = f"{name_str} {detail_str}"
+
+    if _ENV_RUNTIME_RE.search(combined):
+        return "env_or_runtime"
+    if _TRACE_PROV_RE.search(combined):
+        return "trace_or_provenance"
+    if _SCHEMA_ID_RE.search(combined):
+        return "schema_or_id"
+
+    if _NUMERICAL_KEYWORDS_RE.search(combined):
+        return "numerical"
+    if isinstance(evidence, dict) and evidence:
+        if any(
+            k in evidence
+            for k in (
+                "recomputed_eV",
+                "recomputed",
+                "expected",
+                "reference",
+                "tolerance",
+                "bound",
+                "diff",
+            )
+        ):
+            return "numerical"
+        if _has_numeric_values(evidence):
+            return "numerical"
+    if re.search(r"\d+\.\d+", detail_str):
+        return "numerical"
+
+    return "general"
+
+
 #: Root-level scoring envelopes, in *authority* order (NOT alphabetical):
 #: `verify.json` is the final graded verdict; `science.json` /
 #: `raw-verifier.json` are native reports that may predate regrading.
@@ -174,7 +266,7 @@ def _normalize_check(
         name = str(_first_value(item, NAME_KEYS) or "")
     detail = _text(_first_value(item, DETAIL_KEYS))
     core_raw = item.get("core")
-    return {
+    rec: Dict[str, Any] = {
         "layer": layer or "unspecified",
         "name": name or "unnamed_check",
         "ok": ok,
@@ -182,6 +274,16 @@ def _normalize_check(
         "core": core_raw is True or str(core_raw).lower() == "true",
         "source": source,
     }
+    raw_ev = item.get("evidence")
+    safe_ev = None
+    if isinstance(raw_ev, dict) and raw_ev:
+        safe_ev = _bounded_json_copy(raw_ev)
+        rec["evidence"] = safe_ev
+
+    if ok is False:
+        rec["failure_kind"] = _classify_failure_kind(rec["name"], detail, safe_ev)
+
+    return rec
 
 
 def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str, Any]]) -> None:
@@ -326,10 +428,27 @@ def _dedupe_checks(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             order.append(key)
             continue
         prev = best[key]
-        score = (len(rec["detail"]), int(rec["core"]), int(rec["ok"] is False))
-        prev_score = (len(prev["detail"]), int(prev["core"]), int(prev["ok"] is False))
+        score = (
+            len(rec.get("detail", "")),
+            int(rec.get("core", False)),
+            int(rec.get("ok") is False),
+        )
+        prev_score = (
+            len(prev.get("detail", "")),
+            int(prev.get("core", False)),
+            int(prev.get("ok") is False),
+        )
         if score > prev_score:
+            if "evidence" in prev and "evidence" not in rec:
+                rec["evidence"] = prev["evidence"]
+            if "failure_kind" in prev and "failure_kind" not in rec:
+                rec["failure_kind"] = prev["failure_kind"]
             best[key] = rec
+        else:
+            if "evidence" in rec and "evidence" not in prev:
+                prev["evidence"] = rec["evidence"]
+            if "failure_kind" in rec and "failure_kind" not in prev:
+                prev["failure_kind"] = rec["failure_kind"]
     return [best[k] for k in order]
 
 
@@ -432,11 +551,31 @@ def _assess_diagnosability(
             reasons.append("failure reason is a terse generic message with no named check or value")
     else:
         if not details:
-            reasons.append("failed checks carry no detail text")
+            # If all failed checks have numeric evidence, they are diagnosable
+            if not any(
+                isinstance(c.get("evidence"), dict) and _has_numeric_values(c["evidence"])
+                for c in failed
+            ):
+                reasons.append("failed checks carry no detail text")
         elif len(failed) >= 2 and len(set(details)) <= 1 and len(details[0]) < 100:
             reasons.append("multiple failed checks share one terse message")
+
+        # Do NOT flag "failed check details contain no numerical deviation" when:
+        # (a) any failed check has numeric values inside check.get("evidence"), OR
+        # (b) all failed checks have failure_kind in ("schema_or_id", "trace_or_provenance", "env_or_runtime")
+        has_numeric_in_evidence = any(
+            isinstance(c.get("evidence"), dict) and _has_numeric_values(c["evidence"])
+            for c in failed
+        )
+        all_non_numerical = bool(failed) and all(
+            c.get("failure_kind") in ("schema_or_id", "trace_or_provenance", "env_or_runtime")
+            for c in failed
+        )
+
         if details and not any(re.search(r"\d", d) for d in details):
-            reasons.append("failed check details contain no numerical deviation")
+            if not has_numeric_in_evidence and not all_non_numerical:
+                reasons.append("failed check details contain no numerical deviation")
+
     return ("low" if reasons else "normal"), reasons
 
 
@@ -555,8 +694,41 @@ def build_verifier_report(
                 }
             )
 
+    # Ensure all failed checks carry failure_kind
+    for c in checks:
+        if c.get("ok") is False and "failure_kind" not in c:
+            c["failure_kind"] = _classify_failure_kind(
+                c.get("name", ""), c.get("detail", ""), c.get("evidence")
+            )
+
     failed = [c for c in checks if c["ok"] is False]
     passed = [c for c in checks if c["ok"] is True]
+
+    # Extract top-level verification coverage and limits from any non-historical doc
+    verification_coverage: Optional[str] = None
+    coverage_limits: List[str] = []
+    for _, doc in docs:
+        if role(_) == "historical":
+            continue
+        if verification_coverage is None:
+            cov = doc.get("verification_coverage") or doc.get("verification_implementation")
+            if isinstance(cov, str) and cov.strip():
+                verification_coverage = _text(cov.strip(), 240)
+        if not coverage_limits and "coverage_limits" in doc:
+            raw_limits = doc.get("coverage_limits")
+            if isinstance(raw_limits, list):
+                for item in raw_limits:
+                    if isinstance(item, str) and item.strip():
+                        coverage_limits.append(_text(item.strip(), 240))
+                    elif isinstance(item, dict):
+                        limit_text = (
+                            item.get("description")
+                            or item.get("limit")
+                            or item.get("name")
+                            or _text(item, 240)
+                        )
+                        if limit_text:
+                            coverage_limits.append(_text(limit_text, 240))
 
     verdict: Optional[str] = None
     for doc in ordered_docs:
@@ -611,6 +783,8 @@ def build_verifier_report(
             f"[{c['layer']}] {c['name']}" + (f": {c['detail'][:200]}" if c["detail"] else "")
             for c in failed
         ],
+        "verification_coverage": verification_coverage,
+        "coverage_limits": coverage_limits,
         "diagnosability": diag,
         "diagnosability_reasons": diag_reasons,
         "summary": _summarize(failed, fields["core_failures"], fields["messages"]),

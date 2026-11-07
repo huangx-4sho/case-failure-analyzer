@@ -22,7 +22,30 @@
     "summary": "Verifier compared instantaneous late-step coordinates/energies rather than ensemble averages despite physical/numerical chaos.",
     "confidence": 0.5,
     "confidence_kind": "heuristic_evidence_score",
-    "evidence_strength": "medium"
+    "evidence_strength": "medium",
+    "confidence_breakdown": {
+      "points": 3,
+      "raw_points": 3,
+      "denominator": 6,
+      "factors": [
+        {
+          "key": "direct_causal_evidence",
+          "delta": 2,
+          "label_zh": "直接因果实证 (2项)",
+          "label_en": "Direct causal evidence (2)"
+        },
+        {
+          "key": "cross_source_corroboration",
+          "delta": 1,
+          "label_zh": "跨源证据互证",
+          "label_en": "Cross-source corroboration"
+        }
+      ],
+      "missing_to_raise": [
+        "需独立复算值或唯一失败检查以构成反事实闭环",
+        "验证器未提供定量数值偏差与容差比值"
+      ]
+    }
   },
   "contributing_factors": [
     {
@@ -32,7 +55,24 @@
       "summary": "Benchmark case did not fix RNG seeds or specify ensemble statistical verification bounds.",
       "confidence": 0.17,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 1,
+        "raw_points": 1,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "direct_causal_evidence",
+            "delta": 1,
+            "label_zh": "直接因果实证 (1项)",
+            "label_en": "Direct causal evidence (1)"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     }
   ],
   "competing_hypotheses": [
@@ -50,7 +90,30 @@
       "counterfactual_test": "Compare ensemble averages or pin MPI/OMP thread counts.",
       "confidence": 0.5,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "medium"
+      "evidence_strength": "medium",
+      "confidence_breakdown": {
+        "points": 3,
+        "raw_points": 3,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "direct_causal_evidence",
+            "delta": 2,
+            "label_zh": "直接因果实证 (2项)",
+            "label_en": "Direct causal evidence (2)"
+          },
+          {
+            "key": "cross_source_corroboration",
+            "delta": 1,
+            "label_zh": "跨源证据互证",
+            "label_en": "Cross-source corroboration"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     },
     {
       "hypothesis_id": "H2",
@@ -66,7 +129,24 @@
       "counterfactual_test": "Check ensemble average match reported in `verify.log`.",
       "confidence": 0.0,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 0,
+        "raw_points": -2,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "contradicting_evidence",
+            "delta": -2,
+            "label_zh": "存在反驳证据",
+            "label_en": "Contradicting evidence"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     },
     {
       "hypothesis_id": "H3",
@@ -84,7 +164,30 @@
       "counterfactual_test": "Patch `tests/verify.py` parser/header/schema handling and re-verify existing workspace outputs.",
       "confidence": 0.67,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "high"
+      "evidence_strength": "high",
+      "confidence_breakdown": {
+        "points": 4,
+        "raw_points": 4,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "direct_causal_evidence",
+            "delta": 3,
+            "label_zh": "直接因果实证 (3项)",
+            "label_en": "Direct causal evidence (3)"
+          },
+          {
+            "key": "cross_source_corroboration",
+            "delta": 1,
+            "label_zh": "跨源证据互证",
+            "label_en": "Cross-source corroboration"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     },
     {
       "hypothesis_id": "H4",
@@ -100,7 +203,24 @@
       "counterfactual_test": "Inspect agent trajectory and generated workspace files for explicit errors.",
       "confidence": 0.0,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 0,
+        "raw_points": -2,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "missing_discriminating_evidence",
+            "delta": -2,
+            "label_zh": "缺失关键鉴别证据",
+            "label_en": "Missing discriminating evidence"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     }
   ],
   "evidence_refs": [

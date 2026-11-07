@@ -496,7 +496,196 @@ def extract_scientific_errors(
                     )
                 sci_counter += 1
 
+    # Attach artifact comparisons onto failed checks if verifier report and trial artifacts exist
+    if verifier_report and trial_dir:
+        pair_verifier_evidence_with_artifacts(verifier_report, trial_dir)
+
     return {"scientific_observations": observations}
+
+
+def _collect_artifact_numbers(trial_dir: Path) -> List[Tuple[str, float, str]]:
+    """Scan JSON and CSV files under <trial>/artifacts and extract numeric records.
+
+    Returns a list of (metric_key, delivered_value, artifact_ref).
+    """
+    root = trial_dir / "artifacts"
+    if not root.is_dir():
+        return []
+
+    records: List[Tuple[str, float, str]] = []
+    scanned = 0
+
+    for path in sorted(root.rglob("*")):
+        if scanned >= 100:
+            break
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in (".json", ".csv", ".tsv"):
+            continue
+        try:
+            if path.stat().st_size > MAX_DELIVERABLE_BYTES:
+                continue
+        except OSError:
+            continue
+        scanned += 1
+
+        try:
+            rel_path = path.relative_to(trial_dir).as_posix()
+        except ValueError:
+            rel_path = path.name
+
+        art_ref = f"art:{rel_path}"
+
+        if suffix == ".json":
+            try:
+                data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, ValueError):
+                continue
+
+            def _walk_json(node: Any, prefix: str = "", target_ref: str = art_ref) -> None:
+                if len(records) >= 2000:
+                    return
+                if isinstance(node, dict):
+                    for k, v in node.items():
+                        full_key = f"{prefix}.{k}" if prefix else str(k)
+                        _walk_json(v, full_key, target_ref)
+                elif isinstance(node, list):
+                    for idx, v in enumerate(node):
+                        full_key = f"{prefix}[{idx}]"
+                        _walk_json(v, full_key, target_ref)
+                elif isinstance(node, (int, float)) and not isinstance(node, bool):
+                    if math.isfinite(node):
+                        leaf = prefix.split(".")[-1].split("[")[0]
+                        records.append((leaf, float(node), target_ref))
+
+            _walk_json(data)
+
+        elif suffix in (".csv", ".tsv"):
+            delimiter = "," if suffix == ".csv" else "\t"
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                reader = csv.DictReader(text.splitlines(), delimiter=delimiter)
+                for row_idx, row in enumerate(reader):
+                    if row_idx >= 200:
+                        break
+                    for col_name, val_str in row.items():
+                        if not val_str or not col_name:
+                            continue
+                        try:
+                            val = float(val_str.strip())
+                            if math.isfinite(val):
+                                records.append((col_name.strip(), val, art_ref))
+                        except ValueError:
+                            continue
+            except Exception:
+                continue
+
+    return records
+
+
+def pair_verifier_evidence_with_artifacts(verifier_report: Dict[str, Any], trial_dir: Path) -> None:
+    """Pair structured verifier evidence arrays/dicts with delivered artifacts.
+
+    Attaches 'artifact_comparison' and 'evidence_comparison' onto matching failed
+    checks without emitting false verifier_recompute_divergence observations.
+    """
+    if not isinstance(verifier_report, dict) or not trial_dir:
+        return
+    failed_checks = verifier_report.get("failed_checks") or []
+    if not failed_checks:
+        return
+
+    artifact_numbers = _collect_artifact_numbers(trial_dir)
+    if not artifact_numbers:
+        return
+
+    used_candidates: Set[Tuple[str, float, str]] = set()
+
+    for fc in failed_checks:
+        if not isinstance(fc, dict):
+            continue
+        ev = fc.get("evidence")
+        if not isinstance(ev, dict) or not ev:
+            continue
+
+        targets: List[Tuple[Optional[str], float]] = []
+
+        # 1. Array of recomputed values (e.g. recomputed_eV: [IP0, IP1, chi, J])
+        recomp_ev = ev.get("recomputed_eV")
+        if isinstance(recomp_ev, list):
+            for x in recomp_ev:
+                if isinstance(x, (int, float)) and not isinstance(x, bool):
+                    targets.append((None, float(x)))
+        elif isinstance(recomp_ev, (int, float)) and not isinstance(recomp_ev, bool):
+            targets.append((None, float(recomp_ev)))
+
+        # 2. Scalar numeric expected / recomputed / reference keys
+        for key in ("recomputed", "expected", "reference", "ref"):
+            if key in ev and isinstance(ev[key], (int, float)) and not isinstance(ev[key], bool):
+                m_hint = ev.get("metric") or fc.get("name")
+                targets.append((str(m_hint) if m_hint else None, float(ev[key])))
+
+        # 3. Other scalar float/int metrics in evidence (e.g. IP0_eV: 7.48...)
+        for k, v in ev.items():
+            if k in (
+                "recomputed_eV",
+                "recomputed",
+                "expected",
+                "reference",
+                "ref",
+                "selected",
+                "metric",
+            ):
+                continue
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                targets.append((str(k), float(v)))
+
+        comparisons: List[Dict[str, Any]] = []
+
+        for metric_hint, rec_val in targets:
+            best_cand: Optional[Tuple[str, float, str]] = None
+            best_diff = float("inf")
+
+            for cand_key, delivered_val, art_ref in artifact_numbers:
+                diff = abs(delivered_val - rec_val)
+                rel_diff = diff / (abs(rec_val) + 1e-12)
+
+                if metric_hint:
+                    # Key name match
+                    key_match = (
+                        cand_key.lower() == metric_hint.lower()
+                        or metric_hint.lower() in cand_key.lower()
+                        or cand_key.lower() in metric_hint.lower()
+                    )
+                    if key_match and diff < best_diff and (diff < 0.5 or rel_diff < 0.1):
+                        best_diff = diff
+                        best_cand = (cand_key, delivered_val, art_ref)
+                else:
+                    # Numerical proximity match
+                    cand_ident = (cand_key, delivered_val, art_ref)
+                    if cand_ident in used_candidates:
+                        continue
+                    if (rel_diff < 0.05 or diff < 0.05) and diff < best_diff:
+                        best_diff = diff
+                        best_cand = (cand_key, delivered_val, art_ref)
+
+            if best_cand is not None:
+                used_candidates.add(best_cand)
+                cand_key, delivered_val, art_ref = best_cand
+                comparisons.append(
+                    {
+                        "metric": cand_key,
+                        "delivered": delivered_val,
+                        "recomputed": rec_val,
+                        "abs_diff": abs(delivered_val - rec_val),
+                        "artifact_ref": art_ref,
+                    }
+                )
+
+        if comparisons:
+            fc["artifact_comparison"] = comparisons
+            fc["evidence_comparison"] = comparisons
 
 
 def _read_bounded_text(path: Path, max_bytes: int = 200000) -> str:

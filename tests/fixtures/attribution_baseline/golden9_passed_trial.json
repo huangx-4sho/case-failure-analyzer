@@ -17,7 +17,21 @@
     "summary": "No failure occurred; trial completed and passed verification (reward >= 1.0).",
     "confidence": 1.0,
     "confidence_kind": "heuristic_evidence_score",
-    "evidence_strength": "high"
+    "evidence_strength": "high",
+    "confidence_breakdown": {
+      "points": 6,
+      "raw_points": 6,
+      "denominator": 6,
+      "factors": [
+        {
+          "key": "verdict_passed",
+          "delta": 6,
+          "label_zh": "验证规则全量通过",
+          "label_en": "All verification rules passed"
+        }
+      ],
+      "missing_to_raise": []
+    }
   },
   "contributing_factors": [],
   "competing_hypotheses": [],

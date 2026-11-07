@@ -78,9 +78,34 @@ case-failure-analyzer/
 
 ## 使用方法
 
-所有命令均通过入口脚本执行。若在 Skill 根目录内运行，可直接使用简写形式 `python3 scripts/analyze_case.py ...`。
+### 1. 统一 CFA 命令行工具与任务号模式（推荐）
 
-### 1. 全流程归因与中英双版报告生成
+针对基准评测用例，CFA 提供统一的命令行入口（`scripts/cfa.py`），支持 `audit`、`inspect` 与 `index` 三大核心子命令：
+
+```bash
+# 1. 单任务快速审计（自动解析最新 trial 并直接输出结论卡）
+python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
+
+# 2. 全量用例自动发现与批量审计
+python3 scripts/cfa.py audit --all --jobs-root <benchmark checkout>
+
+# 3. 只读安全检视（自动脱敏家目录路径与敏感凭据）
+python3 scripts/cfa.py inspect task208 --section verdict       # 根因速览卡片 (summary.md)
+python3 scripts/cfa.py inspect task208 --section errors        # 一目了然错误矩阵与具名失败检查
+python3 scripts/cfa.py inspect task208 --section confidence    # 置信度收据与 points/denominator 标尺
+python3 scripts/cfa.py inspect task208 --section evidence      # 证据规整化人读摘要
+python3 scripts/cfa.py inspect task208 --section errors --raw  # 输出原生无格式 JSON 数据
+
+# 4. 原子加锁重新生成全局看板
+python3 scripts/cfa.py index --report-root <benchmark checkout>/failure-report
+```
+
+- **一目了然错误矩阵** (`--section errors`)：呈现裁决、主因、验证器可诊断性及具名失败检查明细（层级、失败种类、详细报错、产物比对与复算散度数值）。
+- **置信度收据与因子明细** (`--section confidence`)：展示启发式置信度、证据强度、动态分值标尺（`points / denominator`）、带正负符号的证据因子明细、提升置信度所需补充证据及竞争假设得分。
+- **规整化证据人读摘要** (`--section evidence`)：提供运行态、失败检查计数、因果锚点、科学观测与行为信号计数的紧凑人读摘要，无需向终端倾倒 200KB+ 的全量 JSON。
+- **全局看板 (`INDEX.md`)**：追踪三态评测统计（总用例、通过、已评分失败、未评分或异常、可评分通过率），以未通过用例为分母归一化根因大类占比（总和恒为 100.0%），任务编号自然数序排列（`task98` < `task194`），呈现视觉强度指标（`🟢`、`🟡`、`🔴`、`✅`），并提供速览、报告、数据与技能处方直达链接。
+
+### 2. 全流程归因与中英双版报告生成（路径模式）
 
 ```bash
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
@@ -113,7 +138,7 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 - `job_summary.md`：多 Trial 批处理 Markdown 看板，汇总全部 Trial 的判定结果、归因类别、根因代码与失败阶段（采用相对标识符，杜绝本机绝对路径泄漏）。
 - `job_summary.json`：多 Trial 批处理结构化聚合统计与每 Trial 摘要记录。
 
-### 2. 仅执行证据采集与候选假设生成 (`--phase collect`)
+### 3. 仅执行证据采集与候选假设生成 (`--phase collect`)
 
 ```bash
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
@@ -125,7 +150,7 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
   --phase collect
 ```
 
-### 3. 模型介入裁决结果的校验与渲染
+### 4. 模型介入裁决结果的校验与渲染
 
 `--phase all` 默认产出保守的确定性归因草稿。如需提交由模型编写或修订的归因结论，请先执行校验再渲染报告：
 

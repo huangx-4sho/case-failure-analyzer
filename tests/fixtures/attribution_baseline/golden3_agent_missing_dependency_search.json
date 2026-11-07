@@ -22,7 +22,36 @@
     "summary": "Simulation failed with `basis_or_potential_missing` (cp2k) because agent did not search container directories (`/opt/` or `/workspace/assets/`) or resolve model/potential/force-field paths.",
     "confidence": 0.71,
     "confidence_kind": "heuristic_evidence_score",
-    "evidence_strength": "high"
+    "evidence_strength": "high",
+    "confidence_breakdown": {
+      "points": 5,
+      "raw_points": 5,
+      "denominator": 7,
+      "factors": [
+        {
+          "key": "direct_causal_evidence",
+          "delta": 3,
+          "label_zh": "直接因果实证 (3项)",
+          "label_en": "Direct causal evidence (3)"
+        },
+        {
+          "key": "cross_source_corroboration",
+          "delta": 1,
+          "label_zh": "跨源证据互证",
+          "label_en": "Cross-source corroboration"
+        },
+        {
+          "key": "hypothesis_separation",
+          "delta": 1,
+          "label_zh": "竞争假设区分度高",
+          "label_en": "High hypothesis separation"
+        }
+      ],
+      "missing_to_raise": [
+        "需独立复算值或唯一失败检查以构成反事实闭环",
+        "验证器未提供定量数值偏差与容差比值"
+      ]
+    }
   },
   "contributing_factors": [],
   "competing_hypotheses": [
@@ -41,7 +70,36 @@
       "counterfactual_test": "Correct the agent's input script / workflow decision and run `verify.py`.",
       "confidence": 0.71,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "high"
+      "evidence_strength": "high",
+      "confidence_breakdown": {
+        "points": 5,
+        "raw_points": 5,
+        "denominator": 7,
+        "factors": [
+          {
+            "key": "direct_causal_evidence",
+            "delta": 3,
+            "label_zh": "直接因果实证 (3项)",
+            "label_en": "Direct causal evidence (3)"
+          },
+          {
+            "key": "cross_source_corroboration",
+            "delta": 1,
+            "label_zh": "跨源证据互证",
+            "label_en": "Cross-source corroboration"
+          },
+          {
+            "key": "hypothesis_separation",
+            "delta": 1,
+            "label_zh": "竞争假设区分度高",
+            "label_en": "High hypothesis separation"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     },
     {
       "hypothesis_id": "H2",
@@ -56,7 +114,24 @@
       "counterfactual_test": "Check `runtime.agent_started` and `runtime.verifier_started` (both true).",
       "confidence": 0.0,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 0,
+        "raw_points": -4,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "contradicting_evidence",
+            "delta": -4,
+            "label_zh": "存在反驳证据",
+            "label_en": "Contradicting evidence"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     },
     {
       "hypothesis_id": "H3",
@@ -73,7 +148,30 @@
       "counterfactual_test": "Fix the agent's simulation input or output schema and run `verify.py`.",
       "confidence": 0.5,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "medium"
+      "evidence_strength": "medium",
+      "confidence_breakdown": {
+        "points": 3,
+        "raw_points": 3,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "direct_causal_evidence",
+            "delta": 2,
+            "label_zh": "直接因果实证 (2项)",
+            "label_en": "Direct causal evidence (2)"
+          },
+          {
+            "key": "cross_source_corroboration",
+            "delta": 1,
+            "label_zh": "跨源证据互证",
+            "label_en": "Cross-source corroboration"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     },
     {
       "hypothesis_id": "H4",
@@ -91,7 +189,24 @@
       "counterfactual_test": "Re-run with full runner and verifier logging enabled.",
       "confidence": 0.0,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 0,
+        "raw_points": -2,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "missing_discriminating_evidence",
+            "delta": -2,
+            "label_zh": "缺失关键鉴别证据",
+            "label_en": "Missing discriminating evidence"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     }
   ],
   "evidence_refs": [

@@ -29,10 +29,11 @@ python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkou
 
   ```text
   failure-report/
-  ├── INDEX.md                          # 全局看板（大类分布统计、各用例裁决与链接清单，原子加锁更新）
+  ├── INDEX.md                          # 全局看板（三态评测统计、占未通过比例归一化、自然排序、置信度指标与直达链接）
   ├── task207/
   │   ├── task207.md                    # 主归因报告（干净 Markdown，单语模式无重复 .zh.md）
   │   ├── summary.md                    # 根因速览卡片与关键因果链锚点（与 stdout 完全一致）
+  │   ├── skill-prescription.md         # 领域技能处方（仅当检出 Agent 能力盲区时按需生成）
   │   └── data/                         # 机器数据下沉，保持顶层整洁
   │       ├── evidence.json             # 规整化证据、轨迹事件流、验证器日志
   │       ├── analysis.json             # 结构化归因结论与判定门控
@@ -51,7 +52,12 @@ python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkou
   - **顶层保持 Clean Markdown**：仅保留主报告 `{task_id}.md`、速览卡片 `summary.md`（按需包含 `skill-prescription.md`）；
   - **消除单语重复**：请求 `zh` 仅输出中文主报告，不再产生字节完全相同的 `.zh.md`；
   - **多试次轻量归档**：多试次输出到 `trials/<trial_name>/`，仅存储 `summary.md`、`analysis.json` 与 `summary.json`，避免复制 200KB+ 的全量证据；可通过 `--archive-evidence` 按需开启全量保存；
-  - **只读脱敏检视**：使用 `python3 scripts/cfa.py inspect <task_id> [--section verdict|report|anchors|data]` 安全检视结果，默认自动脱敏家目录路径与敏感凭据。
+  - **只读脱敏检视**：使用 `python3 scripts/cfa.py inspect <task_id> [--section verdict|report|errors|confidence|evidence|anchors|data] [--raw]` 安全检视结果，默认自动脱敏家目录路径与敏感凭据：
+    - `--section errors`：直观展示裁决、主因、验证器诊断性与具名失败检查明细（层级、偏差、比较与复算散度）；
+    - `--section confidence`：展示置信度、证据强度、`points/denominator` 动态分值、正负因子收据与待提升项；
+    - `--section evidence`：输出紧凑人读摘要（运行态、检查计数、因果锚点、科学观测与行为信号）；
+    - `--raw`：直接输出对应段落的无格式原生 JSON / 文本；
+  - **全量用例自动发现与批量审计**：`python3 scripts/cfa.py audit --all --jobs-root <benchmark checkout>` 自动发现全量用例，按自然数序（`task98` < `task194`）依序审计并原子生成 `<bench_root>/failure-report/INDEX.md` 全局看板。
 
 ### Required Answer Shape (answer order is load-bearing)
 

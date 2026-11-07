@@ -17,7 +17,7 @@ Pairs each anchor with the agent's verbatim thought / reasoning at that step and
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from normalize_trajectory import SELF_CHECK_RUN_RE, SELF_CHECK_SCRIPT_RE
 
@@ -42,6 +42,117 @@ _PRINT_SECTION_RE = re.compile(r"print\s*\(\s*\\?[\"']([A-Za-z0-9_.-]{3,60})\\?[
 _METADATA_KEYS = frozenset(
     {"type", "create", "filePath", "content", "schema", "name", "source", "role", "status"}
 )
+
+_GENERIC_STOPWORDS = frozenset(
+    {
+        "uses",
+        "unknown",
+        "differs",
+        "from",
+        "independent",
+        "native",
+        "calculation",
+        "check",
+        "failed",
+        "the",
+        "a",
+        "an",
+        "at",
+        "by",
+        "is",
+        "are",
+        "of",
+        "in",
+        "to",
+        "for",
+        "and",
+        "or",
+        "with",
+        "on",
+        "not",
+    }
+)
+
+_TRADEOFF_PARAM_RE = re.compile(
+    r"\b(?:eta|cutoff|alpha|tol|tolerance|ewald|convergence|grid|kpoints|k[-_]points|basis)\b|[ηα]",
+    re.IGNORECASE,
+)
+_TRADEOFF_CHOICE_RE = re.compile(
+    r"\b(?:I'll use|i will use|choose|chosen|choosing|cheap and converged|should I use|tradeoff|trade[- ]off|balance|compromise|settle on|select|decide on|trying different|tested|comparing)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_failed_check_targets(evidence: Dict[str, Any]) -> Tuple[List[str], Set[str]]:
+    """Extract failed check names and key identifier tokens from evidence."""
+    failed_names = _failed_check_names(evidence)
+    identifier_tokens: Set[str] = set()
+
+    report = evidence.get("verifier_report")
+    if isinstance(report, dict):
+        for check in report.get("failed_checks") or []:
+            if not isinstance(check, dict):
+                continue
+            name = check.get("name")
+            if name and str(name) not in failed_names:
+                failed_names.append(str(name))
+            detail = str(check.get("detail") or "")
+            if detail:
+                tokens = re.findall(r"[A-Za-z0-9_.-]+", detail)
+                for tok in tokens:
+                    low = tok.lower()
+                    if low in _GENERIC_STOPWORDS or len(tok) < 3:
+                        continue
+                    # Key identifier tokens: compound names with _ or . or - or digits
+                    if "_" in tok or "-" in tok or "." in tok or any(c.isdigit() for c in tok):
+                        identifier_tokens.add(tok)
+
+    cleaned_failed_names = [n for n in failed_names if n.lower() not in _GENERIC_STOPWORDS]
+    return cleaned_failed_names, identifier_tokens
+
+
+def _score_relevance(
+    text: str,
+    failed_names: List[str],
+    identifier_tokens: Set[str],
+) -> Tuple[int, List[str]]:
+    """Score text against failed checks and return (relevance_bonus, matched_failed_checks).
+
+    Awards +12 for exact failed-check name or identifier token match,
+    and +5 for component token match (>3 chars).
+    """
+    relevance_bonus = 0
+    matched_names: List[str] = []
+    text_lower = text.lower()
+
+    for fname in failed_names:
+        if fname.lower() in text_lower:
+            relevance_bonus += 12
+            matched_names.append(fname)
+
+    for tok in identifier_tokens:
+        if tok.lower() in text_lower:
+            relevance_bonus += 12
+            if tok in failed_names and tok not in matched_names:
+                matched_names.append(tok)
+
+    matched_set = {m.lower() for m in matched_names}
+    all_targets = set(failed_names) | identifier_tokens
+    for target in all_targets:
+        components = re.split(r"[_.-]+", target)
+        for comp in components:
+            if len(comp) > 3 and comp.lower() not in _GENERIC_STOPWORDS:
+                if comp.lower() in text_lower and comp.lower() not in matched_set:
+                    relevance_bonus += 5
+                    matched_set.add(comp.lower())
+
+    return relevance_bonus, list(dict.fromkeys(matched_names))
+
+
+def _detect_parameter_tradeoff(thought: str, code: str) -> bool:
+    """Detect explicit parameter selection / tradeoff in thought and code."""
+    combined = f"{thought}\n{code}"
+    return bool(_TRADEOFF_PARAM_RE.search(combined) and _TRADEOFF_CHOICE_RE.search(combined))
 
 
 def _step_id_from_event(event_id: str) -> str:
@@ -276,16 +387,19 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
     declared = (evidence.get("metadata") or {}).get("declared_deliverables") or []
+    failed_names, id_tokens = _extract_failed_check_targets(evidence)
 
     # 1. Trace algorithm_or_param_definition
     algo_anchor: Optional[Dict[str, Any]] = None
-    candidates: List[Tuple[int, Dict[str, Any]]] = []
+    candidates: List[Tuple[int, Dict[str, Any], List[str]]] = []
     for e in timeline:
         tool = e.get("tool_name") or ""
         cmd = e.get("command") or ""
         obs = e.get("observation") or ""
         code = e.get("code_payload") or ""
-        text = f"{cmd}\n{obs}\n{code}"
+        step_prefix = _step_id_from_event(e.get("event_id", ""))
+        thought = _find_thought_for_step(timeline, step_prefix) or ""
+        text = f"{cmd}\n{obs}\n{code}\n{thought}"
 
         if tool in ("Write", "Edit") or "cat <<" in cmd or "cat >" in cmd:
             score = 0
@@ -301,15 +415,21 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
                 score += 3
             if len(code) > 80:
                 score += 2
+
+            rel_bonus, matched_names = _score_relevance(text, failed_names, id_tokens)
+            score += rel_bonus
+
             if score > 0:
-                candidates.append((score, e))
+                candidates.append((score, e, matched_names))
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
         best_algo_ev = candidates[0][1]
+        best_matched = candidates[0][2]
         step_prefix = _step_id_from_event(best_algo_ev.get("event_id", ""))
         thought = _find_thought_for_step(timeline, step_prefix)
         code_snip = best_algo_ev.get("code_payload") or best_algo_ev.get("command") or ""
+        tradeoff_detected = _detect_parameter_tradeoff(thought or "", code_snip)
         algo_anchor = {
             "event_id": best_algo_ev.get("event_id"),
             "step_id": step_prefix,
@@ -319,48 +439,77 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
             else "",
             "thought": _clean_thought_snippet(thought or "", max_lines=4, max_chars=250),
             "code_snippet": _clean_code_snippet(code_snip, max_lines=6, max_chars=350),
+            "matched_failed_checks": best_matched,
+            "parameter_tradeoff_detected": tradeoff_detected,
         }
 
-    # 2. Trace deliverable_generation (working backward from end of trajectory)
+    # 2. Trace deliverable_generation (working backward from end of trajectory, weighted by relevance)
     deliv_anchor: Optional[Dict[str, Any]] = None
-    for e in reversed(timeline):
+    deliv_candidates: List[Tuple[float, Dict[str, Any], List[str]]] = []
+    total_events = max(1, len(timeline))
+
+    for idx, e in enumerate(timeline):
         cmd = (e.get("command") or "").strip()
         tool = e.get("tool_name") or ""
+        obs = e.get("observation") or ""
+        code = e.get("code_payload") or ""
+        step_prefix = _step_id_from_event(e.get("event_id", ""))
+        thought = _find_thought_for_step(timeline, step_prefix) or ""
+        text = f"{cmd}\n{obs}\n{code}\n{thought}"
+
         if not cmd:
             continue
         if cmd.startswith(("rm ", "rm -", "rmdir ")):
             continue
-        # Check if command is a script execution producing outputs
+
         is_exec = False
+        base_score = 10
         if re.search(r"\b(?:build_outputs|analysis|solve|calc)\.py\b", cmd) and (
             "python" in cmd or "./" in cmd
         ):
             is_exec = True
+            base_score = 15
         elif re.search(r"(?:python\S*|bash|sh)\s+.*?(--output\b|-o\b)", cmd):
             is_exec = True
+            base_score = 12
         elif tool == "Write" and not cmd.endswith((".md", ".txt")):
             if any(d in cmd for d in declared):
                 is_exec = True
+                base_score = 14
         elif any(
             f"> {d}" in cmd or f">{d}" in cmd for d in declared if not d.endswith((".md", ".txt"))
         ):
             is_exec = True
+            base_score = 13
         elif "results.json" in cmd and (">" in cmd or tool == "Write"):
             is_exec = True
+            base_score = 11
 
         if is_exec:
-            step_prefix = _step_id_from_event(e.get("event_id", ""))
-            thought = _find_thought_for_step(timeline, step_prefix)
-            obs = (e.get("observation") or "").strip()
-            deliv_anchor = {
-                "event_id": e.get("event_id"),
-                "step_id": step_prefix,
-                "tool_name": tool or "Command",
-                "command": _clean_code_snippet(cmd, max_lines=3, max_chars=200),
-                "thought": _clean_thought_snippet(thought or "", max_lines=4, max_chars=250),
-                "observation_snippet": _clean_code_snippet(obs, max_lines=4, max_chars=250),
-            }
-            break
+            rel_bonus, matched_names = _score_relevance(text, failed_names, id_tokens)
+            recency_bonus = (idx / total_events) * 2.0
+            total_score = base_score + rel_bonus + recency_bonus
+            deliv_candidates.append((total_score, e, matched_names))
+
+    if deliv_candidates:
+        deliv_candidates.sort(key=lambda x: x[0], reverse=True)
+        best_deliv_ev = deliv_candidates[0][1]
+        best_deliv_matched = deliv_candidates[0][2]
+        step_prefix = _step_id_from_event(best_deliv_ev.get("event_id", ""))
+        thought = _find_thought_for_step(timeline, step_prefix)
+        deliv_anchor = {
+            "event_id": best_deliv_ev.get("event_id"),
+            "step_id": step_prefix,
+            "tool_name": best_deliv_ev.get("tool_name") or "Command",
+            "command": _clean_code_snippet(
+                str(best_deliv_ev.get("command") or ""), max_lines=3, max_chars=200
+            ),
+            "thought": _clean_thought_snippet(thought or "", max_lines=4, max_chars=250),
+            "observation_snippet": _clean_code_snippet(
+                str(best_deliv_ev.get("observation") or "").strip(), max_lines=4, max_chars=250
+            ),
+            "matched_failed_checks": best_deliv_matched,
+        }
 
     result: Dict[str, Any] = {}
     if algo_anchor:
@@ -409,6 +558,25 @@ def render_causal_anchors_markdown(anchors: Dict[str, Any], lang: str = "zh") ->
             for cl in algo["code_snippet"].splitlines():
                 lines.append(f"  {cl}")
             lines.append("  ```")
+        if algo.get("matched_failed_checks"):
+            m_lbl = (
+                "关联失败项 / Matched failed checks"
+                if lang == "bilingual"
+                else ("关联失败项" if is_zh else "Matched failed checks")
+            )
+            lines.append(f"  - **{m_lbl}**: {', '.join(algo['matched_failed_checks'])}")
+        if algo.get("parameter_tradeoff_detected"):
+            t_lbl = (
+                "参数权衡决策 / Parameter tradeoff"
+                if lang == "bilingual"
+                else ("参数权衡决策" if is_zh else "Parameter tradeoff")
+            )
+            t_val = (
+                "检测到显式权衡 / detected"
+                if lang == "bilingual"
+                else ("检测到显式权衡" if is_zh else "detected")
+            )
+            lines.append(f"  - **{t_lbl}**: {t_val}")
 
     deliv = anchors.get("deliverable_generation")
     if deliv:
@@ -431,6 +599,13 @@ def render_causal_anchors_markdown(anchors: Dict[str, Any], lang: str = "zh") ->
             for cl in deliv["command"].splitlines():
                 lines.append(f"  {cl}")
             lines.append("  ```")
+        if deliv.get("matched_failed_checks"):
+            m_lbl = (
+                "关联失败项 / Matched failed checks"
+                if lang == "bilingual"
+                else ("关联失败项" if is_zh else "Matched failed checks")
+            )
+            lines.append(f"  - **{m_lbl}**: {', '.join(deliv['matched_failed_checks'])}")
 
     sc = anchors.get("self_check")
     if sc:

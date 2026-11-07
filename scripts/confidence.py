@@ -24,7 +24,7 @@ Design notes:
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 MAX_EVIDENCE_POINTS = 6
@@ -82,6 +82,218 @@ def _normalized_separation(hypothesis_separation: Optional[float]) -> Optional[f
     if not math.isfinite(value):
         return None
     return value
+
+
+def build_confidence_breakdown(
+    *,
+    direct_causal_evidence: int = 0,
+    cross_source_corroboration: int = 0,
+    counterfactual_supported: bool = False,
+    single_keyword_only: bool = False,
+    missing_discriminating_evidence: int = 0,
+    contradicting_evidence: int = 0,
+    verdict_passed: bool = False,
+    ruled_out: bool = False,
+    margin_ratio: Optional[float] = None,
+    check_localization: Optional[str] = None,
+    hypothesis_separation: Optional[float] = None,
+    missing_to_raise: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build a structured receipt detailing how confidence points and denominator were derived."""
+    if ruled_out:
+        return {
+            "points": 0,
+            "raw_points": 0,
+            "denominator": MAX_EVIDENCE_POINTS,
+            "factors": [
+                {
+                    "key": "ruled_out",
+                    "delta": 0,
+                    "label_zh": "反驳证据已排除",
+                    "label_en": "Ruled out by contradicting evidence",
+                }
+            ],
+            "missing_to_raise": list(missing_to_raise or []),
+        }
+    if verdict_passed:
+        return {
+            "points": MAX_EVIDENCE_POINTS,
+            "raw_points": MAX_EVIDENCE_POINTS,
+            "denominator": MAX_EVIDENCE_POINTS,
+            "factors": [
+                {
+                    "key": "verdict_passed",
+                    "delta": 6,
+                    "label_zh": "验证规则全量通过",
+                    "label_en": "All verification rules passed",
+                }
+            ],
+            "missing_to_raise": list(missing_to_raise or []),
+        }
+
+    margin = _normalized_margin_ratio(margin_ratio)
+    localization = _normalized_localization(check_localization)
+    separation = _normalized_separation(hypothesis_separation)
+
+    factors: List[Dict[str, Any]] = []
+
+    n = max(0, int(direct_causal_evidence))
+    direct_delta = min(3, n)
+    if direct_delta > 0:
+        factors.append(
+            {
+                "key": "direct_causal_evidence",
+                "delta": direct_delta,
+                "label_zh": f"直接因果实证 ({direct_delta}项)",
+                "label_en": f"Direct causal evidence ({direct_delta})",
+            }
+        )
+
+    if int(cross_source_corroboration) >= 1:
+        factors.append(
+            {
+                "key": "cross_source_corroboration",
+                "delta": 1,
+                "label_zh": "跨源证据互证",
+                "label_en": "Cross-source corroboration",
+            }
+        )
+
+    if counterfactual_supported:
+        factors.append(
+            {
+                "key": "counterfactual_supported",
+                "delta": 2,
+                "label_zh": "唯一阻断项反事实闭环",
+                "label_en": "Single-blocker counterfactual",
+            }
+        )
+
+    if margin is not None:
+        if margin >= _MARGIN_STRONG_RATIO:
+            factors.append(
+                {
+                    "key": "margin_ratio",
+                    "delta": 2,
+                    "label_zh": f"偏差超容差 {margin:.4g}×",
+                    "label_en": f"Deviation {margin:.4g}x over tolerance",
+                }
+            )
+        elif _MARGIN_MODERATE_RATIO <= margin < _MARGIN_STRONG_RATIO:
+            factors.append(
+                {
+                    "key": "margin_ratio",
+                    "delta": 1,
+                    "label_zh": f"偏差超容差 {margin:.4g}×",
+                    "label_en": f"Deviation {margin:.4g}x over tolerance",
+                }
+            )
+
+    if localization == "single":
+        factors.append(
+            {
+                "key": "check_localization",
+                "delta": 1,
+                "label_zh": "单项检查精准定位",
+                "label_en": "Single-check localization",
+            }
+        )
+    elif localization == "widespread":
+        factors.append(
+            {
+                "key": "check_localization",
+                "delta": -1,
+                "label_zh": "多项检查并发失败",
+                "label_en": "Multiple co-failing checks",
+            }
+        )
+
+    if separation is not None and separation >= _SEPARATION_HIGH_THRESHOLD:
+        factors.append(
+            {
+                "key": "hypothesis_separation",
+                "delta": 1,
+                "label_zh": "竞争假设区分度高",
+                "label_en": "High hypothesis separation",
+            }
+        )
+
+    if single_keyword_only:
+        factors.append(
+            {
+                "key": "single_keyword_only",
+                "delta": -1,
+                "label_zh": "仅单一关键词弱匹配",
+                "label_en": "Single keyword match only",
+            }
+        )
+
+    m = max(0, int(missing_discriminating_evidence))
+    missing_delta = min(2, m)
+    if missing_delta > 0:
+        factors.append(
+            {
+                "key": "missing_discriminating_evidence",
+                "delta": -missing_delta,
+                "label_zh": "缺失关键鉴别证据",
+                "label_en": "Missing discriminating evidence",
+            }
+        )
+
+    c = max(0, int(contradicting_evidence))
+    if c > 0:
+        factors.append(
+            {
+                "key": "contradicting_evidence",
+                "delta": -2 * c,
+                "label_zh": "存在反驳证据",
+                "label_en": "Contradicting evidence",
+            }
+        )
+
+    raw_points = (
+        min(3, max(0, int(direct_causal_evidence)))
+        + (1 if int(cross_source_corroboration) >= 1 else 0)
+        + (2 if counterfactual_supported else 0)
+        - (1 if single_keyword_only else 0)
+        - min(2, max(0, int(missing_discriminating_evidence)))
+        - 2 * max(0, int(contradicting_evidence))
+        + (2 if margin is not None and margin >= _MARGIN_STRONG_RATIO else 0)
+        + (
+            1
+            if margin is not None and _MARGIN_MODERATE_RATIO <= margin < _MARGIN_STRONG_RATIO
+            else 0
+        )
+        + (1 if localization == "single" else 0)
+        - (1 if localization == "widespread" else 0)
+        + (1 if separation is not None and separation >= _SEPARATION_HIGH_THRESHOLD else 0)
+    )
+    denominator = (
+        MAX_EVIDENCE_POINTS
+        + (2 if margin is not None else 0)
+        + (1 if localization is not None else 0)
+        + (1 if separation is not None else 0)
+    )
+    clamped = max(0, min(denominator, raw_points))
+    numeric = round(clamped / float(denominator), 2)
+
+    if missing_to_raise is not None:
+        final_missing = list(missing_to_raise)
+    else:
+        final_missing = []
+        if numeric < 0.75 and not ruled_out and not verdict_passed:
+            if not counterfactual_supported:
+                final_missing.append("需独立复算值或唯一失败检查以构成反事实闭环")
+            if margin is None:
+                final_missing.append("验证器未提供定量数值偏差与容差比值")
+
+    return {
+        "points": clamped,
+        "raw_points": raw_points,
+        "denominator": denominator,
+        "factors": factors,
+        "missing_to_raise": final_missing,
+    }
 
 
 def compute_evidence_confidence(
@@ -198,6 +410,7 @@ def attach_confidence_metadata(
     margin_ratio: Optional[float] = None,
     check_localization: Optional[str] = None,
     hypothesis_separation: Optional[float] = None,
+    missing_to_raise: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     conf, kind, strength = compute_evidence_confidence(
         direct_causal_evidence=direct_causal_evidence,
@@ -215,4 +428,18 @@ def attach_confidence_metadata(
     target["confidence"] = conf
     target["confidence_kind"] = kind
     target["evidence_strength"] = strength
+    target["confidence_breakdown"] = build_confidence_breakdown(
+        direct_causal_evidence=direct_causal_evidence,
+        cross_source_corroboration=cross_source_corroboration,
+        counterfactual_supported=counterfactual_supported,
+        single_keyword_only=single_keyword_only,
+        missing_discriminating_evidence=missing_discriminating_evidence,
+        contradicting_evidence=contradicting_evidence,
+        verdict_passed=verdict_passed,
+        ruled_out=ruled_out,
+        margin_ratio=margin_ratio,
+        check_localization=check_localization,
+        hypothesis_separation=hypothesis_separation,
+        missing_to_raise=missing_to_raise,
+    )
     return target

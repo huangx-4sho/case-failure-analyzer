@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import tempfile
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -38,10 +39,41 @@ CATEGORY_TITLES = {
 }
 
 
+def natural_sort_key(s: Any) -> tuple:
+    """Split string into text and numeric tokens for natural order sorting."""
+    parts = re.split(r"(\d+)", str(s or ""))
+    key = []
+    for part in parts:
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.lower()))
+    return tuple(key)
+
+
 def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
     """Load metadata for a task folder from summary.json or analysis.json."""
     if not task_dir.is_dir():
         return None
+
+    # Detect auxiliary markdown reports/prescriptions
+    rep_file = None
+    if (task_dir / f"{task_dir.name}.md").is_file():
+        rep_file = f"{task_dir.name}.md"
+    elif (task_dir / "report.md").is_file():
+        rep_file = "report.md"
+
+    sum_file = None
+    if (task_dir / "summary.md").is_file():
+        sum_file = "summary.md"
+    elif (task_dir / f"{task_dir.name}.summary.md").is_file():
+        sum_file = f"{task_dir.name}.summary.md"
+
+    rx_file = None
+    if (task_dir / "skill-prescription.md").is_file():
+        rx_file = "skill-prescription.md"
+    elif (task_dir / f"{task_dir.name}.prescription.md").is_file():
+        rx_file = f"{task_dir.name}.prescription.md"
 
     # Search paths for summary card or analysis
     summary_candidates = [
@@ -58,16 +90,19 @@ def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
                     return {
                         "task_id": card.get("task_id") or task_dir.name,
                         "verdict": card.get("verdict") or "unknown",
-                        "category": prc.get("category") or "unknown",
+                        "category": prc.get("category")
+                        or ("none" if card.get("verdict") == "passed" else "unknown"),
                         "subtype": prc.get("subtype") or "—",
                         "code": prc.get("code") or "—",
                         "confidence": prc.get("confidence"),
                         "failure_reason": card.get("failure_reason") or "—",
                         "has_data_dir": (task_dir / "data").is_dir(),
-                        "has_report": (task_dir / f"{task_dir.name}.md").is_file()
-                        or (task_dir / "report.md").is_file(),
-                        "has_summary": (task_dir / "summary.md").is_file()
-                        or (task_dir / f"{task_dir.name}.summary.md").is_file(),
+                        "has_report": rep_file is not None,
+                        "report_file": rep_file,
+                        "has_summary": sum_file is not None,
+                        "summary_file": sum_file,
+                        "has_prescription": rx_file is not None,
+                        "prescription_file": rx_file,
                     }
             except Exception:
                 pass
@@ -87,15 +122,19 @@ def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
                     return {
                         "task_id": an.get("case_id") or task_dir.name,
                         "verdict": an.get("verdict") or "unknown",
-                        "category": prc.get("category") or "unknown",
+                        "category": prc.get("category")
+                        or ("none" if an.get("verdict") == "passed" else "unknown"),
                         "subtype": prc.get("subtype") or "—",
                         "code": prc.get("code") or "—",
                         "confidence": prc.get("confidence"),
                         "failure_reason": prc.get("summary") or "—",
                         "has_data_dir": (task_dir / "data").is_dir(),
-                        "has_report": (task_dir / f"{task_dir.name}.md").is_file()
-                        or (task_dir / "report.md").is_file(),
-                        "has_summary": (task_dir / "summary.md").is_file(),
+                        "has_report": rep_file is not None,
+                        "report_file": rep_file,
+                        "has_summary": sum_file is not None,
+                        "summary_file": sum_file,
+                        "has_prescription": rx_file is not None,
+                        "prescription_file": rx_file,
                     }
             except Exception:
                 pass
@@ -105,32 +144,53 @@ def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
 
 def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[str] = None) -> str:
     """Render the full index markdown text."""
-    cases_sorted = sorted(cases, key=lambda c: str(c.get("task_id", "")))
+    cases_sorted = sorted(cases, key=lambda c: natural_sort_key(c.get("task_id", "")))
     total = len(cases_sorted)
-    failed = sum(1 for c in cases_sorted if c.get("verdict") == "failed")
     passed = sum(1 for c in cases_sorted if c.get("verdict") == "passed")
+    failed = sum(1 for c in cases_sorted if c.get("verdict") == "failed")
+    errored_unscored = sum(
+        1
+        for c in cases_sorted
+        if c.get("verdict") in ("errored", "unknown")
+        or c.get("verdict") not in ("passed", "failed")
+    )
+    scored = passed + failed
+    scored_pass_rate = f"{(passed / scored * 100):.1f}%" if scored > 0 else "0.0%"
 
     timestamp = updated_time or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     lines: List[str] = [
         "# 科学计算基准评测失败分析看板 (Failure Report Index)",
         "",
-        f"> **更新时间 / Updated**: `{timestamp}` · **总用例 / Total**: `{total}` · **失败 / Failed**: `{failed}` · **通过 / Passed**: `{passed}`",
+        (
+            f"> **更新时间 / Updated**: `{timestamp}` · "
+            f"**总用例 / Total**: `{total}` · "
+            f"**通过 / Passed**: `{passed}` · "
+            f"**已评分失败 / Failed**: `{failed}` · "
+            f"**未评分或异常 / Errored & Unscored**: `{errored_unscored}` · "
+            f"**可评分通过率 / Scored Pass Rate**: `{scored_pass_rate}`"
+        ),
         "",
         "## 1. 根因大类分布 (Category Distribution)",
         "",
-        "| 大类 (Category) | 数量 (Count) | 占比 (Proportion) |",
+        "| 大类 (Category) | 数量 (Count) | 占未通过比例 (Share of Non-Passed) |",
         "|---|---|---|",
     ]
 
     cat_counts: Dict[str, int] = {"agent": 0, "verifier": 0, "case": 0, "infra": 0, "unknown": 0}
     for c in cases_sorted:
+        if c.get("verdict") == "passed":
+            continue
         cat = c.get("category", "unknown")
-        cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        if cat not in cat_counts:
+            cat = "unknown"
+        cat_counts[cat] += 1
+
+    non_passed = sum(cat_counts[c] for c in ("agent", "verifier", "case", "infra", "unknown"))
 
     for cat in ("agent", "verifier", "case", "infra", "unknown"):
         count = cat_counts.get(cat, 0)
-        prop = f"{(count / total * 100):.1f}%" if total > 0 else "0.0%"
+        prop = f"{(count / non_passed * 100):.1f}%" if non_passed > 0 else "0.0%"
         lines.append(f"| `{cat}` {CATEGORY_TITLES.get(cat, cat)} | **{count}** | {prop} |")
     lines.append("")
 
@@ -148,7 +208,22 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
         sub = c.get("subtype", "—")
         code = c.get("code", "—")
         conf = c.get("confidence")
-        conf_str = f"{float(conf):.2f}" if isinstance(conf, (int, float)) else "—"
+
+        # Visual strength indicator for confidence
+        if v == "passed":
+            conf_str = f"✅ {float(conf):.2f}" if isinstance(conf, (int, float)) else "✅ 1.00"
+        elif isinstance(conf, (int, float)):
+            c_val = float(conf)
+            if c_val >= 0.65:
+                indicator = "🟢"
+            elif c_val >= 0.40:
+                indicator = "🟡"
+            else:
+                indicator = "🔴"
+            conf_str = f"{indicator} {c_val:.2f}"
+        else:
+            conf_str = "—"
+
         reason = " ".join(str(c.get("failure_reason") or "—").split())
         if len(reason) > 100:
             reason = reason[:97] + "..."
@@ -161,9 +236,14 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
         # Links
         links = []
         if c.get("has_summary"):
-            links.append(f"[速览]({tid}/summary.md)")
+            sum_target = c.get("summary_file") or "summary.md"
+            links.append(f"[速览]({tid}/{sum_target})")
         if c.get("has_report"):
-            links.append(f"[报告]({tid}/{tid}.md)")
+            rep_target = c.get("report_file") or f"{tid}.md"
+            links.append(f"[报告]({tid}/{rep_target})")
+        if c.get("has_prescription"):
+            rx_target = c.get("prescription_file") or "skill-prescription.md"
+            links.append(f"[处方]({tid}/{rx_target})")
         if c.get("has_data_dir"):
             links.append(f"[数据]({tid}/data/)")
         links_str = " · ".join(links) if links else "—"

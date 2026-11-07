@@ -256,6 +256,148 @@ class VerifierReportNormalizationTests(unittest.TestCase):
         self.assertFalse(stats["single_failure"])
         self.assertEqual(stats["source"], "verifier_report")
 
+    def test_raw_verifier_criteria_evidence_preservation(self) -> None:
+        """Preserve structured criteria[].evidence dicts (recomputed_eV, selected)."""
+        _write(
+            self.trial,
+            "raw-verifier.json",
+            {
+                "overall": "FAIL",
+                "criteria": [
+                    {
+                        "criterion": "energy_parameters",
+                        "level": "L3",
+                        "status": "FAIL",
+                        "summary": "parameters differed from recomputed values",
+                        "evidence": {
+                            "recomputed_eV": [7.482295140671387, 15.02, 11.25, 3.77],
+                            "selected": {"0": "cu0_doublet", "1": "cu1_singlet"},
+                        },
+                    }
+                ],
+            },
+        )
+        report = build_verifier_report(self.trial)
+        assert report is not None
+        self.assertEqual(report["failed_check_count"], 1)
+        fc = report["failed_checks"][0]
+        self.assertEqual(fc["name"], "energy_parameters")
+        self.assertEqual(fc["failure_kind"], "numerical")
+        self.assertIn("evidence", fc)
+        self.assertEqual(fc["evidence"]["recomputed_eV"][0], 7.482295140671387)
+        self.assertEqual(fc["evidence"]["selected"]["0"], "cu0_doublet")
+        self.assertEqual(report["diagnosability"], "normal")
+
+    def test_no_false_low_diagnosability_on_schema_or_id(self) -> None:
+        """Schema/ID failures without numbers must not get false low diagnosability."""
+        _write(
+            self.trial,
+            "native/verify.json",
+            {
+                "status": "FAIL",
+                "detail": "atom_to_site uses unknown reference IDs",
+            },
+        )
+        report = build_verifier_report(self.trial)
+        assert report is not None
+        self.assertEqual(report["diagnosability"], "normal")
+        self.assertEqual(report["diagnosability_reasons"], [])
+        self.assertEqual(report["failed_checks"][0]["failure_kind"], "schema_or_id")
+
+    def test_no_false_low_diagnosability_when_evidence_has_numeric_arrays(self) -> None:
+        """Checks without digits in detail but with numbers in evidence are diagnosable."""
+        _write(
+            self.trial,
+            "raw-verifier.json",
+            {
+                "overall": "FAIL",
+                "criteria": [
+                    {
+                        "criterion": "energy_parameters",
+                        "level": "L3",
+                        "status": "FAIL",
+                        "summary": "energy parameters calculation failed",
+                        "evidence": {
+                            "recomputed_eV": [7.482295140671387],
+                        },
+                    }
+                ],
+            },
+        )
+        report = build_verifier_report(self.trial)
+        assert report is not None
+        self.assertEqual(report["diagnosability"], "normal")
+        self.assertNotIn(
+            "failed check details contain no numerical deviation",
+            report["diagnosability_reasons"],
+        )
+
+    def test_verification_coverage_and_coverage_limits_extraction(self) -> None:
+        """Top-level verification_coverage and coverage_limits extracted from docs."""
+        _write(
+            self.trial,
+            "native/verify.json",
+            {
+                "status": "FAIL",
+                "verification_coverage": "independent_recomputation",
+                "coverage_limits": [
+                    "no long-range ewald check",
+                    {"description": "spin unpolarized reference only"},
+                ],
+                "checks": {
+                    "energy_parameters": "FAIL",
+                },
+            },
+        )
+        report = build_verifier_report(self.trial)
+        assert report is not None
+        self.assertEqual(report["verification_coverage"], "independent_recomputation")
+        self.assertEqual(
+            report["coverage_limits"],
+            ["no long-range ewald check", "spin unpolarized reference only"],
+        )
+
+    def test_pair_verifier_evidence_with_delivered_artifacts(self) -> None:
+        """Attach artifact_comparison to failed checks from delivered artifacts."""
+        from extract_scientific_errors import pair_verifier_evidence_with_artifacts
+
+        outputs = self.trial / "artifacts" / "app" / "outputs"
+        outputs.mkdir(parents=True)
+        (outputs / "parameters.json").write_text(
+            json.dumps(
+                {
+                    "IP0_eV": 7.482295140652825,
+                    "IP1_eV": 15.02,
+                    "chi_plus1_eV": 11.25,
+                    "J_plus1_eV": 3.77,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        verifier_report = {
+            "failed_checks": [
+                {
+                    "name": "energy_parameters",
+                    "layer": "L3",
+                    "ok": False,
+                    "evidence": {
+                        "recomputed_eV": [7.482295140671387, 15.020000000001],
+                    },
+                }
+            ]
+        }
+        pair_verifier_evidence_with_artifacts(verifier_report, self.trial)
+        fc = verifier_report["failed_checks"][0]
+        self.assertIn("artifact_comparison", fc)
+        self.assertGreaterEqual(len(fc["artifact_comparison"]), 1)
+        comp = fc["artifact_comparison"][0]
+        self.assertEqual(comp["metric"], "IP0_eV")
+        self.assertEqual(comp["delivered"], 7.482295140652825)
+        self.assertEqual(comp["recomputed"], 7.482295140671387)
+        self.assertAlmostEqual(comp["abs_diff"], 1.8561999920198032e-11)
+        self.assertEqual(comp["artifact_ref"], "art:artifacts/app/outputs/parameters.json")
+
 
 class VerifierReportAttributionTests(unittest.TestCase):
     def test_named_check_failure_from_report_blocks_preemption(self) -> None:

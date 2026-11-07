@@ -99,7 +99,7 @@ Multi-trial jobs additionally emit `job_summary.md` (bilingual), `job_summary.zh
 
 ```text
 <bench_root>/failure-report/
-├── INDEX.md                          # 全局看板：大类分布统计 + 各任务裁决链接
+├── INDEX.md                          # 全局看板：三态评测统计、占未通过比例归一化、自然排序、置信度指标与直达链接
 ├── task207/
 │   ├── task207.md                    # 主归因报告（干净 Markdown）
 │   ├── task207.en.md                 # 仅 --lang bilingual 时生成的英文版
@@ -118,7 +118,7 @@ Multi-trial jobs additionally emit `job_summary.md` (bilingual), `job_summary.zh
 
 该任务目录位于所有已声明输入根（job 目录、任务定义、trial 目录）之外，`scripts/staging.py` 的隔离检查仍会拒绝与输入相同、位于输入内或作为输入父目录的输出。每个任务通过自己文件夹内的 `.cfa_manifest.json` 发布，因此重跑某一任务不会触碰其他任务的目录或用户自建文件。`--report-dir` 覆盖精确的落点文件夹，`--no-verdict-stdout` 则抑制打印出来的回答。`cfa index` 以原子方式重建 `INDEX.md`。
 
-机器可读 JSON 全部下沉到 `data/`，顶层只保留干净的 Markdown。分层模式不会生成冗余的 `.zh.md` 副本（请求 `zh` 时只产出 `task207.md`）；`cfa inspect` 读取 `data/summary.json` 与 `data/evidence.json`。
+机器可读 JSON 全部下沉到 `data/`，顶层只保留干净的 Markdown。分层模式不会生成冗余的 `.zh.md` 副本（请求 `zh` 时只产出 `task207.md`）；`cfa inspect` 读取 `data/summary.json`、`data/evidence.json` 与 `data/analysis.json`。
 
 | 文件 | 内容 |
 |---|---|
@@ -130,6 +130,23 @@ Multi-trial jobs additionally emit `job_summary.md` (bilingual), `job_summary.zh
 | `.cfa_manifest.json` | 任务目录内的发布清单，将清理范围限定在本任务文件内 |
 
 路径模式（`--job` + `--output`）保留旧有的无前缀文件名（`report.md`、`evidence.json` 等）。
+
+### 全局看板 (`INDEX.md`)
+
+基准级全局看板聚合全量已分析任务的归因统计数据：
+- **三态评测统计**：顶部引用块追踪 `总用例 / Total`、`通过 / Passed`、`已评分失败 / Failed`、`未评分或异常 / Errored & Unscored`，以及**可评分通过率 / Scored Pass Rate**（`通过 / (通过 + 已评分失败)`）。
+- **根因大类归一化**：第 1 节各失败大类占比以未通过用例总数（`non_passed = sum(cat_counts)`）为分母计算，确保 5 个失败桶（`agent`、`verifier`、`case`、`infra`、`unknown`）占比总和恒为 `100.0%`。
+- **自然数字排序**：用例清单按任务编号自然排序（`task98` 优先于 `task194` 与 `task207`），彻底解决字典序颠倒问题。
+- **置信度视觉强度标识**：清单直观呈现置信度强度信号：`🟢`（`>= 0.65`）、`🟡`（`0.40..0.64`）、`🔴`（`< 0.40`）以及通过试次的 `✅ 1.00`。
+- **清晰直达链接**：清单表格提供直接导航超链接：`[速览]`（`summary.md`）、`[报告]`（`{task_id}.md`）、`[数据]`（`data/`），以及检出 Agent 能力盲区时的 `[处方]`（`skill-prescription.md`）。
+
+### 一目了然错误矩阵与证据摘要检视
+
+`scripts/cfa.py inspect` 提供聚焦、只读的安全检视工具，默认自动脱敏凭据与家目录路径：
+- **一目了然错误矩阵** (`cfa inspect <task_id> --section errors`)：以终端友好的 Markdown 表格呈现裁决、主因大类、验证器可诊断性及每一项具名失败检查（`[<layer>] <name>`、`failure_kind`、`detail`，以及产物对比或复算散度数值）。传入 `--raw` 输出原生 JSON 字典。
+- **置信度收据与因子明细** (`cfa inspect <task_id> --section confidence`)：清晰展示启发式置信度、证据强度、动态分值标尺（`points / denominator`）、带正负符号的证据因子明细、提升置信度所需补充证据，以及竞争假设得分。传入 `--raw` 输出结构化收据 JSON。
+- **规整化证据人读摘要** (`cfa inspect <task_id> --section evidence`)：提供紧凑的人类可读运行状态摘要、失败检查计数、因果锚点、科学观测、行为信号计数及核心证据引用，无需向终端倾倒 200KB+ 的全量 JSON。传入 `--raw` 导出原始 `evidence.json`。
+- **全量用例自动发现与批量审计** (`cfa audit --all --jobs-root <bench_root>`)：自动扫描基准仓库（兼顾 Harbor 多套件布局与扁平布局），按自然数序依序审计各用例最新试次并输出单行进度状态，最终生成 `<bench_root>/failure-report/INDEX.md`。
 
 ### 结论卡 (`summary.md` / stdout)
 

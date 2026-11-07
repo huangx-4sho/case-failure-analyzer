@@ -22,7 +22,24 @@
     "summary": "Available logs and trajectory events do not provide positive unrecovered causal evidence to attribute the failure to Agent decisions, Verifier defects, or Infrastructure.",
     "confidence": 0.0,
     "confidence_kind": "heuristic_evidence_score",
-    "evidence_strength": "low"
+    "evidence_strength": "low",
+    "confidence_breakdown": {
+      "points": 0,
+      "raw_points": -2,
+      "denominator": 6,
+      "factors": [
+        {
+          "key": "missing_discriminating_evidence",
+          "delta": -2,
+          "label_zh": "缺失关键鉴别证据",
+          "label_en": "Missing discriminating evidence"
+        }
+      ],
+      "missing_to_raise": [
+        "需独立复算值或唯一失败检查以构成反事实闭环",
+        "验证器未提供定量数值偏差与容差比值"
+      ]
+    }
   },
   "contributing_factors": [],
   "competing_hypotheses": [
@@ -40,7 +57,24 @@
       "counterfactual_test": "Inspect agent trajectory and generated workspace files for explicit errors.",
       "confidence": 0.0,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 0,
+        "raw_points": -2,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "missing_discriminating_evidence",
+            "delta": -2,
+            "label_zh": "缺失关键鉴别证据",
+            "label_en": "Missing discriminating evidence"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     },
     {
       "hypothesis_id": "H2",
@@ -58,7 +92,24 @@
       "counterfactual_test": "Re-run with full runner and verifier logging enabled.",
       "confidence": 0.0,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 0,
+        "raw_points": -2,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "missing_discriminating_evidence",
+            "delta": -2,
+            "label_zh": "缺失关键鉴别证据",
+            "label_en": "Missing discriminating evidence"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     }
   ],
   "evidence_refs": [

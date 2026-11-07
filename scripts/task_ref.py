@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 #: Canonical report directory name created at the benchmark root.
 REPORT_DIR_NAME = "failure-report"
@@ -65,6 +65,44 @@ class TaskRef:
     report_root: Path  # <bench_root>/failure-report (one subfolder per task)
     report_dir: Path  # <bench_root>/failure-report/<task_id>
     candidates: List[Path]
+
+
+def _natural_sort_key(s: str) -> tuple:
+    parts = re.split(r"(\d+)", str(s or ""))
+    key = []
+    for part in parts:
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.lower()))
+    return tuple(key)
+
+
+def discover_all_task_ids(jobs_root: Path) -> List[str]:
+    """
+    Find all distinct tasks that have at least one trial directory under jobs_root.
+
+    Supports both Harbor multi-suite layout (e.g. `29-metals-mlp/jobs/<ts>/task 194__xxx`)
+    and flat `jobs/` layout. Returns normalized task IDs sorted in natural numeric order
+    (e.g. `['task98', 'task189', 'task190']`).
+    """
+    root = Path(jobs_root).resolve()
+    if not root.is_dir():
+        return []
+
+    discovered: Set[str] = set()
+    for path, _depth in _walk_dirs(root, max_depth=8):
+        if not _is_trial_dir(path):
+            continue
+        m = _TRIAL_DIR_RE.match(path.name)
+        if m:
+            discovered.add(f"task{int(m.group(1))}")
+        else:
+            m2 = _TASK_DEF_DIR_RE.match(path.name)
+            if m2:
+                discovered.add(f"task{int(m2.group(1))}")
+
+    return sorted(discovered, key=_natural_sort_key)
 
 
 def normalize_task_ref(raw: str) -> str:

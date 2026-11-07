@@ -21,7 +21,12 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from attribution.context import AttributionContext, _verifier_check_localization, build_context
 from attribution.trace import DecisionTrace
-from confidence import MAX_EVIDENCE_POINTS, attach_confidence_metadata, compute_evidence_confidence
+from confidence import (
+    MAX_EVIDENCE_POINTS,
+    attach_confidence_metadata,
+    build_confidence_breakdown,
+    compute_evidence_confidence,
+)
 from verify_check_stats import build_check_stats
 
 
@@ -339,23 +344,163 @@ class TestAttachConfidenceMetadataPassthrough(unittest.TestCase):
         )
 
     def test_legacy_call_unchanged(self) -> None:
-        self.assertEqual(
-            attach_confidence_metadata({}, direct_causal_evidence=3, cross_source_corroboration=1),
-            {
-                "confidence": 0.67,
-                "confidence_kind": "heuristic_evidence_score",
-                "evidence_strength": "high",
-            },
+        res1 = attach_confidence_metadata(
+            {}, direct_causal_evidence=3, cross_source_corroboration=1
         )
+        self.assertEqual(res1["confidence"], 0.67)
+        self.assertEqual(res1["confidence_kind"], "heuristic_evidence_score")
+        self.assertEqual(res1["evidence_strength"], "high")
+        self.assertIn("confidence_breakdown", res1)
+        self.assertEqual(res1["confidence_breakdown"]["points"], 4)
+        self.assertEqual(res1["confidence_breakdown"]["raw_points"], 4)
+        self.assertEqual(res1["confidence_breakdown"]["denominator"], 6)
+
         # Legacy default (direct_causal_evidence=1) is untouched: 1/6 = 0.17.
+        res2 = attach_confidence_metadata({})
+        self.assertEqual(res2["confidence"], 0.17)
+        self.assertEqual(res2["confidence_kind"], "heuristic_evidence_score")
+        self.assertEqual(res2["evidence_strength"], "low")
+        self.assertIn("confidence_breakdown", res2)
+        self.assertEqual(res2["confidence_breakdown"]["points"], 1)
+        self.assertEqual(res2["confidence_breakdown"]["raw_points"], 1)
+        self.assertEqual(res2["confidence_breakdown"]["denominator"], 6)
+
+
+class TestBuildConfidenceBreakdown(unittest.TestCase):
+    """Structured confidence_breakdown receipt testing."""
+
+    def test_verdict_passed_breakdown(self) -> None:
+        bd = build_confidence_breakdown(verdict_passed=True)
+        self.assertEqual(bd["points"], 6)
+        self.assertEqual(bd["raw_points"], 6)
+        self.assertEqual(bd["denominator"], 6)
         self.assertEqual(
-            attach_confidence_metadata({}),
-            {
-                "confidence": 0.17,
-                "confidence_kind": "heuristic_evidence_score",
-                "evidence_strength": "low",
-            },
+            bd["factors"],
+            [
+                {
+                    "key": "verdict_passed",
+                    "delta": 6,
+                    "label_zh": "验证规则全量通过",
+                    "label_en": "All verification rules passed",
+                }
+            ],
         )
+        self.assertEqual(bd["missing_to_raise"], [])
+
+    def test_ruled_out_breakdown(self) -> None:
+        bd = build_confidence_breakdown(ruled_out=True)
+        self.assertEqual(bd["points"], 0)
+        self.assertEqual(bd["raw_points"], 0)
+        self.assertEqual(bd["denominator"], 6)
+        self.assertEqual(
+            bd["factors"],
+            [
+                {
+                    "key": "ruled_out",
+                    "delta": 0,
+                    "label_zh": "反驳证据已排除",
+                    "label_en": "Ruled out by contradicting evidence",
+                }
+            ],
+        )
+        self.assertEqual(bd["missing_to_raise"], [])
+
+    def test_active_factors_and_deltas(self) -> None:
+        bd = build_confidence_breakdown(
+            direct_causal_evidence=2,
+            cross_source_corroboration=1,
+            counterfactual_supported=True,
+            margin_ratio=5.0,
+            check_localization="single",
+            hypothesis_separation=0.8,
+            single_keyword_only=True,
+            missing_discriminating_evidence=1,
+            contradicting_evidence=1,
+        )
+        # raw points: +2 +1 +2 +2 +1 +1 -1 -1 -2 = 5
+        # denominator: 6 + 2 + 1 + 1 = 10
+        self.assertEqual(bd["denominator"], 10)
+        self.assertEqual(bd["raw_points"], 5)
+        self.assertEqual(bd["points"], 5)
+        keys = [f["key"] for f in bd["factors"]]
+        self.assertEqual(
+            keys,
+            [
+                "direct_causal_evidence",
+                "cross_source_corroboration",
+                "counterfactual_supported",
+                "margin_ratio",
+                "check_localization",
+                "hypothesis_separation",
+                "single_keyword_only",
+                "missing_discriminating_evidence",
+                "contradicting_evidence",
+            ],
+        )
+        # Verify delta values
+        deltas = {f["key"]: f["delta"] for f in bd["factors"]}
+        self.assertEqual(deltas["direct_causal_evidence"], 2)
+        self.assertEqual(deltas["cross_source_corroboration"], 1)
+        self.assertEqual(deltas["counterfactual_supported"], 2)
+        self.assertEqual(deltas["margin_ratio"], 2)
+        self.assertEqual(deltas["check_localization"], 1)
+        self.assertEqual(deltas["hypothesis_separation"], 1)
+        self.assertEqual(deltas["single_keyword_only"], -1)
+        self.assertEqual(deltas["missing_discriminating_evidence"], -1)
+        self.assertEqual(deltas["contradicting_evidence"], -2)
+
+    def test_moderate_margin_and_widespread_localization(self) -> None:
+        bd = build_confidence_breakdown(
+            direct_causal_evidence=3,
+            margin_ratio=2.5,
+            check_localization="widespread",
+        )
+        deltas = {f["key"]: f["delta"] for f in bd["factors"]}
+        self.assertEqual(deltas["margin_ratio"], 1)
+        self.assertEqual(deltas["check_localization"], -1)
+        self.assertIn(
+            "2.5", [f["label_zh"] for f in bd["factors"] if f["key"] == "margin_ratio"][0]
+        )
+
+    def test_clamped_points_when_raw_points_negative(self) -> None:
+        bd = build_confidence_breakdown(
+            direct_causal_evidence=0,
+            contradicting_evidence=3,
+        )
+        self.assertEqual(bd["raw_points"], -6)
+        self.assertEqual(bd["points"], 0)
+        self.assertEqual(bd["denominator"], 6)
+
+    def test_missing_to_raise_auto_population(self) -> None:
+        # Confidence < 0.75 without counterfactual and without margin ratio
+        bd = build_confidence_breakdown(
+            direct_causal_evidence=3,
+            cross_source_corroboration=1,
+        )
+        self.assertEqual(bd["points"], 4)
+        self.assertEqual(bd["denominator"], 6)
+        # 4/6 = 0.67 < 0.75
+        self.assertEqual(len(bd["missing_to_raise"]), 2)
+        self.assertIn("需独立复算值或唯一失败检查以构成反事实闭环", bd["missing_to_raise"])
+        self.assertIn("验证器未提供定量数值偏差与容差比值", bd["missing_to_raise"])
+
+    def test_missing_to_raise_not_populated_when_confidence_ge_75(self) -> None:
+        bd = build_confidence_breakdown(
+            direct_causal_evidence=3,
+            cross_source_corroboration=1,
+            counterfactual_supported=True,
+            margin_ratio=8.0,
+        )
+        # (3 + 1 + 2 + 2) / 8 = 8/8 = 1.0 >= 0.75
+        self.assertEqual(bd["missing_to_raise"], [])
+
+    def test_missing_to_raise_custom_override(self) -> None:
+        custom = ["custom check required"]
+        bd = build_confidence_breakdown(
+            direct_causal_evidence=1,
+            missing_to_raise=custom,
+        )
+        self.assertEqual(bd["missing_to_raise"], ["custom check required"])
 
 
 class TestBuildCheckStats(unittest.TestCase):

@@ -341,6 +341,30 @@ def _recompute_divergence_agent_attribution(
             f"the verifier's recomputed value."
         )
 
+    contributing_factors = []
+    causal_anchors = ctx.evidence.get("causal_anchors") or {}
+    algo_anchor = causal_anchors.get("algorithm_or_param_definition")
+    if isinstance(algo_anchor, dict):
+        thought = str(algo_anchor.get("thought") or "")
+        has_tradeoff = bool(algo_anchor.get("parameter_tradeoff_detected")) or bool(
+            re.search(r"(?:η|cutoff|alpha|tradeoff|tolerance|convergence)", thought, re.IGNORECASE)
+        )
+        if has_tradeoff:
+            cf = attach_confidence_metadata(
+                {
+                    "category": "agent",
+                    "subtype": "scientific_parameter_selection",
+                    "code": "AGENT_SCIENTIFIC_PARAMETER_SELECTION",
+                    "summary": (
+                        "Causal anchor thought records an explicit cutoff/convergence "
+                        "parameter tradeoff prior to generating the diverging metric."
+                    ),
+                },
+                direct_causal_evidence=1,
+                cross_source_corroboration=1,
+            )
+            contributing_factors.append(cf)
+
     return {
         "schema_version": "failure-analysis-v1",
         "case_id": case_id,
@@ -359,7 +383,7 @@ def _recompute_divergence_agent_attribution(
             "summary": fail_text[:240] if fail_text else summary[:240],
         },
         "primary_root_cause": prc,
-        "contributing_factors": [],
+        "contributing_factors": contributing_factors,
         "competing_hypotheses": [h1, h2],
         "evidence_refs": ev_refs,
         "excluded_hypotheses": [

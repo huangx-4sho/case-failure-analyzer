@@ -32,7 +32,15 @@ from render_report import (
     render_job_summary_markdown,
     render_report_markdown,
 )
-from report_style import section_title
+from render_verdict import build_verdict_card, render_verdict_card_markdown
+from report_style import (
+    format_confidence_breakdown,
+    localize_engine_text,
+    render_error_matrix_table,
+    resolve_evidence_item,
+    resolve_key_evidence_summary,
+    section_title,
+)
 from validate_analysis import validate_report_sections
 
 
@@ -1014,6 +1022,395 @@ class TestReportEdgeCasesAndContracts(unittest.TestCase):
         self.assertNotIn("/Users/", rep_err)
         self.assertNotIn("/home/", rep_err)
         self.assertNotIn("/tmp/", rep_err)
+
+
+class TestRedesignedReportingAndLocalization(unittest.TestCase):
+    """
+    Validates Subagent W3 tasks:
+      1. Zero English leaks in Chinese mode (Gate 4, Gate 6, Gate 1c sentences).
+      2. Confidence receipt bar & breakdown row rendering.
+      3. Structured Error Matrix table with recomputed numbers and margin ratio.
+      4. Human-readable evidence resolution and key evidence summary.
+      5. Harbor verifier_report suppresses false missing verify.log warnings.
+      6. Passed report vendor wheel filtering and line budget (< 30 lines).
+    """
+
+    def test_chinese_localization_zero_english_leaks(self) -> None:
+        """Verifies clean localization of dynamic engine sentences from Gate 4, Gate 6, and Gate 1c."""
+        cases = [
+            (
+                "Agent delivered 'max_force' = 0.02863 (read from `artifacts/app/forces.csv`), which deviates from the verifier's independent reference/replay by 0.015 beyond its tolerance bound 0.005; the delivered result itself is inaccurate.",
+                "Agent 交付的 'max_force' = 0.02863（读取自 `artifacts/app/forces.csv`）与验证器独立复算/重放结果相差 0.015，超出容差上限 0.005，交付数值本身不准确。",
+            ),
+            (
+                "Agent delivered 'energy' = -12.34, which deviates from the verifier's independent reference/replay by 0.5 beyond its tolerance bound 0.1; the delivered result itself is inaccurate.",
+                "Agent 交付的 'energy' = -12.34与验证器独立复算/重放结果相差 0.5，超出容差上限 0.1，交付数值本身不准确。",
+            ),
+            (
+                "Agent delivered 'energy' = -12.34 read from `results.json`; the verifier's independent replay diverged by 0.5 beyond its tolerance bound 0.1.",
+                "Agent 交付的 'energy' = -12.34（读取自 `results.json`），验证器独立重放检出偏差 0.5（超出容差 0.1）。",
+            ),
+            (
+                "Agent delivered a 'max_force' result value that fails the verifier's independent recomputation (reported 0.0286 != recomputed 0.010, tol 0.005); the agent's own execution output records the same value (0.0286), so the delivered result itself is wrong.",
+                "Agent 交付的 'max_force' 结果值未能通过验证器独立复算（交付值 0.0286 != 复算值 0.010，容差 0.005）；Agent 自身执行输出亦记录了相同数值 (0.0286)，交付结果本身有误。",
+            ),
+            (
+                "The failing check names the record and metric with a declared numeric bound, and the agent's delivered value is independently located at `artifacts/forces.csv`. This is positive evidence of a delivered-value error, not of a verifier recomputation defect.",
+                "失败检查明确指出了记录标识、指标名称与数值容差，且在产物 `artifacts/forces.csv` 中独立定位到了 Agent 的交付值；这属于交付数值错误的直接证据，而非验证器复算缺陷。",
+            ),
+            (
+                "Re-derive 'energy' independently and reconcile the delivered value -12.34 with the verifier's replay before writing results (read from `results.json`).",
+                "交付前请独立重新推导 'energy'，并将产物中的交付值 -12.34（位于 `results.json`）与验证器复算口径对齐核验。",
+            ),
+            (
+                "Agent ran self-verification at `step_12` and reported success, but its script `tests/check.py` omits verifier-required checks: final_energy, band_gap (covered: forces); verifier rejected submitted outputs: Energy was not within bound",
+                "Agent 在 `step_12` 执行了自检并报告通过，但其脚本 `tests/check.py` 漏检了验证器要求的检查项：final_energy, band_gap（已覆盖：forces）；验证器最终拒绝了提交产物：Energy was not within bound",
+            ),
+            (
+                "Agent delivered /app/matrix.json with a structural, representation, or reference-ID mismatch against the verifier contract: sparse format expected",
+                "Agent 提交的 /app/matrix.json 在数据结构、稀疏表示或引用 ID 上与验证器契约不符：sparse format expected",
+            ),
+            (
+                "Software emitted `scf_nonconvergence` (Quantum ESPRESSO), but agent failed to diagnose the physical/input cause and repeatedly re-executed the failing setup (`sig_repeated_cmd`).",
+                "仿真软件抛出 `scf_nonconvergence` (Quantum ESPRESSO)，但 Agent 未能诊断出物理/输入根因，反复重试同一失败配置 (`sig_repeated_cmd`)。",
+            ),
+            (
+                "Harbor killed the agent at its configured execution timeout before the declared deliverables were complete (`missing final.json`); the verifier never started, so this trial was not scored.",
+                "Harbor 在达到配置的执行超时上限时强行终止了 Agent，此时声明的交付物尚未完成（`missing final.json`）；验证器未启动，因此本试次未评分。",
+            ),
+            (
+                "Runner aborted while collecting the agent's declared deliverables (`RUNNER_ERROR`, stage=runner, post-agent); the verifier still ran and scored the incomplete outputs.",
+                "Runner 在采集 Agent 声明的交付物阶段中止（`RUNNER_ERROR`，阶段 runner，执行后）；验证器仍然运行并对不完整产物进行了评分。",
+            ),
+        ]
+        for en_text, expected_zh in cases:
+            actual_zh = localize_engine_text(en_text, lang="zh")
+            self.assertEqual(actual_zh, expected_zh, f"Failed on: {en_text}")
+            # Ensure English pass-through unchanged
+            actual_en = localize_engine_text(en_text, lang="en")
+            self.assertEqual(actual_en, en_text)
+
+    def test_confidence_breakdown_rendering(self) -> None:
+        """Verifies visual badges and Confidence breakdown row in report and verdict card."""
+        evidence = {
+            "case_id": "test_conf",
+            "trial_name": "t1",
+            "runtime": {"agent_started": True, "verifier_started": True, "reward": 0.0},
+            "artifacts": [],
+        }
+        analysis = {
+            "case_id": "test_conf",
+            "trial_name": "t1",
+            "verdict": "failed",
+            "primary_root_cause": {
+                "category": "agent",
+                "subtype": "result_validation",
+                "code": "AGENT_RESULT_VALIDATION",
+                "confidence": 0.70,
+                "confidence_breakdown": {
+                    "points": 7,
+                    "denominator": 10,
+                    "factors": [
+                        {
+                            "key": "direct",
+                            "delta": 2,
+                            "label_zh": "直接因果实证",
+                            "label_en": "Direct causal evidence",
+                        },
+                        {
+                            "key": "cross",
+                            "delta": 1,
+                            "label_zh": "跨源证据互证",
+                            "label_en": "Cross-source corroboration",
+                        },
+                        {
+                            "key": "counterfactual",
+                            "delta": 2,
+                            "label_zh": "反事实闭环",
+                            "label_en": "Counterfactual loop",
+                        },
+                    ],
+                    "missing_to_raise": ["跨源互证", "独立复算"],
+                },
+                "summary": "Agent delivered invalid values.",
+            },
+            "failure_manifestation": "Calculation mismatch",
+            "competing_hypotheses": [],
+            "excluded_hypotheses": [],
+            "recommended_actions": [],
+        }
+
+        # 1. Report Chinese rendering
+        rep_zh = render_report_markdown(evidence, analysis, lang="zh")
+        self.assertIn("🟢 **0.70**", rep_zh)
+        self.assertIn("| **可信度拆解** |", rep_zh)
+        self.assertIn("`7/10 分`", rep_zh)
+        self.assertIn("✓ 直接因果实证(+2)", rep_zh)
+        self.assertIn("提分缺口：跨源互证、独立复算", rep_zh)
+
+        # 2. Report English rendering
+        rep_en = render_report_markdown(evidence, analysis, lang="en")
+        self.assertIn("🟢 **0.70**", rep_en)
+        self.assertIn("| **Confidence breakdown** |", rep_en)
+        self.assertIn("`7/10 pts`", rep_en)
+        self.assertIn("✓ Direct causal evidence(+2)", rep_en)
+        self.assertIn("Gap to raise: 跨源互证, 独立复算", rep_en)
+
+        # 3. Verdict card rendering
+        card = build_verdict_card(evidence, analysis)
+        v_zh = render_verdict_card_markdown(card, lang="zh")
+        self.assertIn("**可信度拆解**:", v_zh)
+        self.assertIn("`7/10 分`", v_zh)
+        self.assertIn("✓ 直接因果实证(+2)", v_zh)
+
+    def test_error_matrix_rendering(self) -> None:
+        """Verifies Error Matrix table rendering with recomputed numbers, tolerances and ratio."""
+        evidence = {
+            "case_id": "test_err_matrix",
+            "trial_name": "t1",
+            "runtime": {"agent_started": True, "verifier_started": True},
+            "verifier_report": {
+                "schema_family": "envelope+layered",
+                "verdict": "fail",
+                "primary_report": "core/verify.json",
+                "failed_checks": [
+                    {
+                        "layer": "L3",
+                        "name": "distances",
+                        "detail": "worst deviation 3.326 A",
+                        "core": True,
+                        "source": "core/verify.json",
+                        "failure_kind": "numerical",
+                        "artifact_comparison": {"recomputed_eV": [7.4823, 20.3922]},
+                    }
+                ],
+            },
+            "scientific_observations": [
+                {
+                    "error_family": "verifier_recompute_divergence",
+                    "metric": "distances",
+                    "reported_value": 3.326,
+                    "tolerance": 0.5,
+                    "agent_reported_value": 4.126,
+                    "agent_artifact_ref": "artifacts/app/out.csv:L10",
+                    "is_delta_divergence": True,
+                }
+            ],
+        }
+        analysis = {
+            "case_id": "test_err_matrix",
+            "trial_name": "t1",
+            "verdict": "failed",
+            "primary_root_cause": {
+                "category": "agent",
+                "subtype": "result_validation",
+                "code": "AGENT_RESULT_VALIDATION",
+                "confidence": 0.85,
+            },
+            "failure_manifestation": "Verifier rejected distance metric",
+        }
+
+        # 1. Error Matrix table in report
+        rep = render_report_markdown(evidence, analysis, lang="zh")
+        self.assertIn(
+            "| 检查项 | 错误性质 | 交付值 vs 复算/期望值 | 偏差 / 容差 (超标倍数) | 说明与来源 |",
+            rep,
+        )
+        self.assertIn("`[L3] distances` [core]", rep)
+        self.assertIn("数值偏差", rep)
+        self.assertIn("4.126", rep)
+        self.assertIn("recomputed_eV=[7.482, 20.39]", rep)
+        self.assertIn("6.7× 超标", rep)
+        self.assertIn("core/verify.json", rep)
+
+        # 2. Verdict card
+        card = build_verdict_card(evidence, analysis)
+        v_card = render_verdict_card_markdown(card, lang="zh")
+        self.assertIn("具名失败检查", v_card)
+        self.assertIn("`[L3] distances` [core]", v_card)
+        self.assertIn("6.7× 超标", v_card)
+
+    def test_human_readable_evidence_resolution(self) -> None:
+        """Verifies evidence resolver translates opaque IDs and collapses multiple self-checks."""
+        evidence = {
+            "case_id": "test_ev_res",
+            "trial_name": "t1",
+            "runtime": {"agent_started": True, "verifier_started": True},
+            "verifier_report": {
+                "primary_report": "verifier/verify.json",
+                "failed_checks": [{"name": "neutral_stationary", "detail": "dev 1.6e-06"}],
+            },
+            "scientific_observations": [
+                {
+                    "sci_id": "sci:recompute_divergence:1",
+                    "error_family": "verifier_recompute_divergence",
+                    "metric": "energy",
+                    "agent_reported_value": -12.34,
+                    "recomputed_value": -10.0,
+                    "tolerance": 0.05,
+                }
+            ],
+            "behavioral_signals": [
+                {
+                    "signal_id": "sig:self_check:1:0",
+                    "signal_type": "self_verification_executed",
+                    "description": "self-check run 1",
+                },
+                {
+                    "signal_id": "sig:self_check:2:0",
+                    "signal_type": "self_verification_executed",
+                    "description": "self-check run 2",
+                },
+            ],
+        }
+        analysis = {
+            "case_id": "test_ev_res",
+            "trial_name": "t1",
+            "verdict": "failed",
+            "primary_root_cause": {
+                "category": "agent",
+                "subtype": "result_validation",
+                "code": "AGENT_RESULT_VALIDATION",
+                "confidence": 0.8,
+            },
+            "evidence_refs": [
+                "art:artifacts/app/outputs/charges.csv:L628",
+                "sci:recompute_divergence:1",
+                "ver:fail_log",
+                "sig:self_check:1:0",
+                "sig:self_check:2:0",
+            ],
+        }
+
+        rep = render_report_markdown(evidence, analysis, lang="zh")
+        # Human readable summary
+        self.assertIn("### 核心实证清单", rep)
+        self.assertIn(
+            "📄 **交付产物** (`artifacts/app/outputs/charges.csv:L628`): 定位到交付记录实测值", rep
+        )
+        self.assertIn(
+            "⚖️ **数值/科学观测** (`sci:recompute_divergence:1`): energy 交付值 -12.34 与复算值 -10.0 不符（容差 0.05）",
+            rep,
+        )
+        self.assertIn(
+            "🛡️ **验证器判定** (`verifier/verify.json`): 未通过 1 项具名检查：`neutral_stationary`",
+            rep,
+        )
+        self.assertIn(
+            "🚩 **行为信号** (`self_verification_executed`): 记录了 2 次自检执行事件（已折叠）", rep
+        )
+
+        # Raw IDs preserved intact
+        self.assertIn(
+            "- **证据引用**: `art:artifacts/app/outputs/charges.csv:L628`, `sci:recompute_divergence:1`, `ver:fail_log`, `sig:self_check:1:0`, `sig:self_check:2:0`",
+            rep,
+        )
+
+    def test_harbor_verifier_report_suppresses_missing_log(self) -> None:
+        """Verifies structured verifier_report suppresses false missing verify.log warnings."""
+        evidence = {
+            "case_id": "harbor_trial",
+            "trial_name": "t1",
+            "runtime": {"agent_started": True, "verifier_started": True, "reward": 0.0},
+            "artifacts": [
+                {"artifact_id": "art:traj", "rel_path": "agent/trajectory.json", "exists": True},
+            ],
+            "verifier_report": {
+                "schema_family": "envelope+layered",
+                "primary_report": "verifier/verify.json",
+                "source_files": ["verifier/verify.json", "verifier/raw.json"],
+                "failed_checks": [{"name": "test_pass", "detail": "failed"}],
+            },
+            "missing_artifacts": [
+                "verifier/verify.log",
+                "results.json",
+                "job:lock.json",
+            ],
+        }
+        analysis = {
+            "case_id": "harbor_trial",
+            "trial_name": "t1",
+            "verdict": "failed",
+            "primary_root_cause": {
+                "category": "agent",
+                "subtype": "result_validation",
+                "code": "AGENT_RESULT_VALIDATION",
+                "confidence": 0.8,
+            },
+            "evidence_refs": ["art:traj"],
+        }
+
+        rep = render_report_markdown(evidence, analysis, lang="zh")
+        # Must surface structured verifier report
+        self.assertIn("[trial] `verifier/verify.json` (结构化验证报告)", rep)
+        # Must NOT emit missing verify.log
+        self.assertNotIn("[trial] `verifier/verify.log` 【缺失】", rep)
+        # Section 4 must NOT complain missing verifier/verify.log
+        self.assertNotIn("`verifier/verify.log`", rep)
+        self.assertIn("`results.json`", rep)
+
+    def test_passed_report_filters_vendor_wheels_and_budget(self) -> None:
+        """Verifies passed reports strip vendor .whl noise, summarize coverage, and stay < 30 lines."""
+        wheel_artifacts = [
+            {
+                "artifact_id": f"art:whl_{i}",
+                "rel_path": f"environment/assets/wheels/pkg_{i}-1.0-py3-none-any.whl",
+                "exists": True,
+            }
+            for i in range(15)
+        ]
+        evidence = {
+            "case_id": "c_pass_wheels",
+            "trial_name": "t_pass",
+            "task_dir": "/tmp/task_pass",
+            "runtime": {
+                "agent_started": True,
+                "verifier_started": True,
+                "reward": 1.0,
+                "verification_status": "passed",
+            },
+            "verifier_report": {
+                "passed_check_count": 8,
+                "verification_coverage": 1.0,
+            },
+            "scientific_observations": [{"error_family": "scf_nonconvergence", "recovered": True}],
+            "artifacts": [
+                {"artifact_id": "art:res", "rel_path": "results.json", "exists": True},
+                {"artifact_id": "art:traj", "rel_path": "agent/trajectory.json", "exists": True},
+                {"artifact_id": "art:vlog", "rel_path": "verifier/verify.log", "exists": True},
+                *wheel_artifacts,
+            ],
+        }
+        analysis = {
+            "case_id": "c_pass_wheels",
+            "trial_name": "t_pass",
+            "verdict": "passed",
+        }
+
+        # 1. Chinese edition
+        rep_zh = render_report_markdown(evidence, analysis, lang="zh")
+        non_empty_zh = [l for l in rep_zh.splitlines() if l.strip()]
+        self.assertLess(
+            len(non_empty_zh), 30, f"Passed report exceeded line budget: {len(non_empty_zh)}"
+        )
+        self.assertLess(
+            len(non_empty_zh), 28, f"Passed report should stay < 28 lines: {len(non_empty_zh)}"
+        )
+        self.assertNotIn(".whl", rep_zh)
+        self.assertIn("等共 18 项产物（已折叠环境依赖包）", rep_zh)
+        self.assertIn("- **检查覆盖**: 通过检查项 `8` · 覆盖率 `100.0%`", rep_zh)
+        self.assertIn("- **自愈警告**: 检出并自愈 1 项瞬态运行警告", rep_zh)
+
+        # 2. English edition
+        rep_en = render_report_markdown(evidence, analysis, lang="en")
+        non_empty_en = [l for l in rep_en.splitlines() if l.strip()]
+        self.assertLess(len(non_empty_en), 30)
+        self.assertNotIn(".whl", rep_en)
+        self.assertIn("vendor wheels omitted", rep_en)
+        self.assertIn("- **Check coverage**: passed checks `8`, coverage `100.0%`", rep_en)
+        self.assertIn(
+            "- **Recovered warnings**: 1 transient diagnostic warning(s) recovered cleanly", rep_en
+        )
 
 
 if __name__ == "__main__":

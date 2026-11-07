@@ -181,6 +181,131 @@ class TestCausalAnchors(unittest.TestCase):
         anchors = trace_causal_anchors(evidence)
         self.assertNotIn("self_check", anchors)
 
+    def test_task194_relevance_matching_step_map_ws_over_step_cluster(self) -> None:
+        """In task194 pattern, step_map_ws.py wins over step_cluster.py for atom_to_site."""
+        evidence = {
+            "verifier_report": {
+                "failed_checks": [
+                    {
+                        "name": "atom_to_site",
+                        "detail": "atom_to_site uses unknown reference IDs",
+                    }
+                ]
+            },
+            "timeline": [
+                {
+                    "event_id": "trajectory:step:25:thought",
+                    "observation": "I'll use cutoff=10.0 A which is cheap and converged for vacuum cluster.",
+                },
+                {
+                    "event_id": "trajectory:step:25:tool:0",
+                    "tool_name": "Write",
+                    "command": "/app/outputs/code/step_cluster.py",
+                    "code_payload": (
+                        "import numpy as np\n"
+                        "VAC_CUTOFF = W.NN2 * 1.5\n"
+                        "def build_cluster():\n"
+                        "    return np.zeros((10, 3))\n"
+                    ),
+                },
+                {
+                    "event_id": "trajectory:step:104:thought",
+                    "observation": "Mapping atoms to Voronoi Wigner-Seitz sites and writing atom_to_site.",
+                },
+                {
+                    "event_id": "trajectory:step:104:tool:0",
+                    "tool_name": "Write",
+                    "command": "/app/outputs/code/step_map_ws.py",
+                    "code_payload": (
+                        "def compute_atom_to_site(atoms, reference_site_id):\n"
+                        "    atom_to_site = {i: reference_site_id for i in range(len(atoms))}\n"
+                        "    return atom_to_site\n"
+                    ),
+                },
+            ],
+        }
+        anchors = trace_causal_anchors(evidence)
+        self.assertIn("algorithm_or_param_definition", anchors)
+        algo = anchors["algorithm_or_param_definition"]
+        self.assertEqual(algo["event_id"], "trajectory:step:104:tool:0")
+        self.assertIn("step_map_ws.py", algo["target_path"])
+        self.assertEqual(algo["matched_failed_checks"], ["atom_to_site"])
+
+    def test_parameter_tradeoff_detected_flag(self) -> None:
+        """Parameter tradeoff signals set parameter_tradeoff_detected to True."""
+        evidence_with_tradeoff = {
+            "timeline": [
+                {
+                    "event_id": "trajectory:step:10:thought",
+                    "observation": "I'll choose cutoff = 14.0 and eta = 0.02 which is cheap and converged.",
+                },
+                {
+                    "event_id": "trajectory:step:10:tool:0",
+                    "tool_name": "Write",
+                    "command": "/app/outputs/code/solver.py",
+                    "code_payload": "def solve():\n    cutoff = 14.0\n    eta = 0.02\n    return cutoff\n",
+                },
+            ]
+        }
+        anchors = trace_causal_anchors(evidence_with_tradeoff)
+        algo = anchors.get("algorithm_or_param_definition")
+        self.assertIsNotNone(algo)
+        assert algo is not None
+        self.assertTrue(algo["parameter_tradeoff_detected"])
+
+        evidence_without_tradeoff = {
+            "timeline": [
+                {
+                    "event_id": "trajectory:step:10:thought",
+                    "observation": "Creating output directories and basic structure.",
+                },
+                {
+                    "event_id": "trajectory:step:10:tool:0",
+                    "tool_name": "Write",
+                    "command": "/app/outputs/code/analysis.py",
+                    "code_payload": "def run_analysis():\n    return 42\n",
+                },
+            ]
+        }
+        anchors_no = trace_causal_anchors(evidence_without_tradeoff)
+        algo_no = anchors_no.get("algorithm_or_param_definition")
+        self.assertIsNotNone(algo_no)
+        assert algo_no is not None
+        self.assertFalse(algo_no["parameter_tradeoff_detected"])
+
+    def test_deliverable_relevance_bonus_and_matched_failed_checks(self) -> None:
+        """Deliverable generation matches failed check names like charges.csv."""
+        evidence = {
+            "metadata": {"declared_deliverables": ["charges.csv", "other.json"]},
+            "verifier_report": {
+                "failed_checks": [
+                    {
+                        "name": "charges.csv",
+                        "detail": "charges.csv differs from expected values",
+                    }
+                ]
+            },
+            "timeline": [
+                {
+                    "event_id": "trajectory:step:5:tool:0",
+                    "tool_name": "Bash",
+                    "command": "python3 generate_other.py --output /app/outputs/other.json",
+                    "observation": "Wrote other.json",
+                },
+                {
+                    "event_id": "trajectory:step:8:tool:0",
+                    "tool_name": "Bash",
+                    "command": "python3 generate_charges.py --output /app/outputs/charges.csv",
+                    "observation": "Wrote charges.csv",
+                },
+            ],
+        }
+        anchors = trace_causal_anchors(evidence)
+        self.assertIn("deliverable_generation", anchors)
+        deliv = anchors["deliverable_generation"]
+        self.assertEqual(deliv["event_id"], "trajectory:step:8:tool:0")
+        self.assertIn("charges.csv", deliv["matched_failed_checks"])
+
 
 if __name__ == "__main__":
     unittest.main()

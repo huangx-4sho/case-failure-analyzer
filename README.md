@@ -78,9 +78,34 @@ case-failure-analyzer/
 
 ## Usage
 
-All commands use the skill-relative entrypoint. Running from inside the skill folder, the equivalent short form is `python3 scripts/analyze_case.py ...`.
+### 1. Unified CFA CLI & Task-ID Quick Answer (Recommended)
 
-### 1. Full End-to-End Analysis & Bilingual Report Generation
+For benchmark tasks, CFA provides a unified command line interface (`scripts/cfa.py`) with three primary subcommands: `audit`, `inspect`, and `index`:
+
+```bash
+# 1. Audit a single task by ID (resolves newest trial and prints instant verdict card)
+python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
+
+# 2. Batch discovery and audit of all tasks under a benchmark checkout
+python3 scripts/cfa.py audit --all --jobs-root <benchmark checkout>
+
+# 3. Read-only inspection with automatic credential/path redaction
+python3 scripts/cfa.py inspect task208 --section verdict       # Direct verdict card (summary.md)
+python3 scripts/cfa.py inspect task208 --section errors        # At-a-Glance Error Matrix & failed checks
+python3 scripts/cfa.py inspect task208 --section confidence    # Confidence score & points/denominator receipt
+python3 scripts/cfa.py inspect task208 --section evidence      # Concise human digest of evidence
+python3 scripts/cfa.py inspect task208 --section errors --raw  # Output raw unformatted JSON data
+
+# 4. Atomic recomputation of the global index board
+python3 scripts/cfa.py index --report-root <benchmark checkout>/failure-report
+```
+
+- **At-a-Glance Error Matrix** (`--section errors`): Displays verdict, primary root cause, verifier diagnosability, and every named failed check with layer, failure kind, detail, and artifact comparison / recompute divergence deltas.
+- **Confidence Breakdown Receipt** (`--section confidence`): Pretty-prints heuristic confidence, evidence strength, dynamic `points / denominator` scale, signed `+`/`-` factors, and missing items needed to elevate confidence.
+- **Resolved Evidence Summary** (`--section evidence`): Concise terminal digest of runtime execution state, failed checks count, causal anchors, scientific observations, and behavioral signals count without dumping raw JSON.
+- **Global Index Board (`INDEX.md`)**: Tracks three-state trial statistics (Total, Passed, Scored Failed, Errored & Unscored, Scored Pass Rate), normalizes failure category distributions across non-passed trials so buckets sum to 100.0%, orders tasks numerically (`task98` < `task194`), displays visual confidence indicators (`🟢`, `🟡`, `🔴`, `✅`), and links reports, summaries, data, and domain prescriptions.
+
+### 2. Full End-to-End Analysis (Path Mode)
 
 ```bash
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
@@ -114,7 +139,7 @@ Outputs generated in `<output-dir>/<case_id>/`:
 - `job_summary.md`: Multi-trial batch Markdown dashboard summarizing verdicts, categories, root causes, and failure stages across all trials (using relative identifiers, zero machine-specific path leaks).
 - `job_summary.json`: Multi-trial batch structured statistics and summary records.
 
-### 2. Evidence & Candidate Hypothesis Collection Only (`--phase collect`)
+### 3. Evidence & Candidate Hypothesis Collection Only (`--phase collect`)
 
 ```bash
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
@@ -126,7 +151,7 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
   --phase collect
 ```
 
-### 3. Model-in-the-Loop Validation & Rendering
+### 4. Model-in-the-Loop Validation & Rendering
 
 `--phase all` emits a conservative deterministic draft. To submit a model-authored attribution, validate then render it:
 

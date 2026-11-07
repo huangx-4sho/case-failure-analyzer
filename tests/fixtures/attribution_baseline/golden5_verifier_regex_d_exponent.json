@@ -22,7 +22,36 @@
     "summary": "Verifier regex `VAL=\\s*([-\\d.E+]+)` parses floating-point numbers without Fortran `D/d` exponent support.",
     "confidence": 0.57,
     "confidence_kind": "heuristic_evidence_score",
-    "evidence_strength": "medium"
+    "evidence_strength": "medium",
+    "confidence_breakdown": {
+      "points": 4,
+      "raw_points": 4,
+      "denominator": 7,
+      "factors": [
+        {
+          "key": "direct_causal_evidence",
+          "delta": 2,
+          "label_zh": "直接因果实证 (2项)",
+          "label_en": "Direct causal evidence (2)"
+        },
+        {
+          "key": "cross_source_corroboration",
+          "delta": 1,
+          "label_zh": "跨源证据互证",
+          "label_en": "Cross-source corroboration"
+        },
+        {
+          "key": "hypothesis_separation",
+          "delta": 1,
+          "label_zh": "竞争假设区分度高",
+          "label_en": "High hypothesis separation"
+        }
+      ],
+      "missing_to_raise": [
+        "需独立复算值或唯一失败检查以构成反事实闭环",
+        "验证器未提供定量数值偏差与容差比值"
+      ]
+    }
   },
   "contributing_factors": [
     {
@@ -32,7 +61,24 @@
       "summary": "Prompt did not explicitly constrain input/log syntax formatting assumed by `verify.py`.",
       "confidence": 0.17,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 1,
+        "raw_points": 1,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "direct_causal_evidence",
+            "delta": 1,
+            "label_zh": "直接因果实证 (1项)",
+            "label_en": "Direct causal evidence (1)"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     }
   ],
   "competing_hypotheses": [
@@ -50,7 +96,36 @@
       "counterfactual_test": "Fix `tests/verify.py` internal file/parser logic and re-verify existing trial artifacts.",
       "confidence": 0.57,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "medium"
+      "evidence_strength": "medium",
+      "confidence_breakdown": {
+        "points": 4,
+        "raw_points": 4,
+        "denominator": 7,
+        "factors": [
+          {
+            "key": "direct_causal_evidence",
+            "delta": 2,
+            "label_zh": "直接因果实证 (2项)",
+            "label_en": "Direct causal evidence (2)"
+          },
+          {
+            "key": "cross_source_corroboration",
+            "delta": 1,
+            "label_zh": "跨源证据互证",
+            "label_en": "Cross-source corroboration"
+          },
+          {
+            "key": "hypothesis_separation",
+            "delta": 1,
+            "label_zh": "竞争假设区分度高",
+            "label_en": "High hypothesis separation"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     },
     {
       "hypothesis_id": "H2",
@@ -66,7 +141,24 @@
       "counterfactual_test": "Inspect agent's workspace outputs against `instruction.md` requirements.",
       "confidence": 0.0,
       "confidence_kind": "heuristic_evidence_score",
-      "evidence_strength": "low"
+      "evidence_strength": "low",
+      "confidence_breakdown": {
+        "points": 0,
+        "raw_points": -2,
+        "denominator": 6,
+        "factors": [
+          {
+            "key": "contradicting_evidence",
+            "delta": -2,
+            "label_zh": "存在反驳证据",
+            "label_en": "Contradicting evidence"
+          }
+        ],
+        "missing_to_raise": [
+          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "验证器未提供定量数值偏差与容差比值"
+        ]
+      }
     }
   ],
   "evidence_refs": [

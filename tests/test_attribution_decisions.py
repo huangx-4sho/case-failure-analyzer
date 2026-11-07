@@ -1813,6 +1813,163 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         ok, errors = validate_all(ev, an)
         self.assertTrue(ok, errors)
 
+    def test_gate6_schema_mismatch_unknown_reference_id(self) -> None:
+        ev = _evidence(
+            missing_artifacts=[],
+            artifacts=[
+                {"artifact_id": "art:trial_result", "exists": True},
+                {"artifact_id": "art:trajectory_json", "exists": True},
+            ],
+            behavioral_signals=[_sig("unverified_output", event_ref="traj:step:10")],
+            verifier_observations=[
+                _fail_log(
+                    "FAIL: schema mismatch: uses unknown reference id 'site99' not found in dataset"
+                )
+            ],
+            timeline=[_agent_event(event_id="traj:step:10")],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        prc = an["primary_root_cause"]
+        self.assertEqual(prc["category"], "agent")
+        self.assertEqual(prc["code"], "AGENT_SCHEMA_MISMATCH")
+        self.assertEqual(prc["subtype"], "schema_mismatch")
+        self.assertIn("mismatch against the verifier contract", prc["summary"])
+        ok, errors = validate_all(ev, an)
+        self.assertTrue(ok, errors)
+
+    def test_gate6_fud_prefers_matched_failed_checks_deliv_anchor(self) -> None:
+        ev = _evidence(
+            behavioral_signals=[_sig("unverified_output")],
+            verifier_observations=[_fail_log("atom_to_site: mapping mismatch")],
+            verifier_check_stats={
+                "total_checks": 2,
+                "failed_checks": 1,
+                "single_failure": True,
+                "failed_check_names": ["atom_to_site"],
+                "failed_check_summaries": ["atom_to_site: mapping mismatch"],
+            },
+            causal_anchors={
+                "algorithm_or_param_definition": {
+                    "event_id": "traj:algo:step:5",
+                    "command": "python step_cluster.py",
+                    "target_path": "step_cluster.py",
+                    "matched_failed_checks": [],
+                },
+                "deliverable_generation": {
+                    "event_id": "traj:deliv:step:12",
+                    "command": "python step_map_ws.py --target atom_to_site",
+                    "target_path": "step_map_ws.py",
+                    "matched_failed_checks": ["atom_to_site"],
+                },
+            },
+            timeline=[
+                _agent_event(event_id="traj:algo:step:5"),
+                _agent_event(event_id="traj:deliv:step:12"),
+            ],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        fud = an["first_unrecovered_deviation"]
+        self.assertEqual(fud["status"], "identified")
+        self.assertEqual(fud["event_ref"], "traj:deliv:step:12")
+
+    def test_gate6_coupled_checks_not_penalized_as_widespread(self) -> None:
+        msg = "atomic energy/spin/conversion/counterevidence differs from independent native calculation"
+        ev = _evidence(
+            missing_artifacts=[],
+            artifacts=[
+                {"artifact_id": "art:trial_result", "exists": True},
+                {"artifact_id": "art:trajectory_json", "exists": True},
+            ],
+            behavioral_signals=[
+                _sig("self_verification_executed", event_ref="traj:self_check:step:70")
+            ],
+            verifier_observations=[
+                _fail_log(
+                    f"spin_selection: {msg}\n"
+                    f"energy_parameters: {msg}\n"
+                    f"execution_or_analysis_trace: {msg}"
+                )
+            ],
+            verifier_check_stats={
+                "total_checks": 4,
+                "failed_checks": 3,
+                "passed_checks": 1,
+                "single_failure": False,
+                "widespread_failure": True,
+                "failed_check_names": [
+                    "spin_selection",
+                    "energy_parameters",
+                    "execution_or_analysis_trace",
+                ],
+                "failed_check_summaries": [
+                    f"spin_selection: {msg}",
+                    f"energy_parameters: {msg}",
+                    f"execution_or_analysis_trace: {msg}",
+                ],
+            },
+            verifier_report={
+                "failed_checks": [
+                    {"name": "spin_selection", "detail": msg},
+                    {"name": "energy_parameters", "detail": msg},
+                    {"name": "execution_or_analysis_trace", "detail": msg},
+                ]
+            },
+            causal_anchors={
+                "self_check": {
+                    "event_id": "traj:self_check:step:70",
+                    "script_path": "/app/outputs/verify.py",
+                    "self_check_passed": True,
+                    "uncovered_failed_checks": ["spin_selection", "energy_parameters"],
+                }
+            },
+            timeline=[_agent_event(event_id="traj:self_check:step:70")],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        prc = an["primary_root_cause"]
+        self.assertEqual(prc["code"], "AGENT_SELF_CHECK_GAP")
+        # With 3 direct points and 1 cross source, denominator should be 6 (not 7 from widespread penalty!)
+        self.assertEqual(prc["confidence_breakdown"]["denominator"], 6)
+        self.assertEqual(prc["confidence"], 0.67)
+        # Check contributing factors includes underlying scientific method/parameter selection
+        cf_codes = [cf["code"] for cf in an["contributing_factors"]]
+        self.assertIn("AGENT_SCIENTIFIC_METHOD_SELECTION", cf_codes)
+        ok, errors = validate_all(ev, an)
+        self.assertTrue(ok, errors)
+
+    def test_gate4_parameter_tradeoff_contributing_factor(self) -> None:
+        ev = _evidence(
+            missing_artifacts=[],
+            contract_observations=[
+                _contract(
+                    "consistent",
+                    contract_id="contract:max_force",
+                    item="results.json:values.max_force",
+                )
+            ],
+            scientific_observations=[_recompute_divergence()],
+            verifier_observations=[
+                _fail_log("FAIL: reported max_force 0.02863 != recomputed 0.03666 (tol 0.001)")
+            ],
+            causal_anchors={
+                "algorithm_or_param_definition": {
+                    "event_id": "trajectory:step:7",
+                    "parameter_tradeoff_detected": True,
+                    "thought": "cutoff tradeoff between 1.0 and 2.0 to balance speed and accuracy",
+                }
+            },
+            timeline=[_agent_event(event_id="trajectory:step:7")],
+        )
+        an = run_attribution_engine(ev, {"candidate_hypotheses": []})
+        self.assertEqual(an["primary_root_cause"]["code"], "AGENT_RESULT_VALIDATION")
+        cf_codes = [cf["code"] for cf in an["contributing_factors"]]
+        self.assertIn("AGENT_SCIENTIFIC_PARAMETER_SELECTION", cf_codes)
+        self.assertIn(
+            "Causal anchor thought records an explicit cutoff/convergence parameter tradeoff",
+            an["contributing_factors"][0]["summary"],
+        )
+        ok, errors = validate_all(ev, an)
+        self.assertTrue(ok, errors)
+
 
 if __name__ == "__main__":
     unittest.main()

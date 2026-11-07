@@ -540,16 +540,23 @@ def _enrich_with_verifier_report(
         manifestation["summary"] = summary[:700]
     if failed:
         manifestation["type"] = "verifier_check_failed"
-        manifestation["named_failed_checks"] = [
-            {
+        named_checks: List[Dict[str, Any]] = []
+        for c in failed[:5]:
+            entry: Dict[str, Any] = {
                 "layer": c.get("layer"),
                 "name": c.get("name"),
                 "detail": str(c.get("detail") or "")[:300],
                 "core": bool(c.get("core")),
                 "source": c.get("source"),
             }
-            for c in failed[:5]
-        ]
+            if c.get("failure_kind"):
+                entry["failure_kind"] = c["failure_kind"]
+            if isinstance(c.get("evidence"), dict) and c["evidence"]:
+                entry["evidence"] = c["evidence"]
+            if c.get("artifact_comparison"):
+                entry["artifact_comparison"] = c["artifact_comparison"]
+            named_checks.append(entry)
+        manifestation["named_failed_checks"] = named_checks
     if report.get("diagnosability") == "low":
         manifestation["verifier_diagnosability"] = "low"
         manifestation["verifier_diagnosability_reasons"] = list(
@@ -619,7 +626,14 @@ def build_causal_attribution(
             anchors = evidence.get("causal_anchors") or {}
             algo_anchor = anchors.get("algorithm_or_param_definition")
             deliv_anchor = anchors.get("deliverable_generation")
-            chosen_anchor = algo_anchor or deliv_anchor
+            if (
+                isinstance(deliv_anchor, dict)
+                and deliv_anchor.get("matched_failed_checks")
+                and not (isinstance(algo_anchor, dict) and algo_anchor.get("matched_failed_checks"))
+            ):
+                chosen_anchor = deliv_anchor
+            else:
+                chosen_anchor = algo_anchor or deliv_anchor
             if chosen_anchor:
                 fud["status"] = "identified"
                 fud["event_ref"] = chosen_anchor.get("event_id")

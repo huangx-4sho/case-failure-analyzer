@@ -26,6 +26,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from analyze_case import _artifact_name
+from render_index import natural_sort_key, render_index_markdown, update_failure_report_index
 from render_verdict import build_verdict_card, render_verdict_card_markdown
 from staging import manifest_filename, publish_staging_to_output, validate_input_output_isolation
 from task_ref import REPORT_DIR_NAME, TaskRefError, normalize_task_ref, resolve_task_ref
@@ -572,6 +573,97 @@ class SharedReportDirManifestTests(unittest.TestCase):
         self._publish("task207", {"task207.md": "a"})
         self._publish("task207", {"task207.md": "b"})
         self.assertTrue(notes.is_file())
+
+
+class GlobalIndexBoardTests(unittest.TestCase):
+    def test_natural_sort_key(self) -> None:
+        items = ["task194", "task98", "task207", "task3"]
+        sorted_items = sorted(items, key=natural_sort_key)
+        self.assertEqual(sorted_items, ["task3", "task98", "task194", "task207"])
+
+    def test_index_proportions_sum_to_100_with_passed_case(self) -> None:
+        cases = [
+            {"task_id": "task1", "verdict": "passed", "category": "none", "confidence": 1.0},
+            {"task_id": "task2", "verdict": "failed", "category": "agent", "confidence": 0.8},
+            {"task_id": "task3", "verdict": "failed", "category": "verifier", "confidence": 0.5},
+            {"task_id": "task4", "verdict": "failed", "category": "case", "confidence": 0.2},
+        ]
+        md = render_index_markdown(cases)
+        # Header callout checks
+        self.assertIn("**总用例 / Total**: `4`", md)
+        self.assertIn("**通过 / Passed**: `1`", md)
+        self.assertIn("**已评分失败 / Failed**: `3`", md)
+        self.assertIn("**未评分或异常 / Errored & Unscored**: `0`", md)
+        self.assertIn("**可评分通过率 / Scored Pass Rate**: `25.0%`", md)
+
+        # Proportions: 3 failed cases across 5 categories
+        # agent: 1/3 = 33.3%, verifier: 1/3 = 33.3%, case: 1/3 = 33.3%
+        # Proportions sum to 99.9% / 100.0%, NOT 75.0%!
+        self.assertIn("33.3%", md)
+        self.assertNotIn("25.0% |", md)  # category proportion must not divide by 4!
+
+    def test_index_manifest_visual_indicators_and_links(self) -> None:
+        cases = [
+            {
+                "task_id": "task194",
+                "verdict": "failed",
+                "category": "agent",
+                "subtype": "tool_call",
+                "code": "AGENT_TOOL_CALL",
+                "confidence": 0.90,
+                "failure_reason": "wrong args",
+                "has_report": True,
+                "has_summary": True,
+            },
+            {
+                "task_id": "task98",
+                "verdict": "passed",
+                "category": "none",
+                "subtype": "—",
+                "code": "—",
+                "confidence": 1.0,
+                "failure_reason": "all checks passed",
+                "has_report": True,
+            },
+            {
+                "task_id": "task207",
+                "verdict": "failed",
+                "category": "verifier",
+                "subtype": "regex",
+                "code": "VERIFIER_REGEX",
+                "confidence": 0.50,
+                "failure_reason": "regex mismatch",
+                "has_report": True,
+                "has_prescription": True,
+            },
+            {
+                "task_id": "task300",
+                "verdict": "failed",
+                "category": "case",
+                "subtype": "missing_asset",
+                "code": "CASE_ASSET",
+                "confidence": 0.25,
+                "failure_reason": "asset missing",
+            },
+        ]
+        md = render_index_markdown(cases)
+        # Order check: task98 before task194 before task207 before task300
+        pos_98 = md.index("`task98`")
+        pos_194 = md.index("`task194`")
+        pos_207 = md.index("`task207`")
+        pos_300 = md.index("`task300`")
+        self.assertLess(pos_98, pos_194)
+        self.assertLess(pos_194, pos_207)
+        self.assertLess(pos_207, pos_300)
+
+        # Visual indicator checks
+        self.assertIn("✅ 1.00", md)
+        self.assertIn("🟢 0.90", md)
+        self.assertIn("🟡 0.50", md)
+        self.assertIn("🔴 0.25", md)
+
+        # Prescription link check
+        self.assertIn("[处方](task207/skill-prescription.md)", md)
 
 
 if __name__ == "__main__":

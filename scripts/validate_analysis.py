@@ -466,6 +466,22 @@ def validate_all(
                 "`self_verification_executed` signal or a `causal_anchors.self_check` execution anchor."
             )
 
+    # 12. Optional `confidence_breakdown` validation when present on primary_root_cause
+    breakdown = prc.get("confidence_breakdown")
+    if breakdown is not None:
+        if not isinstance(breakdown, dict):
+            errors.append(
+                f"confidence_breakdown must be an object when present, got {type(breakdown).__name__}."
+            )
+        else:
+            for req_key in ("points", "raw_points", "denominator", "factors", "missing_to_raise"):
+                if req_key not in breakdown:
+                    errors.append(f"confidence_breakdown missing required key: {req_key!r}")
+            if not isinstance(breakdown.get("factors"), list):
+                errors.append("confidence_breakdown.factors must be a list when present.")
+            if not isinstance(breakdown.get("missing_to_raise"), list):
+                errors.append("confidence_breakdown.missing_to_raise must be a list when present.")
+
     return len(errors) == 0, errors
 
 
