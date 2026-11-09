@@ -80,6 +80,11 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     unverified_output_sigs = ctx.unverified_output_sigs
     verifier_started = ctx.verifier_started
 
+    remote_exit = next(
+        (signal for signal in premature_sigs if signal.get("confirmed_unfinished_remote_delivery")),
+        None,
+    )
+
     # Positive Agent Evidence Attribution
     contributing_factors: List[Dict[str, Any]] = []
     ev_refs = []
@@ -101,6 +106,8 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         ev_refs.append(c["contract_id"])
     if fail_log_obs:
         ev_refs.append("ver:fail_log")
+    if remote_exit:
+        ev_refs.append(remote_exit["signal_id"])
     ev_refs = list(dict.fromkeys(ref for ref in ev_refs if ref))
 
     causal_anchors = ctx.evidence.get("causal_anchors") or {}
@@ -264,13 +271,13 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             }
         }
     # Subcase 5d: Premature completion / missing output files.
-    # A named failing verifier check is more specific evidence about what the
-    # task rejected than a generic completion heuristic, so it must not be
-    # preempted by one: when the verifier named a failing check, fall through to
-    # subcase 5e instead. A contract misalignment still binds directly and keeps
-    # priority.
+    # A named verifier failure outranks generic completion heuristics. An
+    # independently confirmed remote exit binds directly to the missing output.
     elif agent_mismatch_contracts or (
-        premature_sigs and not ctx.named_check_failure and verifier_started
+        premature_sigs and verifier_started and (
+            not ctx.named_check_failure
+            or remote_exit
+        )
     ):
         subcase_id = "5d"
         subtype = "task_understanding" if not premature_sigs else "premature_termination"
@@ -285,6 +292,9 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                 else (timeline[-1]["event_id"] if timeline else "ver:fail_log")
             )
         )
+        if remote_exit:
+            summary = remote_exit["description"]
+            fud_ref = remote_exit["event_ref"]
         skill_prescription = None
     # Subcase 5e: Inaccurate output / calculation error backed by behavioral signals
     elif (unverified_output_sigs or signals) and (fail_text or failure_excerpt):

@@ -371,14 +371,18 @@ def validate_all(
                     "so primary_root_cause.category cannot be 'agent' based solely on trajectory completion heuristics."
                 )
 
-        # Hard Rule: a structured verifier report naming failed checks proves the
-        # trial reached scoring. `AGENT_PREMATURE_TERMINATION` would hide the
-        # actual failed check and its deviation, so it is forbidden here.
+        # Preserve named failures unless the cited remote exit signal directly
+        # binds the final scheduler observation to the missing deliverable.
         verifier_report = evidence.get("verifier_report")
         if (
             isinstance(verifier_report, dict)
             and verifier_report.get("failed_checks")
             and prc.get("code") == "AGENT_PREMATURE_TERMINATION"
+            and not any(
+                s.get("confirmed_unfinished_remote_delivery")
+                and s.get("signal_id") in ev_refs
+                for s in evidence.get("behavioral_signals", [])
+            )
         ):
             errors.append(
                 "NAMED_CHECK_PREMATURE_BLAME violation: verifier_report names failing "

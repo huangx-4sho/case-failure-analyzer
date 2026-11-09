@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -364,6 +365,70 @@ def _attach_unscored_verifier_fault(
     )
 
 
+def _bind_unfinished_remote_delivery(evidence, trajectory_path, trial_dir, task_dir):
+    """Bind a missing required file to a normal exit with outstanding remote work."""
+    runtime = evidence["runtime"]
+    if (not runtime.get("verifier_started") or runtime.get("reward") != 0
+            or runtime.get("has_trial_exception") or not all((trajectory_path, trial_dir, task_dir))):
+        return
+    checks = (evidence.get("verifier_report") or {}).get("failed_checks") or []
+    details = {str(check.get("detail") or "") for check in checks}
+    if len(details) != 1:
+        return
+    detail = next(iter(details))
+    if not detail.startswith("missing "):
+        return
+    filename = detail.removeprefix("missing ")
+    if Path(filename).name != filename or not filename.endswith(".json"):
+        return
+    try:
+        instruction = (task_dir / "instruction.md").read_text()
+        trajectory = json.loads(trajectory_path.read_text())
+    except (OSError, ValueError):
+        return
+    steps = trajectory.get("steps") if isinstance(trajectory, dict) else None
+    if not isinstance(steps, list) or not steps or not isinstance(steps[-1], dict):
+        return
+    final = steps[-1]
+    extra = final.get("extra")
+    if (final.get("source") != "agent" or final.get("tool_calls")
+            or not isinstance(extra, dict) or extra.get("stop_reason") != "end_turn"):
+        return
+    for declared in evidence["metadata"]["declared_deliverables"]:
+        required_path = declared.rstrip("/") + "/" + filename
+        collected = trial_dir / "artifacts" / declared.lstrip("/")
+        if (re.search(re.escape(required_path) + r"(?![\w./-])", instruction)
+                and collected.is_dir()
+                and not (collected / filename).exists()):
+            break
+    else:
+        return
+    calls = [event for event in evidence["timeline"] if event.get("tool_name")]
+    if not calls:
+        return
+    last = calls[-1]
+    command = last.get("command") or ""
+    observation = last.get("observation") or ""
+    if ("submit.py status --job" not in command or last.get("exit_code") != 0
+            or not re.search(r"(?mi)^[\w.-]+ => running(?:[ \t]|$)", observation)):
+        return
+    if not any("You will be notified when it completes" in (event.get("observation") or "")
+               for event in calls[:-1]):
+        return
+    if required_path not in evidence["missing_deliverables"]:
+        evidence["missing_deliverables"].append(required_path)
+    evidence["behavioral_signals"].append({
+        "signal_id": "sig:unfinished_remote_delivery",
+        "signal_type": "premature_completion",
+        "event_ref": last["event_id"],
+        "source_pointer": last.get("source_pointer"),
+        "missing_deliverables": [required_path],
+        "confirmed_unfinished_remote_delivery": True,
+        "description": f"Last scheduler check showed running jobs before a normal end_turn. "
+                       f"The verifier and collected artifacts confirm missing {required_path}.",
+    })
+
+
 def collect_case_evidence(
     trial_inv: Dict[str, Any],
     job_dir: Path,
@@ -469,6 +534,7 @@ def collect_case_evidence(
             )
     if verifier_check_stats is not None:
         evidence["verifier_check_stats"] = verifier_check_stats
+    _bind_unfinished_remote_delivery(evidence, traj_path, trial_dir, task_dir)
     anchors = trace_causal_anchors(evidence)
     if anchors:
         evidence["causal_anchors"] = anchors
@@ -565,6 +631,10 @@ def _enrich_with_verifier_report(
 
     prc = result.get("primary_root_cause")
     if not (isinstance(prc, dict) and prc.get("code") == "AGENT_PREMATURE_TERMINATION" and failed):
+        return result
+
+    if any(signal.get("confirmed_unfinished_remote_delivery")
+           for signal in evidence.get("behavioral_signals", [])):
         return result
 
     replacement = (

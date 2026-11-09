@@ -419,15 +419,6 @@ def _find_benchmark_roots(explicit_root: Optional[Path] = None) -> List[Path]:
 
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Strictly read-only inspection of a case's verdict card or evidence."""
-    roots = _find_benchmark_roots(args.jobs_root)
-    if not roots:
-        print(
-            f"ERROR: could not locate benchmark jobs or failure-report root from '{Path.cwd()}'. "
-            "Please specify --jobs-root or run within a benchmark repository.",
-            file=sys.stderr,
-        )
-        return 2
-
     task_ref = None
     report_dir = None
     report_basename = args.task_id
@@ -437,6 +428,14 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     if args.report_dir and Path(args.report_dir).is_dir():
         report_dir = Path(args.report_dir).resolve()
     else:
+        roots = _find_benchmark_roots(args.jobs_root)
+        if not roots:
+            print(
+                f"ERROR: could not locate benchmark jobs or failure-report root from '{Path.cwd()}'. "
+                "Please specify --jobs-root or run within a benchmark repository.",
+                file=sys.stderr,
+            )
+            return 2
         for r in roots:
             try:
                 task_ref = resolve_task_ref(args.task_id, r, report_dir_override=args.report_dir)
