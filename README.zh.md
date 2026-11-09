@@ -1,240 +1,311 @@
 <div align="center">
 
-# Case Failure Analyzer
+# 🔬 Case Failure Analyzer (CFA)
 
-**面向科学计算与 MLIP 基准用例的证据优先因果失败分析器**
+**面向科学计算与机器学习原子间势（MLIP）基准评测的证据优先因果失败分析器**
 
-[English](README.md) · [简体中文](README.zh.md)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
+[![Runtime](https://img.shields.io/badge/Runtime-标准库原生%20(零三方依赖)-2ea44f?style=flat-square)](scripts/)
+[![Tests](https://img.shields.io/badge/Tests-384%20项测试全通-brightgreen?style=flat-square)](tests/)
+[![Attribution](https://img.shields.io/badge/因果归因-四大并列门控-orange?style=flat-square)](scripts/attribution/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
-`Python 3 · 运行时仅依赖标准库` &nbsp;|&nbsp; `四大并列归因` &nbsp;|&nbsp; `中英双语报告`
+<br/>
+
+[🇨🇳 简体中文](README.zh.md) &nbsp;•&nbsp; [📖 English](README.md) &nbsp;•&nbsp; [⚡ 快速开始](#-快速开始) &nbsp;•&nbsp; [🏗️ 架构与引擎](#️-架构流程与归因引擎) &nbsp;•&nbsp; [📚 文档索引](#-说明文档索引)
 
 </div>
 
-适配 `CP2K` · `Quantum ESPRESSO` · `VASP/ABACUS` · `ORCA/Gaussian/PySCF` · `LAMMPS` · `GROMACS/AMBER/OpenMM` · `MLIP (MACE/NequIP/DeePMD/CHGNet)` · `ASE` · `xTB` · `RDKit` · `SciPy/NumPy/JAX/PyTorch/FEniCS/OpenFOAM`。
-
 ---
 
-## 目录
+## 🌟 核心亮点：让评测失败一眼明了
 
-- [核心亮点](#核心亮点)
-- [快速开始](#快速开始)
-- [命令行参考](#命令行参考)
-- [架构流程](#架构流程)
-- [仓库结构](#仓库结构)
-- [开发与测试](#开发与测试)
-- [说明文档索引](#说明文档索引)
+CFA 杜绝模糊笼统的“智能体报错”标签，提供客观、严谨、可复核的确定性因果证据收据：
 
----
-
-## 核心亮点
-
-| 你得到 | 呈现方式 |
-|---|---|
-| **错误一眼明了** | 「错误矩阵」：失败检查项 · 错误性质 · 交付值 vs 复算/期望值 · 偏差/容差（超标倍数）· 来源 |
-| **证据人话化** | 将 `sci:…`、`sig:…`、`art:…` 等内部引用解析为带文件/行号指向的自然语言条目 |
-| **可信度透明** | 计分收据（`points / denominator`）、逐项加减分因子，以及提分所缺证据 |
-| **四大并列裁决** | `agent` · `verifier` · `case` · `infra`，各自标注主因 / 伴随 / 已排除并附理由 |
-| **全局看板** | `INDEX.md`：通过率、占未通过比例的大类分布（总和 100%）、任务自然排序、直达链接 |
-
----
-
-## 快速开始
-
-```bash
-# 按任务号审计单个基准任务（自动选最新 trial 并输出结论卡）
-python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
-
-# 批量审计基准目录下全部任务
-python3 scripts/cfa.py audit --all --jobs-root <benchmark checkout>
-
-# 只读检视结果（自动脱敏凭据与家目录路径）
-python3 scripts/cfa.py inspect task208 --section errors
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  1. 结构化错误矩阵   │ 检查项 · 错误性质 · 交付值 vs 复算期望值 · 偏差/容差 (超标倍数) │
+│  2. 人话化核心实证   │ 将晦涩内部代码 (sci:1, ver:fail_log) 翻译为具体文件/行号清单    │
+│  3. 透明可信度收据   │ 动态分子/分母标尺 (如 9/10 分) · 因子逐条计分 · 明确提分缺口   │
+│  4. 四大并列因果门控 │ agent · verifier · case · infra 同等审视，先排外因再定责任      │
+│  5. 自动全局看板     │ 自动更新 INDEX.md · 占未通过比例归一化 · 自然数序任务清单       │
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-报告落在 `<benchmark>/failure-report/<task_id>/`，同级自动维护 `INDEX.md`。
+| 核心支柱 | 评测与评审人员所见 |
+|:---|:---|
+| 📊 **一目了然错误矩阵** | 表格化呈现失败检查项、错误性质（数值偏差/契约ID/过程追踪）、交付值 vs 期望值、超标倍数（如 `15986.7× 超标`）与权威来源文件。 |
+| 🔍 **人话化核心实证** | 将底层追踪代号（`sci:recompute_divergence:1`, `art:...`）直接翻译为人类可读的轨迹步骤、交付物行号与判定日志指针。 |
+| 🎯 **透明置信度收据** | 启发式可信度收据条（如 `🟢 9/10 分`），清晰展示直接实证、反事实闭环等各项加减分因子，并在 `< 0.75` 时直接指出提分缺口。 |
+| ⚖️ **四大并列大类** | 平等审视 `agent`、`verifier`、`case`、`infra` 四大板块——在将责任归于智能体之前，先通过客观事实排除评测器缺陷或环境异常。 |
+| 📈 **自动化全局看板** | 自动维护 `INDEX.md`，提供三态统计（通过/已评分失败/未评分）、自然排序（`task98` < `task194`）与归一化大类分布（总和恒为 100%）。 |
 
 ---
 
-## 命令行参考
+## 🧪 支持的科学计算生态
 
-### `cfa.py` 子命令
+内置覆盖 11 大科学计算与 MLIP 软件套件的 60+ 领域错误家族适配器与物理特征正则库：
 
-| 命令 | 用途 |
-|---|---|
-| `audit <task>` / `audit --all` | 解析 trial、执行完整流水线并输出结论卡 |
-| `inspect <task> --section <name> [--raw]` | 对已完成审计做只读检视 |
-| `index --report-root <dir>` | 原子重建全局 `INDEX.md` |
+| 计算领域 | 支持的模拟引擎与计算框架 |
+|:---|:---|
+| **DFT 与平面波计算** | `CP2K` · `Quantum ESPRESSO` · `VASP` · `ABACUS` |
+| **量子化学与半经验** | `ORCA` · `Gaussian` · `PySCF` · `xTB` |
+| **经典分子动力学 (MD)** | `LAMMPS` · `GROMACS` · `AMBER` · `OpenMM` |
+| **机器学习原子间势 (MLIP)** | `MACE` · `NequIP` · `DeePMD-kit` · `CHGNet` · `SevenNet` |
+| **化学信息学与数值基础** | `ASE` · `RDKit` · `SciPy` · `NumPy` · `JAX` · `PyTorch` · `FEniCS` · `OpenFOAM` |
 
-### `inspect` 视图
+---
 
-| 视图 | 内容 |
-|---|---|
-| `verdict` | 根因速览卡片（`summary.md`） |
-| `errors` | 裁决、主因、验证器可诊断性，及每个具名失败检查的性质与偏差 |
-| `confidence` | 置信度、证据强度、`points / denominator`、带符号因子、提分缺口 |
-| `evidence` | 运行态、失败检查数、因果锚点、科学观测与行为信号的紧凑摘要 |
-| `--raw` | 输出所选视图的原生无格式 JSON |
+## ⚡ 快速开始
 
-### 路径模式（`analyze_case.py`）
+### 统一命令行入口 (`cfa.py`)
 
 ```bash
-SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
-[ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.agents/skills/case-failure-analyzer"
-python3 "$SKILL_DIR/scripts/analyze_case.py" \
+# 1. 单任务快速审计（自动解析最新 trial，执行分析并终端打印结论卡）
+python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
+
+# 2. 批量审计基准目录下全部评测任务
+python3 scripts/cfa.py audit --all --jobs-root <benchmark checkout>
+
+# 3. 只读安全检视（自动脱敏敏感凭据与本地家目录路径）
+python3 scripts/cfa.py inspect task208 --section errors        # 错误矩阵与具名失败检查
+python3 scripts/cfa.py inspect task208 --section confidence    # 置信度收据条与分值标尺
+python3 scripts/cfa.py inspect task208 --section evidence      # 人话化证据精简摘要
+python3 scripts/cfa.py inspect task208 --section verdict       # 根因速览卡片 (summary.md)
+
+# 4. 原子加锁重新生成全局看板 (INDEX.md)
+python3 scripts/cfa.py index --report-root <benchmark checkout>/failure-report
+```
+
+> 审计报告将自动落盘至 `<benchmark>/failure-report/<task_id>/`，并在同级原子维护全景看板 `<benchmark>/failure-report/INDEX.md`。
+
+---
+
+## 🖥️ 实机终端效果预览
+
+执行 `cfa audit task208` 时，CFA 会直接在终端输出结构完整、开箱即答的 Markdown 结论卡：
+
+```markdown
+# task208 — 根因速览 (Root Cause Verdict)
+
+**裁定**: `failed` · **主根因**: 智能体决策与执行失误 (`agent`) / `result_validation` / `AGENT_RESULT_VALIDATION`（置信度 **0.90**）
+**可信度拆解**: 🟢 `9/10 分` · ✓ 直接因果实证 (2项)(+2) · ✓ 跨源证据互证(+1) · ✓ 唯一阻断项反事实闭环(+2) · ✓ 偏差超容差 1.599e+04×(+2) · ✓ 单项检查精准定位(+1) · ✓ 竞争假设区分度高(+1)
+
+**失败原因 (Why it failed)**: [L3] neutral_stationary: R02-M01/site000003 charge differs from independent frozen EQeq replay by 1.59869e-06 e beyond its decimal serialization bound 1.00001e-10 e
+
+## 1. 四大类裁决 (Four Peer Categories)
+| 大类 | 裁决 | 依据 |
+|---|---|---|
+| `agent` 智能体决策与执行失误 | **主因** | Agent 交付的 'charge' = 0.898982845013923 与验证器独立复算相差 1.59869e-06，超出容差上限 1.00001e-10。 |
+| `verifier` 评测验证与规则判定缺陷 | **已排除** | 失败检查明确指出了指标容差，并在产物中定位到了交付值；属于交付数值错误而非复算缺陷。 |
+| `case` 基准题目与规格设计缺陷 | **未选为主因** | 契约审计未发现题目资产缺失或规格歧义。 |
+| `infra` 运行环境与系统设施缺陷 | **未选为主因** | 未检出因果性 infra 观测；容器构建与验证器均正常运行完毕。 |
+
+## 2. 具名失败检查与错误矩阵 (Error Matrix)
+| 检查项 | 错误性质 | 交付值 vs 复算/期望值 | 偏差 / 容差 (超标倍数) | 说明与来源 |
+|---|---|---|---|---|
+| `[L3] neutral_stationary` | 数值偏差 | `0.898982845013923` vs `独立复算重放` | Δ = 1.59869e-06 / tol 1.00001e-10 (15986.7× 超标) | R02-M01/site000003 charge differs from frozen EQeq replay (来源: `raw-verifier.json`) |
+```
+
+---
+
+## 🏗️ 架构流程与归因引擎
+
+### 流水线流向图
+
+```mermaid
+flowchart TD
+    subgraph S1["第一阶段：客观证据采集"]
+        A["原生 Trial / Job 日志"] --> B["产物发现<br/><code>discover_artifacts.py</code>"]
+        A --> C["运行态标准化<br/><code>runtime_state.py</code>"]
+        A --> D["科学计算错误注册表<br/><code>extract_scientific_errors.py</code>"]
+        B & C & D --> E["结构化客观证据<br/><code>evidence.json</code>"]
+    end
+
+    subgraph S2["第二阶段：假设推导与因果引擎"]
+        E --> F["竞争假设列表<br/><code>candidate-hypotheses.json</code>"]
+        E & F --> G["因果门控链（7个严格门）<br/><code>scripts/attribution/gates/</code>"]
+        G --> H["确定性归因结果<br/><code>analysis.json</code>"]
+    end
+
+    subgraph S3["第三阶段：硬规则校验与报告渲染"]
+        H --> I["Schema 与不变量校验器<br/><code>validate_analysis.py</code>"]
+        I --> J["中英双语报告与技能处方<br/><code>report.md</code> · <code>summary.md</code>"]
+        I --> K["全局评测看板<br/><code>INDEX.md</code>"]
+    end
+
+    style E fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style H fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style J fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
+    style K fill:#ede7f6,stroke:#512da8,stroke-width:2px
+```
+
+### 7-Gate 因果归因门控阶梯
+
+由 `scripts/attribution/engine.py` 严格按序执行，最先命中的门生效并终止链条：
+
+```text
+Gate 0: 全量规则通过        ──▶ 用例验证通过，生成轻量无噪通过报告（<30 行）
+  ↓ (未通过)
+Gate 1: 环境与未启动异常    ──▶ 容器启动前失败 / 无日志异常终止（绝不怪罪未启动的 Agent）
+  ↓ (Agent 启动成功)
+Gate 2: 基准题目设计缺陷    ──▶ 任务资产丢失、题干规格错误、存在歧义的私有约定
+  ↓ (题目规格无瑕疵)
+Gate 3: 评测验证器自身缺陷  ──▶ 验证脚本崩溃、正则解析溢出、超紧容差微扰碰撞
+  ↓ (验证器判定有效)
+Gate 4: 独立复算数值偏离    ──▶ 严谨数值重算超差、偏差超标倍数计算、截断参数权衡捕获
+  ↓ (未命中数值复算偏离)
+Gate 5: 充分有效证据校验    ──▶ 证据不充分时归入 unknown，绝不盲目归因责任
+  ↓ (存在确定性 Agent 偏离证据)
+Gate 6: 智能体主观决策失误  ──▶ 产物结构/引用ID不符、自检覆盖不足、未经核验即交付
+```
+
+---
+
+## 💻 命令行参考与进阶选项
+
+<details>
+<summary><b>🔍 点击展开 <code>cfa.py</code> 详细子命令与检视参数</b></summary>
+
+### `cfa.py` 命令一览
+
+| 子命令 | 用途说明 | 核心参数 |
+|:---|:---|:---|
+| `audit` | 解析目标 Trial，运行完整流水线并输出结论卡。 | `<task_id>`, `--all`, `--jobs-root <dir>`, `--lang zh\|en\|bilingual` |
+| `inspect` | 对已完成的任务进行只读脱敏检视。 | `<task_id>`, `--section verdict\|errors\|confidence\|evidence`, `--raw` |
+| `index` | 原子加锁重新生成全局 `INDEX.md` 看板。 | `--report-root <dir>` |
+
+### `cfa inspect` 视图说明
+
+- `--section verdict`: 输出标准根因速览卡片（`summary.md`）。
+- `--section errors`: 输出一目了然错误矩阵，含检查项层级、性质、交付值、复算偏差与超标倍数。
+- `--section confidence`: 输出透明计分收据条（`points / denominator`）、各项正负因子与提分缺口。
+- `--section evidence`: 输出精简的运行态、检查项计数、因果锚点与行为信号，无需在终端查看动辄 200KB+ 的全量 JSON。
+- `--raw`: 输出对应部分的原生无格式 JSON 数据，便于脚本流式处理。
+
+</details>
+
+<details>
+<summary><b>🛠️ 点击展开底层路径模式 (<code>analyze_case.py</code>) 与模型在环校验</b></summary>
+
+### 手动指定路径模式
+
+```bash
+python3 scripts/analyze_case.py \
   --job jobs/<job_name> \
   --task tasks/<task_name> \
   --output <output-dir>/<case_id> \
   --lang bilingual
 ```
 
-| 参数 | 说明 |
-|---|---|
-| `--job` | 作业目录或具体 Trial 目录 **（必选）** |
-| `--output` | 输出目录 **（必选）**；严格保障输入只读，禁止与输入路径重叠 |
-| `--task` | 任务定义目录（可选，省略时自动发现） |
-| `--trial` | Trial 名称或 `all`（默认 `all`） |
-| `--lang` | `bilingual`（默认）· `zh` · `en` |
-| `--format` | `both`（默认）· `json` · `markdown` |
-| `--phase` | `all`（流水线 + 保守归因 + 报告）· `collect`（仅采集证据与候选假设） |
+| 参数名称 | 类型 | 说明 |
+|:---|:---|:---|
+| `--job` | Path | 作业目录或具体 Trial 目录 **（必选）**。 |
+| `--output` | Path | 产物输出目录；严格禁止与输入路径重叠 **（必选）**。 |
+| `--task` | Path | 任务定义目录（省略时自动搜寻上级 `task.toml`）。 |
+| `--trial` | String | 指定分析的 Trial 名称或 `all`（默认：`all`）。 |
+| `--lang` | Choice | `bilingual`（默认，中英双语合订）、`zh`（独立中文）或 `en`（独立英文）。 |
+| `--format` | Choice | `both`（默认）、`json` 或 `markdown`。 |
+| `--phase` | Choice | `all`（全流水线）或 `collect`（仅采集客观证据与候选假设）。 |
 
-**输出文件**（位于 `<output-dir>/<case_id>/`）：
+### 输出目录结构
 
-| 文件 | 内容 |
-|---|---|
-| `evidence.json` | 客观产物清单、`runtime_state`、标准化轨迹、契约审计、科学软件错误观测 |
-| `candidate-hypotheses.json` | 带启发式证据评分的竞争根因假设 |
-| `analysis.json` | 因果归因结果（`failure-analysis-v1`）；`--phase all` 下为保守确定性草稿 |
-| `report.md` / `report.zh.md` / `report.en.md` | 含 4 个核心板块的审计报告（通过案例精简为 30 行内轻量视图） |
-| `skill-prescription*.md` | 领域技能处方，仅在判定为可复用 Agent 能力缺口时生成 |
-| `job_summary.md` / `.json` | 多 Trial 批处理看板（相对标识符，无本机绝对路径） |
+在 `<output-dir>/<case_id>/` 目录下生成：
+- `summary.md`: 纯净 Markdown 结论卡，与终端输出逐字节一致。
+- `report.md`: 核心 4 板块因果审计主报告（通过用例自动缩减为 `< 30` 行）。
+- `skill-prescription.md`: 针对智能体能力盲区生成的技能处方规范（按需生成）。
+- `data/evidence.json`: 结构化时间线、运行状态与软件错误观测。
+- `data/analysis.json`: 机器可读的最终因果归因结论（`failure-analysis-v1`）。
+- `data/summary.json`: 结构化结论卡元数据。
 
-**仅采集证据**：在上述命令后追加 `--phase collect`。
+### 模型在环 (Model-in-the-Loop) 校验工作流
 
-**模型介入裁决**：先校验模型撰写的归因，再渲染报告：
+若要提交或复核大语言模型编写的归因推导，可使用内置校验器进行防御性审计：
 
 ```bash
-python3 "$SKILL_DIR/scripts/validate_analysis.py" \
+# 1. 对比客观证据与不变量，校验归因推导
+python3 scripts/validate_analysis.py \
   --evidence <output-dir>/<case_id>/evidence.json \
   --analysis <output-dir>/<case_id>/analysis.json \
   --report   <output-dir>/<case_id>/report.md
 
-python3 "$SKILL_DIR/scripts/render_report.py" \
+# 2. 渲染正式报告
+python3 scripts/render_report.py \
   --evidence <output-dir>/<case_id>/evidence.json \
   --analysis <output-dir>/<case_id>/analysis.json \
   --output-report <output-dir>/<case_id>/report.md \
-  --output-prescription <output-dir>/<case_id>/skill-prescription.md \
   --lang bilingual
 ```
 
-### 退出码
-
-| 退出码 | 含义 |
-|---|---|
-| `0` | 分析成功（包括合法的 Job 级启动前基础设施失败） |
-| `2` | 无效输入：路径不存在、`--trial` 不存在、空作业目录且无 Job 级证据，或请求了未实现的 `--replay` |
-
-入口脚本在写出任何报告**之前**快速失败校验，避免错误路径产出看似合理的误导性报告。
+</details>
 
 ---
 
-## 架构流程
-
-```text
-产物与状态采集    discover_artifacts · runtime_state · extract_runtime_errors
-        ↓
-客观证据数据      evidence.json
-        ↓
-竞争假设生成      generate_hypotheses → candidate-hypotheses.json
-        ↓
-因果归因引擎      analyze_case + attribution-protocol → analysis.json
-        ↓
-Schema 与硬规则校验   validate_analysis
-        ↓
-双语审计报告渲染  render_report → report.md · report.zh.md · report.en.md · skill-prescription.md
-```
-
-因果判定位于 `scripts/attribution/`：每个门（gate）一个函数，由 `engine.py` 按固定顺序执行，最先命中者生效。
-
-```text
-gate0_passed → gate1a_infra_prestartup → gate1b_unknown_no_evidence
-             → gate2_case_definition → gate3_verifier_defect
-             → gate4_numerical_divergence → gate5_insufficient_positive_evidence
-             → gate6_agent_primary
-```
-
-- 每个门要么放弃，要么返回完整的 15 键归因结果；`schema.py` 在构造时校验键契约。
-- 门的顺序属于关键契约，由测试锁定。
-- `analysis.json` 含可选的 `decision_trace`：被评估的门、各门放弃原因及最终命中的门。
-- `evidence.json` 含可选的 `diagnostics` 列表：非空表示某次可恢复失败降低了证据质量（如 `tests/verify.py` 无法解析）。同样的记录会以 `ANALYSIS DIAGNOSTIC: {...}` 输出到 stderr；stdout 与退出码不受影响。
-- `tests/test_attribution_characterization.py` 将十种原型 fixture 的输出与已提交基线比对；如需有意更新，使用 `UPDATE_BASELINE=1` 重新生成。
-
----
-
-## 仓库结构
+## 📁 仓库结构说明
 
 ```text
 case-failure-analyzer/
-├── SKILL.md                 # Skill 入口与运行时契约（面向 Agent，仅英文）
-├── README.md / README.zh.md # 项目概览与命令行用法
-├── Makefile                 # test、lint、smoke、check-docs、export-skill、clean
-├── pyproject.toml           # 包元数据与可选 [dev] 依赖
-├── agents/openai.yaml       # codex 运行时接口元数据
-├── docs/{en,zh}/            # references/ 的人类可读镜像（由 make check-docs 守护）
-├── references/              # Agent 读取文档的唯一真相源
-│   ├── *.md                 # taxonomy、归因协议、schema、处方策略
-│   ├── error-families.json  # 统一 error-family 注册表
-│   └── software/            # 11 个分软件知识库
-├── scripts/                 # 确定性证据流水线与报告渲染
-│   ├── analyze_case.py      # 入口：collect → attribute → render
-│   ├── cfa.py               # 统一 CLI：audit / inspect / index
-│   ├── staging.py           # 暂存区、文件锁、输入隔离、清单事务发布
-│   ├── validate_analysis.py # Schema 与硬规则校验器
-│   ├── render_report.py     # 报告与技能处方渲染器
-│   └── attribution/         # 归因引擎（engine、schema、context）+ gates/gate0..gate6
-└── tests/                   # unittest 套件、fixture、归因基线
+├── SKILL.md                 # Agent 运行时入口与系统提示词契约（专供 Agent）
+├── README.md / README.zh.md # 项目说明文档（英文 | 简体中文双语版）
+├── Makefile                 # 工程化入口：test、lint、format、check-docs、export-skill
+├── pyproject.toml           # 项目元数据配置（标准库原生，Python >= 3.9）
+├── docs/{en,zh}/            # references/ 的人类可读中英文镜像文档
+├── references/              # 专供 Agent 读取的唯一领域知识源
+│   ├── taxonomy.md          # 失败分类学体系
+│   ├── attribution-protocol.md # 因果归因执行协议
+│   ├── error-families.json  # 跨 11 个套件的 60+ 科学计算错误正则特征库
+│   └── software/*.md        # 分软件知识库（CP2K, VASP, LAMMPS 等）
+├── scripts/                 # 轻量标准库 Python 脚本集
+│   ├── cfa.py               # 统一命令行客户端 (audit, inspect, index)
+│   ├── analyze_case.py      # 流水线执行主脚本
+│   ├── staging.py           # 原子暂存、文件建议锁与清单事务发布机制
+│   ├── render_report.py     # Markdown 审计报告与技能处方渲染器
+│   ├── report_style.py      # 双语术语、错误矩阵与格式化唯一规范
+│   └── attribution/         # 7 门归因决策引擎
+└── tests/                   # 384 项单元测试、决策表与特征化测试
 ```
-
-本地产物（`.venv/`、`__pycache__/`、`*.egg-info/`、`.ruff_cache/`、`.dev/`）及 bench 侧 `failure-report/` 看板已被 `.gitignore` 排除。实际分发的 skill 只含 `SKILL.md`、`agents/`、`scripts/` 与 `references/`。
 
 ---
 
-## 开发与测试
+## 🔧 开发与自动化测试
 
-运行时仅依赖标准库；测试工具需额外安装，但 `make test` 无需安装任何依赖。
-
-| 命令 | 作用 |
-|---|---|
-| `make test` | `python3 -m unittest discover -s tests -t .` |
-| `make check` | lint + 测试 + 文档镜像检查 + 格式检查 |
-| `make compile` | 对 `scripts/` 与 `tests/` 做语法检查 |
-| `make smoke` | 针对已提交双 trial fixture 的端到端 CLI 运行 |
-| `make dev` / `make test-pytest` | 可选：安装 `[dev]` 依赖 / 使用 pytest 运行 |
-| `make export-skill [DEST=…]` | 导出纯净技能目录 |
-| `make help` | 列出全部目标 |
-
-### 导出生产技能
-
-`make export-skill` 导出 `SKILL.md`、`agents/`、`scripts/`、`references/`，自动排除 `tests/`、`docs/` 及开发配置（`Makefile`、`pyproject.toml`、`uv.lock`、`.ruff_cache`、`.venv`、`.git`、`.dev/`、旧版 `failure-analysis/`）。
+运行时严谨保持**标准库原生（零三方依赖）**。工程与测试工具链开箱即用：
 
 ```bash
-make export-skill                                  # 默认：$CODEX_HOME/skills/case-failure-analyzer
-make export-skill DEST=/path/to/case-failure-analyzer
+make test          # 运行全套单元测试（384 项测试全绿，无需额外配置环境）
+make check         # 全方位质量门禁：语法检查 + 单元测试 + 文档镜像同步 + 代码格式
+make smoke         # 在提交的真实回归 fixture 上执行端到端 CLI 冒烟验证
+make export-skill  # 导出干净的生产技能目录，排除测试与开发冗余文件
 ```
 
-`scripts/export_skill.py` 拒绝不安全的目标路径（`/`、`$HOME`、源码仓库根目录），并以非破坏方式同步：保留用户自有文件，通过 `.cfa_export_manifest.json` 追踪受管产物。
+### 生产技能目录导出
+
+```bash
+# 导出到默认技能目录 ($CODEX_HOME/skills/case-failure-analyzer)
+make export-skill
+
+# 或导出到指定目标目录
+make export-skill DEST=/path/to/target/case-failure-analyzer
+```
 
 ---
 
-## 说明文档索引
+## 📚 说明文档索引
 
-| 文档 | 中文版 | 英文版 |
-|---|---|---|
-| 项目概览与命令行指南 | [README.zh.md](README.zh.md) | [README.md](README.md) |
-| 系统工作流与归因总规范 | [guide](docs/zh/guide.md) | [guide](docs/en/guide.md) |
-| 失败分类学（`failure-analysis-v1`） | [taxonomy](docs/zh/taxonomy.md) | [taxonomy](docs/en/taxonomy.md) |
-| 逆向因果归因协议 | [protocol](docs/zh/attribution-protocol.md) | [protocol](docs/en/attribution-protocol.md) |
-| 证据与归因 JSON 模式 | [schema](docs/zh/evidence-schema.md) | [schema](docs/en/evidence-schema.md) |
-| 审计报告结构规范 | [report](docs/zh/report-schema.md) | [report](docs/en/report-schema.md) |
-| 领域技能处方生成策略 | [policy](docs/zh/skill-prescription-policy.md) | [policy](docs/en/skill-prescription-policy.md) |
+| 文档名称 | 简体中文版 (`docs/zh/`) | English Mirror (`docs/en/`) |
+|:---|:---:|:---:|
+| **项目概览与命令行指南** | [README.zh.md](README.zh.md) | [README.md](README.md) |
+| **系统工作流与归因总规范** | [guide.md](docs/zh/guide.md) | [guide.md](docs/en/guide.md) |
+| **失败分类学体系 (`failure-analysis-v1`)** | [taxonomy.md](docs/zh/taxonomy.md) | [taxonomy.md](docs/en/taxonomy.md) |
+| **逆向因果归因协议** | [attribution-protocol.md](docs/zh/attribution-protocol.md) | [attribution-protocol.md](docs/en/attribution-protocol.md) |
+| **证据与归因 JSON 模式规范** | [evidence-schema.md](docs/zh/evidence-schema.md) | [evidence-schema.md](docs/en/evidence-schema.md) |
+| **审计报告结构规范（4 大核心板块）** | [report-schema.md](docs/zh/report-schema.md) | [report-schema.md](docs/en/report-schema.md) |
+| **领域技能处方生成策略** | [skill-prescription-policy.md](docs/zh/skill-prescription-policy.md) | [skill-prescription-policy.md](docs/en/skill-prescription-policy.md) |
 
-> `SKILL.md` 与 `references/` 专供 Agent 运行时读取，统一保留纯英文；人类开发者请阅读上表的 `docs/` 双语版本。
+---
+
+<div align="center">
+
+Made with 🔬 for rigorous, evidence-grounded AI scientific computing evaluation.
+
+</div>
