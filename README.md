@@ -1,311 +1,190 @@
 <div align="center">
 
-# 🔬 Case Failure Analyzer (CFA)
+# Case Failure Analyzer
 
-**Evidence-first causal failure analysis & diagnostic toolkit for scientific-computing and MLIP agent benchmarks.**
+**Evidence-based failure audits for scientific-computing benchmarks**
 
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
-[![Runtime](https://img.shields.io/badge/Runtime-Zero--Dependency%20(stdlib%20only)-2ea44f?style=flat-square)](scripts/)
-[![Tests](https://img.shields.io/badge/Tests-384%20Passed-brightgreen?style=flat-square)](tests/)
-[![Attribution](https://img.shields.io/badge/Causal%20Attribution-4%20Peer%20Gates-orange?style=flat-square)](scripts/attribution/)
-[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
+[![Runtime · stdlib](https://img.shields.io/badge/Runtime-stdlib-15803D?style=flat-square)](pyproject.toml)
+[![Reports · 中文 / EN](https://img.shields.io/badge/Reports-中文%20%2F%20EN-7C3AED?style=flat-square)](SKILL.md)
 
-<br/>
+[简体中文](README.zh.md) · [Skill definition](SKILL.md) · [User guide](docs/en/guide.md)
 
-[📖 English](README.md) &nbsp;•&nbsp; [🇨🇳 简体中文](README.zh.md) &nbsp;•&nbsp; [⚡ Quick Start](#-quick-start) &nbsp;•&nbsp; [🏗️ Architecture](#️-architecture--engine) &nbsp;•&nbsp; [📚 Docs Index](#-documentation-index)
+[Quick start](#quick-start) · [Attribution](#how-attribution-works) · [Reports](#report-files) · [Development](#repository-and-development) · [Docs](#documentation)
 
 </div>
 
 ---
 
-## 🌟 Highlights: Understand Failures at a Single Glance
+Case Failure Analyzer (CFA) audits scientific-computing benchmark trials after execution. It reads available job and trial logs, agent trajectories, task definitions, verifier results and code, and collected deliverables. It produces an evidence-linked verdict, a Markdown report, and machine-readable findings.
 
-CFA replaces uninformative "agent failed" labels with deterministic, verifiable causal receipts.
+> **Requirements** · Python 3.9+ · Standard library only at runtime
+>
+> The audit reads existing artifacts and writes to a separate report directory. Simulations and verifier code are examined statically.
 
-```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│  1. Error Matrix       │ Failed checks, exact deltas, tolerances & over-bound ratios   │
-│  2. Resolved Evidence  │ Internal IDs (sci:1, ver:fail_log) resolved into file/lines   │
-│  3. Confidence Receipt │ Transparent score scale (e.g. 9/10), signed factors & gaps    │
-│  4. Four Peer Verdicts │ Strict attribution across agent · verifier · case · infra     │
-│  5. Global Index Board │ Automatic INDEX.md board with normalized non-passed shares    │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-```
+Core outputs from task-ID mode
 
-| Core Pillar | What Reviewers See |
-|:---|:---|
-| 📊 **At-a-Glance Error Matrix** | Tabular overview with check name, error nature, delivered vs expected values, margin ratio (e.g. `15986.7× over bound`), and authoritative source. |
-| 🔍 **Human-Readable Evidence** | Opaque trace markers (`sci:recompute_divergence:1`, `art:...`) are mapped to concrete execution steps and deliverable file pointers. |
-| 🎯 **Transparent Confidence** | Heuristic score receipt (e.g. `9/10 pts`), displaying positive/negative evidence factors and explicit hints on what is missing to raise confidence. |
-| ⚖️ **Four Peer Categories** | Evaluates `agent`, `verifier`, `case`, and `infra` on equal footing—ruling out external causes with evidence before attributing fault to the agent. |
-| 📈 **Automated Global Board** | `INDEX.md` dashboard with three-state stats, pass rates, naturally-sorted task manifests, and normalized category distributions. |
+| Cause verdict | Traceable evidence | Batch overview |
+| :--- | :--- | :--- |
+| Compare four causes and explain the primary finding | Locate failed checks, logs and execution steps | Review scoring states, pass rates and task reports |
+| `summary.md` | `data/evidence.json` | `INDEX.md` |
 
 ---
 
-## 🧪 Supported Scientific Computing Ecosystem
+## Quick start
 
-Built-in support with 60+ curated domain error families and adapters across 11 scientific suites:
+From the CFA repository, set `BENCH_ROOT` to the benchmark checkout containing the jobs and task definitions.
 
-| Domain | Supported Engines & Frameworks |
-|:---|:---|
-| **DFT & Plane-Wave** | `CP2K` · `Quantum ESPRESSO` · `VASP` · `ABACUS` |
-| **Quantum Chemistry** | `ORCA` · `Gaussian` · `PySCF` · `xTB` |
-| **Molecular Dynamics** | `LAMMPS` · `GROMACS` · `AMBER` · `OpenMM` |
-| **Machine Learning Potentials** | `MACE` · `NequIP` · `DeePMD-kit` · `CHGNet` · `SevenNet` |
-| **Cheminformatics & Numerics** | `ASE` · `RDKit` · `SciPy` · `NumPy` · `JAX` · `PyTorch` · `FEniCS` · `OpenFOAM` |
-
----
-
-## ⚡ Quick Start
-
-### Unified CLI (`cfa.py`)
+### 1. Audit a task
 
 ```bash
-# 1. Audit a single benchmark task by ID (resolves newest trial & prints verdict card)
-python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
-
-# 2. Batch audit all tasks discovered under a benchmark directory
-python3 scripts/cfa.py audit --all --jobs-root <benchmark checkout>
-
-# 3. Read-only inspection with automatic path & credential redaction
-python3 scripts/cfa.py inspect task208 --section errors        # Error Matrix & failed checks
-python3 scripts/cfa.py inspect task208 --section confidence    # Confidence receipt & score scale
-python3 scripts/cfa.py inspect task208 --section evidence      # Human-grounded evidence digest
-python3 scripts/cfa.py inspect task208 --section verdict       # Summary card (summary.md)
-
-# 4. Atomically rebuild the global board (INDEX.md)
-python3 scripts/cfa.py index --report-root <benchmark checkout>/failure-report
+BENCH_ROOT="/path/to/benchmark"
+python3 scripts/cfa.py audit task208 --jobs-root "$BENCH_ROOT" --lang en
 ```
 
-> Reports automatically land in `<benchmark>/failure-report/<task_id>/` accompanied by an atomically updated global dashboard at `<benchmark>/failure-report/INDEX.md`.
+### 2. Inspect failed checks
+
+```bash
+python3 scripts/cfa.py inspect task208 --jobs-root "$BENCH_ROOT" --section errors
+```
+
+### 3. Audit all tasks
+
+```bash
+python3 scripts/cfa.py audit --all --jobs-root "$BENCH_ROOT" --lang en
+```
+
+<details>
+<summary><strong>Task selection, verdicts and inspection options</strong></summary>
+
+- **One task.** A reference such as `task208` selects the newest matching trial by modification time. Quote a full name such as `"task 208__jaekojA"` to select a specific trial. Without an explicit root, the analyzer uses `CFA_JOBS_ROOT` if set, or checks the current directory and its parent.
+- **Read the verdict.** The single-task command prints the verdict card followed by `REPORT_DIR:`. The card starts with the verdict and main cause, compares the four categories, then gives the selected subtype, evidence and named failed checks when available. When used as a skill, return the card in the conversation and link the report.
+- **Audit all tasks.** `audit --all` discovers task IDs, processes them in natural order and rebuilds the global index. Add `--verdict-stdout` to print every card.
+- **Inspect saved results.** `inspect` supports `verdict`, `report`, `errors`, `confidence`, `evidence`, `anchors` and `data`. It masks home-directory paths and recognized credential patterns by default. `--raw` selects raw JSON or section text where available.
+
+The report root depends on the benchmark layout. To rebuild the index, pass the actual `failure-report/` directory to `python3 scripts/cfa.py index --report-root /path/to/failure-report`.
+
+</details>
+
+<details>
+<summary><strong>Audit by directory · Runnable regression example</strong></summary>
+
+### Audit a known job or trial directory
+
+Use `scripts/analyze_case.py --job … --output …` when you already have a path. Keep the output separate from the input directories. Add `--task` to supply a task definition or `--trial` to select one trial within a job.
+
+This example runs against a regression fixture in the repository.
+
+```bash
+REPORT_DIR="$(mktemp -d)"
+python3 scripts/analyze_case.py \
+  --job tests/fixtures/regressions/mixed-job-success-trial/job \
+  --output "$REPORT_DIR" \
+  --lang en
+cat "$REPORT_DIR/job_summary.md"
+```
+
+The fixture has **one scored pass, zero scored failures, and one unscored trial**. The report shows a **50.0% overall pass rate** and a **100.0% scored pass rate**. The unscored trial receives `UNKNOWN_INSUFFICIENT_EVIDENCE`.
+
+</details>
 
 ---
 
-## 🖥️ Live Output Preview
-
-When auditing a failure (e.g. `task208`), CFA delivers an instant, self-contained terminal verdict card:
-
-```markdown
-# task208 — 根因速览 (Root Cause Verdict)
-
-**裁定**: `failed` · **主根因**: 智能体决策与执行失误 (`agent`) / `result_validation` / `AGENT_RESULT_VALIDATION`（置信度 **0.90**）
-**可信度拆解**: 🟢 `9/10 分` · ✓ 直接因果实证 (2项)(+2) · ✓ 跨源证据互证(+1) · ✓ 唯一阻断项反事实闭环(+2) · ✓ 偏差超容差 1.599e+04×(+2) · ✓ 单项检查精准定位(+1) · ✓ 竞争假设区分度高(+1)
-
-**失败原因 (Why it failed)**: [L3] neutral_stationary: R02-M01/site000003 charge differs from independent frozen EQeq replay by 1.59869e-06 e beyond its decimal serialization bound 1.00001e-10 e
-
-## 1. 四大类裁决 (Four Peer Categories)
-| 大类 | 裁决 | 依据 |
-|---|---|---|
-| `agent` 智能体决策与执行失误 | **主因** | Agent 交付的 'charge' = 0.898982845013923 与验证器独立复算相差 1.59869e-06，超出容差上限 1.00001e-10。 |
-| `verifier` 评测验证与规则判定缺陷 | **已排除** | 失败检查明确指出指标容差，并在产物中定位到实测值；属于交付数值错误而非复算缺陷。 |
-| `case` 基准题目与规格设计缺陷 | **未选为主因** | 契约审计未发现题目资产缺失或规格歧义。 |
-| `infra` 运行环境与系统设施缺陷 | **未选为主因** | 未检出因果性 infra 观测；容器与验证器均正常运行完毕。 |
-
-## 2. 具名失败检查与错误矩阵 (Error Matrix)
-| 检查项 | 错误性质 | 交付值 vs 复算/期望值 | 偏差 / 容差 (超标倍数) | 说明与来源 |
-|---|---|---|---|---|
-| `[L3] neutral_stationary` | 数值偏差 | `0.898982845013923` vs `独立复算重放` | Δ = 1.59869e-06 / tol 1.00001e-10 (15986.7× 超标) | R02-M01/site000003 charge differs from frozen EQeq replay (来源: `raw-verifier.json`) |
-```
-
----
-
-## 🏗️ Architecture & Engine
-
-### Pipeline Flow
+## How attribution works
 
 ```mermaid
-flowchart TD
-    subgraph S1["Phase 1: Evidence Collection"]
-        A["Raw Trial / Job Logs"] --> B["Artifact Discovery<br/><code>discover_artifacts.py</code>"]
-        A --> C["Runtime State Normalizer<br/><code>runtime_state.py</code>"]
-        A --> D["Scientific Error Registry<br/><code>extract_scientific_errors.py</code>"]
-        B & C & D --> E["Structured Evidence<br/><code>evidence.json</code>"]
-    end
-
-    subgraph S2["Phase 2: Hypotheses & Causal Engine"]
-        E --> F["Candidate Hypotheses<br/><code>candidate-hypotheses.json</code>"]
-        E & F --> G["Causal Gate Chain (7 Strict Gates)<br/><code>scripts/attribution/gates/</code>"]
-        G --> H["Deterministic Attribution<br/><code>analysis.json</code>"]
-    end
-
-    subgraph S3["Phase 3: Validation & Rendering"]
-        H --> I["Schema & Invariant Validator<br/><code>validate_analysis.py</code>"]
-        I --> J["Bilingual Reports & Prescription<br/><code>report.md</code> · <code>summary.md</code>"]
-        I --> K["Global Index Dashboard<br/><code>INDEX.md</code>"]
-    end
-
-    style E fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style H fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style J fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
-    style K fill:#ede7f6,stroke:#512da8,stroke-width:2px
+flowchart LR
+    A["Logs and task artifacts"]
+    B["Normalize evidence"]
+    C["Hypotheses and attribution rules"]
+    D["Verdicts and reports"]
+    A --> B --> C --> D
+    style A fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    style B fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
+    style C fill:#f5f3ff,stroke:#8b5cf6,color:#4c1d95
+    style D fill:#ecfdf5,stroke:#10b981,color:#064e3b
 ```
 
-### 7-Gate Attribution Chain
+CFA normalizes runtime state, trajectory events, task contracts, verifier checks and scientific error signatures into evidence. It records candidate hypotheses and evaluates a fixed sequence of rules. The first applicable rule produces a structured `failure-analysis-v1` verdict and a decision trace. Evidence references connect the verdict to observations and, where available, source files or execution steps.
 
-Evaluated sequentially by `scripts/attribution/engine.py`. The first matching gate wins:
+| Peer category | What the audit examines |
+| --- | --- |
+| `agent` · Agent decisions and execution | Method, parameters, workflow, task contract compliance and validation of delivered results |
+| `verifier` · Verifier rules and scoring | Parser or comparison defects, tolerance rules and internal recomputation failures |
+| `case` · Benchmark and task design | Missing assets, ambiguous requirements and inconsistent references |
+| `infra` · Runtime and infrastructure | Startup, container, network and runner failures, including artifact collection |
+
+The engine checks passed trials first, then startup and runner boundaries, case defects, verifier defects, numerical divergence, insufficient evidence and agent execution. `unknown` records insufficient evidence. Agent attribution requires a specific observed deviation. Numerical divergence requires corroboration across the task requirements, verifier rules and runtime evidence. The confidence breakdown shows which evidence factors contributed to the score.
+
+### Harbor-specific handling
+
+- The declared deliverables come from `task.toml` and are checked against the collected artifact tree.
+- A runner failure after the agent starts and before the verifier runs can produce an unscored trial. When the artifact-collection rule applies, the verdict records infrastructure as the primary cause and can retain a missing deliverable as a contributing factor.
+- Supported verifier JSON layouts are normalized into named checks and a diagnosability assessment. Batch summaries distinguish scored passes, scored failures and unscored trials.
+
+### Scientific software coverage
+
+The error registry contains 60 implemented signature families across 11 software and workflow groups, including CP2K, Quantum ESPRESSO, LAMMPS, ASE and ML interatomic potentials. These patterns identify observations in existing logs and artifacts. [Error registry](references/error-families.json) · [Software notes](references/software/)
+
+---
+
+## Report files
+
+The layout below assumes a full run with the default `--format both`. Use `--lang zh`, `en` or `bilingual` (default) for report language, or `--phase collect` for evidence and hypotheses only.
+
+| Entry point | Default output |
+| --- | --- |
+| Task ID · `cfa.py audit task208` | `failure-report/task208/task208.md` and `summary.md`, with evidence, hypotheses, attribution and card metadata under `data/`. The global `failure-report/INDEX.md` summarizes scoring and attribution across audited tasks. |
+| Single trial by path · `analyze_case.py --job … --output …` | `report.md` and language editions, plus `evidence.json`, `candidate-hypotheses.json` and `analysis.json` directly under the output directory. |
+| Multi-trial job by path | `job_summary.md` and `job_summary.json` at the output root, with per-trial reports and JSON under each trial name. |
+
+Typical task-ID layout (`--lang en --format both`)
 
 ```text
-Gate 0: Passed Trial        ──▶ Trial succeeded; emits clean lightweight report
-  ↓ (failed)
-Gate 1: Infra & Unknown     ──▶ Pre-startup container failures / unrecorded terminations
-  ↓ (agent started)
-Gate 2: Case Defect         ──▶ Missing assets, broken task specification, ambiguous contracts
-  ↓ (case clean)
-Gate 3: Verifier Defect     ──▶ Verifier script crashes, parser hazards, ultra-tight tolerances
-  ↓ (verifier valid)
-Gate 4: Numerical Divergence──▶ Direct recompute discrepancy, over-bound delta, parameter trade-off
-  ↓ (no numerical match)
-Gate 5: Insufficient Evid.  ──▶ Ambiguous signals; refuses blind blame on agent
-  ↓ (positive agent evidence)
-Gate 6: Primary Agent Fault ──▶ Schema mismatch, self-check coverage gap, unverified outputs
+failure-report/
+├── INDEX.md
+└── task208/
+    ├── task208.md
+    ├── summary.md
+    ├── skill-prescription.md    # when applicable
+    └── data/
+        ├── evidence.json
+        ├── candidate-hypotheses.json
+        ├── analysis.json
+        └── summary.json
 ```
+
+`--report-dir` overrides the task-ID report directory. `skill-prescription.md` is generated only when the primary cause is `agent` and the audit identifies a reusable capability gap. If you refine `analysis.json`, check it against the evidence with `scripts/validate_analysis.py` and regenerate the report with `scripts/render_report.py`.
 
 ---
 
-## 💻 CLI Reference & Details
+## Repository and development
 
-<details>
-<summary><b>🔍 Click to view <code>cfa.py</code> Subcommands & Inspection Flags</b></summary>
-
-### `cfa.py` Command Matrix
-
-| Subcommand | Purpose | Key Arguments |
-|:---|:---|:---|
-| `audit` | Resolves trial, executes full pipeline, and outputs verdict card. | `<task_id>`, `--all`, `--jobs-root <dir>`, `--lang zh\|en\|bilingual` |
-| `inspect` | Read-only inspection of processed tasks with sensitive data redaction. | `<task_id>`, `--section verdict\|errors\|confidence\|evidence`, `--raw` |
-| `index` | Atomically locks and rebuilds the global `INDEX.md` board. | `--report-root <dir>` |
-
-### `cfa inspect` Section Breakdown
-
-- `--section verdict`: Prints the compact verdict card (`summary.md`).
-- `--section errors`: Error Matrix detailing layer, failure kind, delivered value, recomputed delta, and over-bound multiplier.
-- `--section confidence`: Transparent point receipt (`points / denominator`), active positive/negative factors, and gap hints.
-- `--section evidence`: Concise digest of runtime state, check counts, causal anchors, and behavioral signals without dumping 200KB+ JSON.
-- `--raw`: Emits unformatted JSON data for pipeline scripting.
-
-</details>
-
-<details>
-<summary><b>🛠️ Click to view Low-level Path Mode (<code>analyze_case.py</code>) & Model-in-the-Loop</b></summary>
-
-### Manual Invocation
+| Path | Role |
+| --- | --- |
+| [`SKILL.md`](SKILL.md) · [`agents/openai.yaml`](agents/openai.yaml) | Skill instructions and interface metadata |
+| [`scripts/`](scripts/) · [`scripts/attribution/`](scripts/attribution/) | CLI, evidence collection, attribution, validation and rendering |
+| [`references/`](references/) · [`docs/`](docs/) | Skill references and English/Chinese documentation |
+| [`tests/`](tests/) | CLI, attribution, report and regression fixtures |
 
 ```bash
-python3 scripts/analyze_case.py \
-  --job jobs/<job_name> \
-  --task tasks/<task_name> \
-  --output <output-dir>/<case_id> \
-  --lang bilingual
+make test
+make check-docs
+make smoke
+make export-skill DEST=/path/to/skills/case-failure-analyzer
 ```
 
-| Parameter | Type | Description |
-|:---|:---|:---|
-| `--job` | Path | Job directory or specific trial directory **(Required)**. |
-| `--output` | Path | Destination folder; strictly isolated from inputs **(Required)**. |
-| `--task` | Path | Benchmark task specification folder (auto-discovered if omitted). |
-| `--trial` | String | Specific trial name or `all` (default: `all`). |
-| `--lang` | Choice | `bilingual` (default), `zh` (Chinese standalone), or `en` (English standalone). |
-| `--format` | Choice | `both` (default), `json`, or `markdown`. |
-| `--phase` | Choice | `all` (full pipeline) or `collect` (evidence & hypotheses only). |
-
-### Output Files Structure
-
-Inside `<output-dir>/<case_id>/`:
-- `summary.md`: Clean verdict card identical to stdout.
-- `report.md`: Core 4-section causal audit report (`< 30` lines for passed trials).
-- `skill-prescription.md`: Domain capability repair prescription (generated only for reusable agent flaws).
-- `data/evidence.json`: Normalized timeline, runtime state, and scientific error observations.
-- `data/analysis.json`: Machine-readable causal attribution result (`failure-analysis-v1`).
-- `data/summary.json`: Structured verdict metadata.
-
-### Model-in-the-Loop Validation
-
-To submit and validate a LLM-authored attribution before final publication:
-
-```bash
-# 1. Validate attribution invariants against evidence
-python3 scripts/validate_analysis.py \
-  --evidence <output-dir>/<case_id>/evidence.json \
-  --analysis <output-dir>/<case_id>/analysis.json \
-  --report   <output-dir>/<case_id>/report.md
-
-# 2. Render final reports
-python3 scripts/render_report.py \
-  --evidence <output-dir>/<case_id>/evidence.json \
-  --analysis <output-dir>/<case_id>/analysis.json \
-  --output-report <output-dir>/<case_id>/report.md \
-  --lang bilingual
-```
-
-</details>
+`make test` uses `unittest`. `make check` also runs Ruff checks and requires the development tooling. `make export-skill` packages the skill instructions, interface metadata, scripts and references. Its default destination is `$CODEX_HOME/skills/case-failure-analyzer`, with `~/.codex` as the default Codex home.
 
 ---
 
-## 📁 Repository Layout
+## Documentation
 
-```text
-case-failure-analyzer/
-├── SKILL.md                 # Agent-facing skill entrypoint & system prompt contract
-├── README.md / README.zh.md # Project documentation (bilingual English | 简体中文)
-├── Makefile                 # Engineering entrypoints: test, lint, format, check-docs, export-skill
-├── pyproject.toml           # Package metadata (zero runtime dependencies, py39+)
-├── docs/{en,zh}/            # Human-readable mirrors of references/
-├── references/              # Single source of truth for agent-consumed domain knowledge
-│   ├── taxonomy.md          # Failure taxonomy hierarchy
-│   ├── attribution-protocol.md # Step-by-step causal attribution protocol
-│   ├── error-families.json  # 60+ scientific error patterns across 11 suites
-│   └── software/*.md        # Per-software knowledge bases (CP2K, VASP, LAMMPS, etc.)
-├── scripts/                 # Portable, stdlib-only Python modules
-│   ├── cfa.py               # Unified CLI (audit, inspect, index)
-│   ├── analyze_case.py      # Core pipeline entrypoint
-│   ├── staging.py           # Atomic staging, file locking & transactional publishing
-│   ├── render_report.py     # Markdown report & prescription renderer
-│   ├── report_style.py      # Single source of truth for bilingual terminology & tables
-│   └── attribution/         # 7-gate causal decision engine
-└── tests/                   # 384 test cases (unit, decision table, baseline characterization)
-```
-
----
-
-## 🔧 Development & Testing
-
-The runtime is strictly standard-library only. Testing tools require no complex environment setup:
-
-```bash
-make test          # Run full unittest suite (384 tests, 0 dependencies)
-make check         # Full quality gate: lint, unittest, doc sync & format check
-make smoke         # End-to-end CLI validation on regression fixtures
-make export-skill  # Export clean skill tree excluding tests & development files
-```
-
-### Exporting Production Skill
-
-```bash
-# Export to default destination ($CODEX_HOME/skills/case-failure-analyzer)
-make export-skill
-
-# Export to custom directory
-make export-skill DEST=/path/to/target/case-failure-analyzer
-```
-
----
-
-## 📚 Documentation Index
-
-| Document | English | 简体中文 |
-|:---|:---:|:---:|
-| **Project Overview & CLI** | [README.md](README.md) | [README.zh.md](README.zh.md) |
-| **System Guide & Workflow** | [guide.md](docs/en/guide.md) | [guide.md](docs/zh/guide.md) |
-| **Failure Taxonomy (`failure-analysis-v1`)** | [taxonomy.md](docs/en/taxonomy.md) | [taxonomy.md](docs/zh/taxonomy.md) |
-| **Causal Attribution Protocol** | [attribution-protocol.md](docs/en/attribution-protocol.md) | [attribution-protocol.md](docs/zh/attribution-protocol.md) |
-| **Evidence & Analysis JSON Schemas** | [evidence-schema.md](docs/en/evidence-schema.md) | [evidence-schema.md](docs/zh/evidence-schema.md) |
-| **Report Structure Specification** | [report-schema.md](docs/en/report-schema.md) | [report-schema.md](docs/zh/report-schema.md) |
-| **Skill Prescription Policy** | [skill-prescription-policy.md](docs/en/skill-prescription-policy.md) | [skill-prescription-policy.md](docs/zh/skill-prescription-policy.md) |
-
----
-
-<div align="center">
-
-Made with 🔬 for rigorous, evidence-grounded AI scientific computing evaluation.
-
-</div>
+| Topic | English | 简体中文 |
+| --- | --- | --- |
+| Workflow and usage | [Guide](docs/en/guide.md) | [使用指南](docs/zh/guide.md) |
+| Cause categories | [Taxonomy](docs/en/taxonomy.md) | [根因分类](docs/zh/taxonomy.md) |
+| Rule order and evidence requirements | [Attribution protocol](docs/en/attribution-protocol.md) | [归因协议](docs/zh/attribution-protocol.md) |
+| Machine-readable fields | [Evidence schema](docs/en/evidence-schema.md) | [证据结构](docs/zh/evidence-schema.md) |
+| Markdown outputs | [Report schema](docs/en/report-schema.md) | [报告规范](docs/zh/report-schema.md) |
+| Reusable agent capability gaps | [Skill prescription policy](docs/en/skill-prescription-policy.md) | [技能处方策略](docs/zh/skill-prescription-policy.md) |
