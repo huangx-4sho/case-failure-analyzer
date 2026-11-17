@@ -86,6 +86,11 @@ def collect_valid_evidence_ids(evidence: Dict[str, Any]) -> Set[str]:
         if a.get("rel_path"):
             ids.add(a["rel_path"])
             ids.add(f"{a.get('scope', 'trial')}:{a['rel_path']}")
+    for index, check in enumerate(
+        (evidence.get("verifier_report") or {}).get("failed_checks") or []
+    ):
+        if isinstance(check, dict):
+            ids.add(f"verifier_report.failed_checks[{index}]")
     for ev in evidence.get("timeline") or []:
         if ev.get("event_id"):
             ids.add(ev["event_id"])
@@ -191,6 +196,7 @@ def validate_all(
     evidence: Dict[str, Any],
     analysis: Dict[str, Any],
     report_text: Optional[str] = None,
+    review_root: Optional[Path] = None,
 ) -> Tuple[bool, List[str]]:
     errors: List[str] = []
 
@@ -485,6 +491,12 @@ def validate_all(
             if not isinstance(breakdown.get("missing_to_raise"), list):
                 errors.append("confidence_breakdown.missing_to_raise must be a list when present.")
 
+    from causal_assessment import validate_assessment
+
+    errors.extend(
+        validate_assessment(evidence, analysis, collect_valid_evidence_ids(evidence), review_root)
+    )
+
     return len(errors) == 0, errors
 
 
@@ -513,7 +525,7 @@ def main() -> None:
     analysis = json.loads(args.analysis.read_text(encoding="utf-8"))
     report_text = args.report.read_text(encoding="utf-8") if args.report is not None else None
 
-    ok, errors = validate_all(evidence, analysis, report_text)
+    ok, errors = validate_all(evidence, analysis, report_text, review_root=args.analysis.parent)
     if not ok:
         for err in errors:
             print(f"VALIDATION ERROR: {err}", file=sys.stderr)

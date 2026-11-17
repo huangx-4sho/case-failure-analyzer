@@ -2,6 +2,8 @@
 
 **On this page:** [Failure report](#required-sections--visual-structure) · [Passed trials](#lightweight-view-for-passed-trials) · [Batch summary](#batch-summary-job_summarymd--job_summaryjson) · [Task-ID reports](#task-id-quick-answer---task-id-task208)
 
+Reports first show `causal_assessment.level`: observed failure, candidate cause, or this-trial cause supported by an existing-evidence review. A numerical discrepancy, absence of other rule matches, or a heuristic score is not causal confirmation. Deliverable tables distinguish captured presence, absence from capture, collection faults, and unresolved states. Saved verifier records and coverage limits remain separate. Single-trial reports do not confirm capability prescriptions; see [existing-evidence review](evidence-review.md).
+
 Failure reports use four core sections in the order below. Each report heading starts at the beginning of a line as `## <N>. <Title>` and has a non-empty body, so reviewers and `scripts/validate_analysis.py` can check it. Passed trials use the separate two-section view described below.
 
 ## Required Sections & Visual Structure
@@ -122,7 +124,6 @@ Invoking the skill with a task reference (e.g. `$case-failure-analyzer task208`)
 │   ├── task207.md                    # Main causal audit (clean Markdown)
 │   ├── task207.en.md                 # English edition only when --lang bilingual
 │   ├── summary.md                    # Verdict card, identical to stdout
-│   ├── skill-prescription.md         # Only when an agent capability gap was found
 │   ├── data/
 │   │   ├── evidence.json
 │   │   ├── analysis.json
@@ -144,7 +145,6 @@ Machine-readable JSON is sunk into `data/`; the top level keeps only clean Markd
 | `summary.md` | The verdict card, byte-identical to stdout |
 | `data/summary.json` | Machine-readable verdict card (`cfa-verdict-card-v1`) |
 | `data/evidence.json`, `data/analysis.json`, `data/candidate-hypotheses.json` | Structured evidence / attribution / hypotheses |
-| `skill-prescription.md` | Only when an agent capability gap was found |
 | `.cfa_manifest.json` | Publish manifest inside the task folder; scopes cleanup to this task's files |
 
 Path mode (`--job` + `--output`) keeps the legacy unprefixed names (`report.md`, `evidence.json`, ...).
@@ -157,7 +157,7 @@ The bench-level global board aggregates root-cause attributions across all analy
 - **Normalized Category Distribution**: Proportions in Section 1 are computed against non-passed cases (`non_passed = sum(cat_counts)`), guaranteeing that the 5 failure categories (`agent`, `verifier`, `case`, `infra`, `unknown`) always sum to `100.0%`.
 - **Natural Numeric Ordering**: Case manifests are sorted naturally (`task98` before `task194` before `task207`), avoiding lexicographical misordering.
 - **Visual Confidence Indicators**: Quick-glance confidence signals: `🟢` for `>= 0.65`, `🟡` for `0.40..0.64`, `🔴` for `< 0.40`, and `✅ 1.00` for passed trials.
-- **Crisp Actionable Links**: Manifest table provides direct navigation links: `[速览]` (`summary.md`), `[报告]` (`{task_id}.md`), `[数据]` (`data/`), and `[处方]` (`skill-prescription.md`, generated whenever an agent capability gap is identified).
+- **Crisp Actionable Links**: Manifest table provides direct navigation links: `[速览]` (`summary.md`), `[报告]` (`{task_id}.md`), `[数据]` (`data/`); historical reports may also link an existing prescription, while new capability guidance is reviewed separately.
 
 ### At-a-Glance Error Matrix & Resolved Evidence Inspection
 

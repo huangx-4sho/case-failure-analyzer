@@ -6,13 +6,13 @@
 
 **本页：** [五项准入条件](#1-五项准入条件) · [修复建议的责任分流](#2-修复建议的责任分流) · [技能处方结构](#3-技能处方结构)
 
-`case-failure-analyzer` 会按条件生成 `skill-prescription.md`（并填充 `analysis.json["skill_prescription"]`）。为防止将脆弱的临时绕过手段或单题补丁污染到 Agent 的通用技能库中，必须严格执行以下准入策略。
+每个试次的 `analysis.json["skill_prescription"]` 保持空值。规则提出的指导只作为 `causal_assessment.capability` 下的疑似方案保存。独立、只读的跨案例审查可以在 `capability-assessment.json` 中形成限定范围的指导；它不会安装新技能或追加计算。
 
 <a id="1-五项准入门槛-eligibility-gate"></a>
 
 ## 1. 五项准入条件
 
-**仅当以下 5 项条件全部满足时**，才允许生成 `skill-prescription.md`：
+**仅当以下 5 项条件全部满足时**，才可进入跨案例能力审查：
 
 1. **主根因为 Agent (`Agent Root Cause`)**：`primary_root_cause.category == "agent"`。
 2. **非偶发性能力缺口 (`Non-Trivial Capability Gap`)**：该失败并非一次性拼写笔误、偶然的 Shell 命令失误或基础设施抖动。
@@ -24,9 +24,9 @@
 
 ## 2. 修复建议的责任分流
 
-当上述 5 项准入条件中任意一项不满足时，`skill_prescription` 必须为 `null`，且修复建议按如下规则分流至 `recommended_actions`：
+任一准入条件不满足时，都不能确认可复用指导。每个试次的 `skill_prescription` 始终为空；修复建议按以下规则分流至 `recommended_actions`：
 
-| 主根因大类 (`Category`) | `recommended_actions` 责任分流方向 | 是否生成 `skill-prescription.md`？ |
+| 主根因大类 (`Category`) | `recommended_actions` 责任分流方向 | 是否可进入跨案例指导审查？ |
 |---|---|---|
 | `case` | 修正 Prompt 说明、补充资产文件或调整 `task.toml` 规范 | **否** |
 | `infra` | 修复 Runner 调度器、Docker 镜像源、网络、超时配置或容器环境 | **否** |
@@ -38,7 +38,7 @@
 
 ## 3. 技能处方结构
 
-当满足准入条件时，`analysis.json` 中的 `skill_prescription` 字段与 `skill-prescription.md` 必须包含以下结构：
+独立的 `review capability` 请求需要书面的 `skill_prescription.guidance` 和多个独立任务的证据审查，具体请求格式见[已有证据审查](evidence-review.md#能力判断)。后续将合格方案写成可复用技能时，可以参考以下内容结构：
 
 ```yaml
 recommended_skill:

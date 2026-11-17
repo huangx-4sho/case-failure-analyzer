@@ -956,7 +956,7 @@ def format_confidence_breakdown(
 
     missing = breakdown.get("missing_to_raise") or []
     if missing and conf_val < 0.75:
-        gap_label = "提分缺口：" if lang != "en" else "Gap to raise: "
+        gap_label = "证据缺口：" if lang != "en" else "Evidence gaps: "
         gap_items = "、".join(missing) if lang == "zh" else ", ".join(missing)
         gap_str = f"（{gap_label}{gap_items}）" if lang != "en" else f" ({gap_label}{gap_items})"
         full_str += gap_str
@@ -1477,3 +1477,83 @@ def resolve_key_evidence_summary(
             items.append(resolved)
 
     return items[:limit]
+
+
+def render_deliverable_audit(evidence: Dict[str, Any], lang: str = "zh") -> List[str]:
+    """Show capture status without confusing missing capture with non-production."""
+    audit = evidence.get("deliverable_audit")
+    if not isinstance(audit, dict):
+        return []
+    en = lang == "en"
+    records = audit.get("records") or []
+    if not records:
+        return [
+            "- **Deliverables**: no usable declaration; completeness cannot be assessed."
+            if en
+            else "- **交付物核验**: 缺少可用声明，无法判断交付是否完整。",
+            "",
+        ]
+    labels = {
+        "present": ("已采集", "captured"),
+        "not_found_in_collected_tree": ("采集目录未找到", "not found in capture"),
+        "collection_failed": ("存在采集故障证据", "collection failure recorded"),
+        "unresolved": ("无法判定", "unresolved"),
+    }
+    lines = [
+        "### Deliverable audit" if en else "### 交付物核验",
+        "",
+        "| Declaration | Capture status | Detail |" if en else "| 声明路径 | 采集状态 | 说明 |",
+        "|---|---|---|",
+    ]
+    for record in records[:8]:
+        path = str(record.get("source") or "—").replace("|", "\\|").replace("`", "'")
+        status = labels.get(record.get("status"), labels["unresolved"])[int(en)]
+        details = []
+        if record.get("service") is not None:
+            details.append("service=" + str(record["service"]))
+        if record.get("capture_verifier_conflict"):
+            details.append(
+                "verifier reported absence but capture exists; review timing/path mapping"
+                if en
+                else "验证器曾报告缺失，但当前采集路径存在，需核对时间与映射"
+            )
+        if record.get("empty") is True:
+            details.append(
+                "empty file/directory; check the required contents"
+                if en
+                else "文件或目录为空，需核对内容要求"
+            )
+        if record.get("observed_files"):
+            invalid = sum(f.get("parse_status") == "invalid_json" for f in record["observed_files"])
+            if invalid:
+                details.append(
+                    f"{invalid} invalid JSON file(s)" if en else f"{invalid} 个 JSON 文件无法解析"
+                )
+        if record.get("uncertainty"):
+            details.append(
+                "uncertainty retained; inspect evidence.json"
+                if en
+                else "存在不确定性，详见证据数据"
+            )
+        detail = "; ".join(details) if en else "；".join(details)
+        lines.append(f"| `{path}` | {status} | {detail or '—'} |")
+    if len(records) > 8:
+        lines.append(f"+{len(records) - 8} records in evidence.json")
+    coverage = audit.get("coverage") or {}
+    state = (
+        ("complete" if coverage.get("scan_complete") else "incomplete")
+        if en
+        else ("完整" if coverage.get("scan_complete") else "不完整")
+    )
+    lines.extend(
+        [
+            "",
+            (
+                f"Capture scan: {state}. Missing capture does not prove non-production; presence does not prove scientific correctness."
+                if en
+                else f"采集目录扫描：{state}。未采集到不等于未生成；文件存在也不等于科学结果正确。"
+            ),
+            "",
+        ]
+    )
+    return lines

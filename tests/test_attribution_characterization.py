@@ -61,7 +61,9 @@ UPDATE_BASELINE = os.environ.get("UPDATE_BASELINE") == "1"
 # of the decision, not a change to it, so it is stripped here. That keeps this
 # net able to detect a real regression anywhere in the other 15 keys instead of
 # failing wholesale the moment the trace appears.
-STRIPPED_KEYS: Tuple[str, ...] = ("decision_trace",)
+# The causal-assessment extension is covered by test_causal_review; this
+# net still pins the original attribution fields, including prescription suppression.
+STRIPPED_KEYS: Tuple[str, ...] = ("decision_trace", "causal_assessment")
 
 
 def render_analysis(analysis: Dict[str, Any], tmp_root: Path) -> str:

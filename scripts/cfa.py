@@ -25,6 +25,7 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from render_index import update_failure_report_index
+from report_style import render_deliverable_audit
 from task_ref import REPORT_DIR_NAME, discover_all_task_ids, normalize_task_ref, resolve_task_ref
 
 
@@ -535,6 +536,10 @@ def _format_artifacts_summary(
             "scale_or_sign_hints": scale_or_sign_hints,
             "stale_deliverable_syncs": stale_deliverable_syncs,
         }
+        if ev.get("deliverable_audit") is not None:
+            payload["deliverable_audit"] = ev["deliverable_audit"]
+        if ev.get("trajectory_normalization") is not None:
+            payload["trajectory_normalization"] = ev["trajectory_normalization"]
         if deliverable_diagnostics is not None:
             payload["deliverable_diagnostics"] = deliverable_diagnostics
         return json.dumps(payload, indent=2, ensure_ascii=False)
@@ -542,13 +547,14 @@ def _format_artifacts_summary(
     lines = [
         f"# Artifacts & Deliverables: `{task_id}`",
         "",
-        f"- **Declared Deliverables**: `{len(declared_deliverables)}`",
+        f"- **Declared Deliverables**: `{len((ev.get('deliverable_audit') or {}).get('records', declared_deliverables))}`",
         f"- **Discovered Artifacts**: `{len(artifacts)}`",
-        f"- **Missing Deliverables**: `{len(missing_deliverables)}`",
+        f"- **Missing-path hints**: `{len(missing_deliverables)}` (see capture audit below)",
         f"- **Contract Observations**: `{len(contract_observations)}`",
         "",
     ]
 
+    lines.extend(render_deliverable_audit(ev, lang="en"))
     lines.append("## Declared & Missing Deliverables")
     lines.append("")
     if declared_deliverables:
@@ -1815,6 +1821,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # audit subcommand
     subparsers.add_parser("audit", help="Run case failure audit and generate reports")
+    subparsers.add_parser(
+        "review", help="Review existing benchmark evidence without executing calculations"
+    )
     # inspect subcommand
     inspect_parser = subparsers.add_parser(
         "inspect", help="Read-only inspection of audit conclusions and anchors"
@@ -1897,6 +1906,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     elif subcommand == "audit":
         return cmd_audit(argv[1:])
+    elif subcommand == "review":
+        from review_cause import main as review_main
+
+        return review_main(argv[1:])
     elif subcommand == "inspect":
         args = inspect_parser.parse_args(argv[1:])
         return cmd_inspect(args)

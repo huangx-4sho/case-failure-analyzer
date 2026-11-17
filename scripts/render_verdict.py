@@ -31,6 +31,8 @@ from report_style import (
 )
 
 #: Fixed peer-level order. `unknown` is an auxiliary bucket, not a peer cause.
+from causal_assessment import render_assessment
+
 PEER_CATEGORIES = ("agent", "verifier", "case", "infra")
 
 CATEGORY_LABELS = {
@@ -48,6 +50,7 @@ STATUS_LABELS = {
     "excluded": ("已排除", "EXCLUDED"),
     "not_selected": ("未选为主因", "not selected"),
     "candidate": ("候选假设", "candidate"),
+    "unresolved": ("尚未独立排除", "not independently excluded"),
 }
 
 
@@ -296,6 +299,28 @@ def build_verdict_card(
     categories = []
     for cat in PEER_CATEGORIES:
         status = _status_for(cat, primary_cat, contributing, excluded, hypotheses)
+        assessment = analysis.get("causal_assessment") or {}
+        if assessment.get("level") in ("candidate_cause", "observed_failure") and status in (
+            "excluded",
+            "not_selected",
+        ):
+            status = "unresolved"
+        review_key = "agent_implementation" if cat == "agent" else cat
+        reviewed = next(
+            (
+                item
+                for item in assessment.get("alternatives") or []
+                if item.get("category") == review_key
+            ),
+            None,
+        )
+        reviewed_reason = None
+        if reviewed and cat != primary_cat:
+            if reviewed.get("status") in ("ruled_out", "not_applicable"):
+                status = "excluded"
+                reviewed_reason = reviewed.get("reason")
+            elif reviewed.get("status") == "unresolved":
+                status = "unresolved"
         categories.append(
             {
                 "category": cat,
@@ -304,8 +329,12 @@ def build_verdict_card(
                 "status": status,
                 "status_label": STATUS_LABELS[status][0],
                 "status_label_en": STATUS_LABELS[status][1],
-                "reason": _reason_for(cat, status, analysis, evidence, lang="zh"),
-                "reason_en": _reason_for(cat, status, analysis, evidence, lang="en"),
+                "reason": reviewed_reason or "规则未选为主因，尚需独立核查替代解释"
+                if status == "unresolved"
+                else reviewed_reason or _reason_for(cat, status, analysis, evidence, lang="zh"),
+                "reason_en": "Not selected by rules; independent review remains"
+                if status == "unresolved"
+                else reviewed_reason or _reason_for(cat, status, analysis, evidence, lang="en"),
             }
         )
 
@@ -385,6 +414,7 @@ def build_verdict_card(
         "subcategories": subcategories,
         "causal_anchors": anchors,
         "confidence_breakdown": prc.get("confidence_breakdown"),
+        "causal_assessment": analysis.get("causal_assessment"),
         "scientific_observations": list(evidence.get("scientific_observations") or []),
         "named_failed_checks": [
             {
@@ -466,7 +496,11 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
         checks_hdr = "**具名失败检查**"
         gate_hdr = "判定门控"
 
-    lines: List[str] = [title, "", lead]
+    if card.get("causal_assessment") and card.get("verdict") != "passed":
+        lead = lead.replace("**主根因**", "**规则候选**").replace(
+            "**Primary**", "**Rule candidate**"
+        )
+    lines: List[str] = [title, "", lead, "", render_assessment(card, lang)]
     cb = card.get("confidence_breakdown")
     if cb and isinstance(cb, dict) and cb.get("factors"):
         badge = "🟢" if float(conf or 0) >= 0.65 else ("🟡" if float(conf or 0) >= 0.40 else "🔴")
@@ -486,7 +520,7 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
         )
         missing = cb.get("missing_to_raise") or []
         if missing and float(conf or 0) < 0.75:
-            gap_label = "提分缺口：" if not is_en else "Gap to raise: "
+            gap_label = "证据缺口：" if not is_en else "Evidence gaps: "
             gap_items = "、".join(missing) if not is_en else ", ".join(missing)
             cb_line += f"（{gap_label}{gap_items}）" if not is_en else f" ({gap_label}{gap_items})"
         cb_hdr = "**Confidence breakdown**" if is_en else "**可信度拆解**"

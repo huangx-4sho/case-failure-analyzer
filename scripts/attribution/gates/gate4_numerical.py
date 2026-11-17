@@ -39,60 +39,10 @@ from ..context import AttributionContext
 #: discrepancy is not evidence that the agent's delivered value is wrong.
 _AGENT_BLAME_CHECK_KINDS = ("recompute_divergence", "reference_mismatch")
 
+
 #: Metric-name stems counted as physical result values (energy / force /
 #: distance / counts class). Any other metric falls to the parameter-selection
 #: sub-judgment.
-_AGENT_RESULT_METRIC_RE = re.compile(
-    r"(?:energy|enthalpy|force|stress|virial|pressure|temperature"
-    r"|dist(?:ance)?|length|angle|dihedral|volume|density"
-    r"|count|number|n_[a-z0-9_]+"
-    r"|charge|dipole|polariz[a-z]*)",
-    re.IGNORECASE,
-)
-
-#: Keys probed (in order) when extracting a summary text from a stats payload.
-_SUMMARY_TEXT_KEYS = (
-    "summary",
-    "matched_text",
-    "text",
-    "description",
-    "name",
-    "check",
-    "item",
-)
-
-
-def _summary_text_of(payload: Any) -> str:
-    """Best-effort summary text from a string or dict-shaped stats payload."""
-    if isinstance(payload, str):
-        return payload
-    if isinstance(payload, dict):
-        for key in _SUMMARY_TEXT_KEYS:
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-    return ""
-
-
-def _single_failure_summary_text(stats: Any) -> str:
-    """
-    Summary text of the single failed verifier check from the evidence's
-    `verifier_check_stats` (produced by `verify_check_stats.build_check_stats`).
-    Tolerates both dict-shaped and string-shaped `single_failure` payloads and
-    falls back to a lone `failed_check_summaries` entry; returns "" when the
-    failure is not uniquely localized or the shapes are unrecognized.
-    """
-    if not isinstance(stats, dict):
-        return ""
-    text = _summary_text_of(stats.get("single_failure"))
-    if text:
-        return text
-    summaries = stats.get("failed_check_summaries")
-    if isinstance(summaries, list) and len(summaries) == 1:
-        return _summary_text_of(summaries[0])
-    return ""
-
-
 def _resolve_contract_binding(ctx: AttributionContext, metric: str) -> Optional[str]:
     """
     Deterministically bind the diverging metric to the task contract.
@@ -151,51 +101,24 @@ def _recompute_divergence_agent_attribution(
     is_delta = bool(chosen.get("is_delta_divergence"))
     artifact_clause = f" (read from `{artifact_ref}`)" if artifact_ref else ""
 
+    code = "AGENT_RESULT_VALIDATION"
+    subtype = "result_validation"
     if is_delta:
         delivered_clause = (
             f"Agent delivered '{metric}' = {agent_reported}{artifact_clause}"
             if agent_reported is not None
             else f"Agent's delivered '{metric}' value"
         )
-        if _AGENT_RESULT_METRIC_RE.search(metric):
-            code = "AGENT_RESULT_VALIDATION"
-            subtype = "result_validation"
-            summary = (
-                f"{delivered_clause}, which deviates from the verifier's independent "
-                f"reference/replay by {reported} beyond its tolerance bound {tolerance}; "
-                f"the delivered result itself is inaccurate."
-            )
-        else:
-            code = "AGENT_SCIENTIFIC_PARAMETER_SELECTION"
-            subtype = "scientific_method_selection"
-            summary = (
-                f"{delivered_clause}; the verifier's independent reference/replay deviates "
-                f"by {reported} beyond its tolerance bound {tolerance}, so the agent's "
-                f"parameter/scientific-method selection is at fault."
-            )
-    else:
-        corroboration = (
-            f"the agent's own execution output records the same value ({agent_reported})"
-            if agent_reported is not None
-            else "the verifier independently recomputed the metric"
+        summary = (
+            f"{delivered_clause}; the saved verifier comparison reports deviation {reported} "
+            f"beyond bound {tolerance}. The responsible decision and validity of the reference remain to be reviewed."
         )
-        if _AGENT_RESULT_METRIC_RE.search(metric):
-            code = "AGENT_RESULT_VALIDATION"
-            subtype = "result_validation"
-            summary = (
-                f"Agent delivered a '{metric}' result value that fails the verifier's "
-                f"independent recomputation (reported {reported} != recomputed {recomputed}, "
-                f"tol {tolerance}); {corroboration}, so the delivered result itself is wrong."
-            )
-        else:
-            code = "AGENT_SCIENTIFIC_PARAMETER_SELECTION"
-            subtype = "scientific_method_selection"
-            summary = (
-                f"Agent's selected '{metric}' fails the verifier's independent "
-                f"recomputation/reference comparison (reported {reported} != recomputed "
-                f"{recomputed}, tol {tolerance}); {corroboration}, so the agent's "
-                f"parameter/scientific-method selection is at fault."
-            )
+    else:
+        summary = (
+            f"Agent's delivered '{metric}' ({agent_reported if agent_reported is not None else reported}) "
+            f"differs from the saved verifier value ({recomputed}, tol {tolerance}). "
+            f"This is a recorded discrepancy; it does not identify a scientific-method or parameter error by itself."
+        )
 
     # Required citations: the divergence observation, the verifier fail log (or
     # the observation's own source ref), the execution step that produced the
@@ -213,18 +136,9 @@ def _recompute_divergence_agent_attribution(
         ev_refs.append(str(artifact_ref))
     ev_refs = list(dict.fromkeys(ref for ref in ev_refs if ref))
 
-    # True-counterfactual measurement: the verifier's check localization is a
-    # single failure AND that unique failing check is the diverging metric
-    # itself — i.e. replacing the agent's delivered value with the recomputed
-    # one would flip the only failing check to passing.
-    single_failure_text = _single_failure_summary_text(
-        ctx.evidence.get("verifier_check_stats")
-    ).lower()
-    counterfactual_supported = (
-        ctx.check_localization == "single"
-        and bool(metric)
-        and str(metric).strip().lower() in single_failure_text
-    )
+    # Check localization is observational evidence. Replacing a value is not
+    # an executed causal intervention and earns no counterfactual bonus.
+    counterfactual_supported = False
 
     # A delta divergence binds the delivered value through a structured
     # artifact but has no absolute verifier value to equality-match, so it earns
@@ -258,12 +172,12 @@ def _recompute_divergence_agent_attribution(
             "evidence_against": [],
             "missing_evidence": [],
             "counterfactual_test": (
-                f"Replace the delivered '{metric}' value with the verifier's independent "
-                f"replay value and rerun the failing check."
+                f"Trace the saved input and execution that generated '{metric}', and review the "
+                f"recorded verifier calculation and its applicable requirements."
                 if is_delta
                 else (
-                    f"Recompute '{metric}' independently and reconcile the agent's "
-                    f"delivered value with the verifier's recomputed value."
+                    f"Compare the saved '{metric}' calculation, delivered record, and verifier "
+                    f"recomputation, preserving unresolved reference or implementation explanations."
                 )
             ),
         },
@@ -307,16 +221,9 @@ def _recompute_divergence_agent_attribution(
                 f"a structured artifact."
             )
         )
-        h2_exclusion_reason = (
-            "The failing check names the record and metric with a declared numeric bound, "
-            f"and the agent's delivered value is independently located at `{artifact_ref or chosen.get('agent_ref')}`. "
-            "This is positive evidence of a delivered-value error, not of a verifier "
-            "recomputation defect."
-        )
         action = (
-            f"Re-derive '{metric}' independently and reconcile the delivered value "
-            f"{agent_reported if agent_reported is not None else ''} with the verifier's "
-            f"replay before writing results{artifact_clause}."
+            f"Inspect the saved '{metric}' record{artifact_clause}, its generating inputs, "
+            f"and the verifier's saved replay and coverage; identify the source of the discrepancy."
         )
     else:
         fud_ref = chosen.get("agent_ref") or ev_refs[0]
@@ -330,15 +237,9 @@ def _recompute_divergence_agent_attribution(
                 f"(reported {reported} != recomputed {recomputed}, tol {tolerance})."
             )
         )
-        h2_exclusion_reason = (
-            "The agent's own execution output records the same value as the verifier-reported "
-            "value, so the delivered result — not the verifier's recomputation — is "
-            "inconsistent with the reference."
-        )
         action = (
-            f"Re-derive and sanity-check the reported '{metric}' against an "
-            f"independent calculation before writing results; reconcile it with "
-            f"the verifier's recomputed value."
+            f"Compare the saved '{metric}' execution and output with the verifier's "
+            f"recorded calculation and reference conditions before assigning a cause."
         )
 
     contributing_factors = []
@@ -442,7 +343,7 @@ def _recompute_divergence_agent_attribution(
                 "owner": "Agent",
                 "action": (
                     f"Verify execution and file-write ordering for '{metric}' around{ref_clause or ' the run'}, "
-                    f"and ensure the delivered artifact on disk is overwritten with the intended value ({recomputed})."
+                    f"and determine whether the saved output is stale; do not replace it with a reference value as evidence of a fix."
                 ),
             }
         )
@@ -468,13 +369,7 @@ def _recompute_divergence_agent_attribution(
         "contributing_factors": contributing_factors,
         "competing_hypotheses": [h1, h2],
         "evidence_refs": ev_refs,
-        "excluded_hypotheses": [
-            {
-                "hypothesis_id": "H2",
-                "category": "verifier",
-                "reason": h2_exclusion_reason,
-            }
-        ],
+        "excluded_hypotheses": [],
         "recommended_actions": recommended_actions,
         "skill_prescription": None,
     }

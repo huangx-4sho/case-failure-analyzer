@@ -2,11 +2,12 @@
 
 **On this page:** [Eligibility](#1-eligibility-gate-all-conditions-required) · [Remediation routing](#2-routing-table-for-non-eligible-cases) · [Prescription fields](#3-prescription-schema)
 
-`case-failure-analyzer` optionally generates `skill-prescription.md` (and populates `analysis.json["skill_prescription"]`). To prevent polluting the agent's skill library with brittle workarounds or single-case patches, strict eligibility criteria apply.
+Per-trial `analysis.json["skill_prescription"]` remains null. Rule-based guidance is only a suspected proposal under `causal_assessment.capability`. A separate, read-only cross-case review can produce scoped guidance in `capability-assessment.json`; it does not install a skill or rerun calculations.
+
 
 ## 1. Eligibility Gate (All Conditions Required)
 
-Generate a `skill-prescription.md` **ONLY IF ALL 5 CONDITIONS HOLD**:
+Advance a proposal to cross-case capability review **ONLY IF ALL 5 CONDITIONS HOLD**:
 
 1. **Agent Root Cause**: `primary_root_cause.category == "agent"`.
 2. **Non-Trivial Capability Gap**: The failure is NOT a one-off typo, transient shell mistake, or infrastructure hiccup.
@@ -16,9 +17,9 @@ Generate a `skill-prescription.md` **ONLY IF ALL 5 CONDITIONS HOLD**:
 
 ## 2. Routing Table for Non-Eligible Cases
 
-When any of the 5 eligibility conditions is false, `skill_prescription` MUST be `null`, and remediation is routed as follows:
+When any eligibility condition is false, do not confirm reusable guidance. Per-trial `skill_prescription` stays null in all cases; remediation is routed as follows:
 
-| Primary Root Cause Category | Output Routing in `recommended_actions` | Generate `skill-prescription.md`? |
+| Primary Root Cause Category | Output Routing in `recommended_actions` | Eligible for cross-case guidance review? |
 |---|---|---|
 | `case` | Prompt / asset / `task.toml` specification fix | **No** |
 | `infra` | Runner, Docker image mirror, network, timeout, or container fix | **No** |
@@ -28,7 +29,7 @@ When any of the 5 eligibility conditions is false, `skill_prescription` MUST be 
 
 ## 3. Prescription Schema
 
-When eligible, `skill_prescription` in `analysis.json` and `skill-prescription.md` must include:
+The separate `review capability` request requires written `skill_prescription.guidance` and evidence reviews for independent tasks. See [existing-evidence review](evidence-review.md#capability-scope) for the executable request format. The following structure is a content guide when authoring a reusable skill from an eligible proposal:
 
 ```yaml
 recommended_skill:

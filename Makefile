@@ -3,7 +3,7 @@ RUFF ?= $(shell command -v ruff 2>/dev/null || (command -v uv >/dev/null 2>&1 &&
 FIXTURE_JOB := tests/fixtures/regressions/mixed-job-success-trial/job
 # Local smoke output: hidden, gitignored, never part of the shipped skill tree.
 DEV_OUT := .dev/smoke
-SHARED_DOCS := attribution-protocol.md evidence-schema.md report-schema.md skill-prescription-policy.md taxonomy.md
+SHARED_DOCS := attribution-protocol.md evidence-schema.md report-schema.md skill-prescription-policy.md taxonomy.md evidence-review.md
 CODEX_HOME ?= $(HOME)/.codex
 DEST ?= $(CODEX_HOME)/skills/case-failure-analyzer
 

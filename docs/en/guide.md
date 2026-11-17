@@ -10,30 +10,36 @@ This guide covers installation, invocation, and report review. The agent follows
 
 ## Installation and invocation
 
-### Install in Codex
+<a id="install-in-codex"></a>
 
-Requires Python 3.9+. From this repository root, export the skill without installing third-party runtime packages:
+### Install in different clients
+
+Scripts require Python 3.9+ and no third-party runtime packages. The portable skill consists of `SKILL.md`, `scripts/`, and `references/`. `agents/openai.yaml` supplies Codex UI metadata; other clients do not need it to run the workflow.
+
+| Client | Common local location | Invocation |
+| --- | --- | --- |
+| Codex | `~/.agents/skills/case-failure-analyzer/` | `$case-failure-analyzer` |
+| Claude Code | `~/.claude/skills/case-failure-analyzer/` or project `.claude/skills/` | `/case-failure-analyzer` |
+| Cursor | `~/.cursor/skills/case-failure-analyzer/` or project `.cursor/skills/` | Select the skill in the `/` menu or name it in the request |
+| GitHub Copilot | Project `.github/skills/case-failure-analyzer/`; supported local surfaces also accept `~/.copilot/skills/` | Use the surface's skill entrypoint or a natural-language request |
+| Other agents with file and Python access | Any accessible exported directory | Ask the agent to read its `SKILL.md` and follow the workflow |
+
+Locations follow the current client documentation: [Codex](https://learn.chatgpt.com/docs/build-skills), [Claude Code](https://code.claude.com/docs/en/skills), [Cursor](https://cursor.com/docs/skills), and [GitHub Copilot](https://docs.github.com/en/copilot/concepts/customizations/agent-skills). Cloud, remote, and organization-managed surfaces may not read your local user directory; use the location supported by that surface.
+
+Export from this source checkout, for example:
 
 ```bash
-python3 scripts/export_skill.py --dest "$HOME/.agents/skills/case-failure-analyzer"
+python3 scripts/export_skill.py --dest "$HOME/.claude/skills/case-failure-analyzer"
 ```
 
-The export includes `SKILL.md`, `agents/`, `scripts/`, and `references/`. It excludes READMEs, tests, documentation pages, and local generated reports. The exporter rejects destinations inside this source repository, its parent directory, and other protected locations.
-
-| Scope | Location | Notes |
-| --- | --- | --- |
-| All projects for the current user | `~/.agents/skills/case-failure-analyzer/` | Used by the command above |
-| A specific benchmark repository | `<benchmark>/.agents/skills/case-failure-analyzer/` | Set `--dest` to this path; keep the target benchmark separate from this source checkout |
-| An existing custom skill directory | The location discovered by your client | Update the same location to avoid duplicate skills with the same name |
-
-The repository's `make export-skill` default is `$CODEX_HOME/skills/case-failure-analyzer`, or `~/.codex/skills/case-failure-analyzer` when unset. Passing `--dest` explicitly as above selects Codex's current user-level discovery directory. Codex detects skill changes automatically; restart the client if the skill does not appear. See the [official Codex skill documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills) for discovery and activation rules.
+Change `--dest` for your client. The export includes `SKILL.md`, `agents/`, `scripts/`, and `references/`, excluding tests, local reports, and documentation pages. Project-scoped installation must target the benchmark checkout rather than this source repository; the exporter enforces path boundaries. The historical `make export-skill` default remains `$CODEX_HOME/skills/case-failure-analyzer`, so pass the destination explicitly.
 
 ### Invoke in a chat
 
-Mention `$case-failure-analyzer` explicitly and provide a task reference and an accessible benchmark path. The display name is `case failure analyzer`; the skill identifier is `case-failure-analyzer`.
+Name the skill and provide a task reference and an accessible benchmark path. The natural-language examples below are harness-neutral; use the native invocation prefix from the table when available.
 
 ```text
-$case-failure-analyzer Analyze task208 in /path/to/benchmark.
+Use case-failure-analyzer to analyze task208 in /path/to/benchmark.
 Explain the primary cause and the evidence for all four categories in English,
 and link the full report.
 ```
@@ -41,7 +47,7 @@ and link the full report.
 A task number selects the most recently modified matching trial. To select one run, provide its full trial name:
 
 ```text
-$case-failure-analyzer Analyze trial "task 208__jaekojA" in
+Use case-failure-analyzer to analyze trial "task 208__jaekojA" in
 /path/to/benchmark. Preserve the inputs and produce an English attribution report.
 ```
 
@@ -56,7 +62,7 @@ Write reports to /path/to/benchmark/failure-analysis/run-001.
 An agent can match a natural-language request to the skill. Explicit invocation makes the intended workflow clear. For a batch audit:
 
 ```text
-$case-failure-analyzer Audit every task under /path/to/benchmark,
+Use case-failure-analyzer to audit every task under /path/to/benchmark,
 produce English reports, and update failure-report/INDEX.md.
 ```
 
@@ -73,7 +79,7 @@ After updating the source checkout, run the same export command again. By defaul
 | Skill does not appear | The installation contains `SKILL.md`, `scripts/`, and `references/`, and the client has detected the update |
 | Duplicate skill names | Both the user and project directories may contain a copy |
 | Task cannot be found | Provide an absolute benchmark path; check `jobs/`, the task number, or the full trial name |
-| Scripts run but the response does not follow the skill | Mention `$case-failure-analyzer` in chat and request the summary and report link |
+| Scripts run but the response does not follow the skill | Name the skill or ask the agent to read the exported `SKILL.md` and request the summary and report link |
 | `diff` lacks evidence | Generate reports first; use `--archive-evidence` during auditing when full trial evidence is needed |
 
 ## Inputs
@@ -101,8 +107,7 @@ Require or automatically discover:
 Use the unified CLI (`scripts/cfa.py`) for task-ID auditing, read-only inspection, and cross-case diffing, or invoke `scripts/analyze_case.py` directly for path-based jobs:
 
 ```bash
-SKILL_DIR="$HOME/.agents/skills/case-failure-analyzer"
-[ -d "$SKILL_DIR" ] || SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
+SKILL_DIR="/path/to/skills/case-failure-analyzer"
 BENCH_ROOT="/path/to/benchmark"
 python3 "$SKILL_DIR/scripts/cfa.py" audit task208 --jobs-root "$BENCH_ROOT" --lang en
 python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --jobs-root "$BENCH_ROOT" --section artifacts
@@ -191,13 +196,15 @@ The registry contains 11 software groups and 60 error families. These are log-ma
 
 ## Harbor discovery and result review
 
+See [existing-evidence review](evidence-review.md) for missing-output diagnosis, saved recomputation records, and structured causal assessment.
+
 Task-ID mode first matches common Harbor layouts, then falls back to a depth-limited search that prunes heavy directories. It supports flat `jobs/<job>/task208__<trial>` and suite-based `<suite>/jobs/<job>/task208__<trial>` layouts, with task definitions at the suite root or under `tasks/`. Duplicate task numbers prefer a definition from the selected trial's suite. Remaining ambiguity raises an error instead of choosing lexically.
 
 Analysis reads job/trial `result.json` and logs, `agent/trajectory.json` or recognized JSONL trajectories, `verifier/` results, task instructions, and verifier scripts. It checks collected `artifacts/` against paths declared in `task.toml`. Numeric task IDs are this project's shortcut convention; use explicit `--job`, `--task`, and `--output` paths for arbitrary task names.
 
 ### Supported scope
 
-- Declared-path extraction currently supports a string or an array of strings in `task.toml`. Object declarations containing `source` / `service` are not fully adapted; an empty extracted list does not establish complete delivery.
+- Deliverable auditing reads strings, arrays, and `source` / `service` declarations. Service outputs remain unresolved without an established mapping; they are not guessed into the main container tree.
 - Numerical checks primarily cover JSON/CSV/TSV and recognized logs. File, byte, and trajectory limits apply; arbitrary binary scientific outputs are not fully validated.
 - Analysis reads local saved records. It does not download Harbor Hub jobs or independently rerun scientific calculations. Rule scores describe evidence strength, not the probability that a cause is correct.
 
@@ -215,14 +222,14 @@ python3 "$SKILL_DIR/scripts/validate_analysis.py" \
   --report "$REPORT_DIR/task208.md"
 ```
 
-Validation checks fields, evidence IDs, attribution constraints, and report sections. It cannot prove physical correctness or causal truth. Scientific conclusions still need independent recomputation in an appropriate environment or domain review; retain `unknown` when evidence is insufficient.
+Validation checks fields, evidence IDs, attribution constraints, and report sections. It cannot prove physical correctness or causal truth. First inspect the recomputation process, values, and coverage already saved by the benchmark. This skill performs no new calculations. Retain a candidate or `unknown` when evidence is insufficient, and identify the existing records that need to be recovered.
 
 ## Development and export
 
 | File or directory | Purpose | Exported with the skill |
 | --- | --- | --- |
 | `SKILL.md` | Agent workflow and response requirements | Yes |
-| `agents/openai.yaml` | Codex display name, description, and default prompt | Yes |
+| `agents/openai.yaml` | Optional Codex display name, description, and default prompt | Yes |
 | `scripts/` | Analysis, validation, reporting, and export scripts | Yes |
 | `references/` | Attribution protocols, field definitions, and software rules | Yes |
 | `docs/`, `README*` | Reader documentation and illustrations | No |

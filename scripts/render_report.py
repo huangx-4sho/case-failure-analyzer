@@ -24,6 +24,7 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from render_batch import render_job_summary_markdown
+from causal_assessment import render_assessment
 from report_style import (
     category_label,
     cause_narrative,
@@ -35,6 +36,7 @@ from report_style import (
     localize_engine_text,
     remediation,
     render_error_matrix_table,
+    render_deliverable_audit,
     resolve_evidence_item,
     resolve_key_evidence_summary,
     section_title,
@@ -976,6 +978,7 @@ def _render_chinese_bilingual_core(
 
     # 1. 归因结论
     lines.append(f"## {section_title(1, lang)}\n")
+    lines.append(render_assessment(analysis, lang))
 
     if isinstance(manifestation, dict):
         direct_cause = manifestation.get("summary") or "N/A"
@@ -1034,6 +1037,7 @@ def _render_chinese_bilingual_core(
 
     # 2. 失败证据链
     lines.append(f"## {section_title(2, lang)}\n")
+    lines.extend(render_deliverable_audit(evidence, lang=lang))
     lines.extend(_render_verifier_report_block(evidence, lang=lang))
 
     from trace_causal_anchors import trace_causal_anchors, render_causal_anchors_markdown
@@ -1277,6 +1281,7 @@ def _render_english_edition(
 
     # 1. Root Cause Verdict
     lines.append(f"## {section_title(1, 'en')}\n")
+    lines.append(render_assessment(analysis, "en"))
     if isinstance(manifestation, dict):
         direct_cause = manifestation.get("summary") or "N/A"
     elif isinstance(manifestation, str):
@@ -1312,6 +1317,7 @@ def _render_english_edition(
 
     # 2. Failure Evidence Chain
     lines.append(f"## {section_title(2, 'en')}\n")
+    lines.extend(render_deliverable_audit(evidence, lang="en"))
     lines.extend(_render_verifier_report_block(evidence, lang="en"))
 
     from trace_causal_anchors import trace_causal_anchors, render_causal_anchors_markdown
@@ -1753,6 +1759,15 @@ def render_report_markdown(
         rendered = _render_chinese_bilingual_core(
             evidence, analysis, include_en_labels=lang != "zh", output_format=output_format
         )
+    assessment = analysis.get("causal_assessment") or {}
+    if assessment and analysis.get("verdict") != "passed":
+        rendered = rendered.replace("**主因**", "**规则候选**").replace(
+            "**Primary cause**", "**Rule candidate**"
+        )
+        rendered = rendered.replace("**主因 (Primary cause)**", "**规则候选 (Rule candidate)**")
+        rendered = rendered.replace("**已排除 ", "**规则排除候选 ").replace(
+            "**Excluded ", "**Rule exclusion candidate "
+        )
     for name in ("evidence.json", "analysis.json"):
         target = (data_paths or {}).get(name, name)
         replacement = f"[{name}](<{target}>)" if output_format in ("json", "both") else f"`{name}`"
@@ -1873,7 +1888,7 @@ def main() -> None:
         ),
     }
     report_md = render_report_markdown(evidence, analysis, lang=args.lang, data_paths=data_paths)
-    ok, val_errors = validate_all(evidence, analysis, report_md)
+    ok, val_errors = validate_all(evidence, analysis, report_md, review_root=args.analysis.parent)
     if not ok:
         for err in val_errors:
             print(f"VALIDATION ERROR: {err}", file=sys.stderr)

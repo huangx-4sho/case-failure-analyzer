@@ -33,7 +33,13 @@ if str(SCRIPT_DIR) not in sys.path:
 import staging
 from audit_contract import audit_contract
 from cli_args import positive_int
-from discover_artifacts import discover_all, discover_trials, extract_declared_deliverables
+from discover_artifacts import (
+    discover_all,
+    discover_trials,
+    extract_declared_deliverables,
+    make_artifact_entry,
+)
+from deliverable_audit import audit_deliverables
 from extract_runtime_errors import extract_runtime_errors, read_text_head_tail
 from extract_scientific_errors import extract_scientific_errors
 from generate_hypotheses import generate_candidate_hypotheses
@@ -61,6 +67,7 @@ from staging import (
     validate_output_writable,
 )
 from validate_analysis import validate_all
+from causal_assessment import assess_static
 from attribution.engine import run_attribution_engine
 from diagnostics import WARNING, format_diagnostic_line, make_diagnostic, merge_diagnostics
 
@@ -526,6 +533,17 @@ def collect_case_evidence(
     # `failure_origin` become visible to gates, reports and the batch board.
     if verifier_report is not None:
         evidence["verifier_report"] = verifier_report
+        for index, check in enumerate(verifier_report.get("failed_checks") or []):
+            evidence["verifier_observations"].append(
+                {
+                    "obs_id": f"ver:check:{index}",
+                    "type": "failed_check",
+                    "name": check.get("name"),
+                    "matched_text": check.get("detail"),
+                    "source_ref": check.get("source"),
+                    "source_pointer": check.get("source_pointer"),
+                }
+            )
     if contract_res.get("deliverable_diagnostics") is not None:
         evidence["deliverable_diagnostics"] = contract_res["deliverable_diagnostics"]
 
@@ -553,7 +571,93 @@ def collect_case_evidence(
             )
     if verifier_check_stats is not None:
         evidence["verifier_check_stats"] = verifier_check_stats
+    evidence["trajectory_normalization"] = dict(norm_traj.get("normalization") or {})
+    normalization = evidence["trajectory_normalization"]
+    if normalization.get("coverage") in ("partial", "unavailable"):
+        diagnostics.append(
+            make_diagnostic(
+                stage="trajectory",
+                code="INCOMPLETE_TRAJECTORY",
+                severity=WARNING,
+                message="Trajectory normalization is incomplete or unavailable",
+                source_ref="art:trajectory_json",
+                impact="Missing tool actions or outputs cannot establish non-production or scientific incapacity",
+                context=normalization,
+            )
+        )
     _bind_unfinished_remote_delivery(evidence, traj_path, trial_dir, task_dir)
+    evidence["deliverable_audit"] = audit_deliverables(evidence)
+    # Register actual captured files for evidence review; large files remain
+    # identifiable without an unbounded extra hashing pass.
+    known = {(a.get("scope"), a.get("rel_path")) for a in evidence["artifacts"]}
+    if trial_dir is not None:
+        saved_files = [
+            ("artifacts/" + observed["path"], observed)
+            for observed in evidence["deliverable_audit"].get("observed_files") or []
+        ]
+        for source in (verifier_report or {}).get("source_files") or []:
+            relative = "verifier/" + str(source.get("rel_path") or "")
+            path = trial_dir / relative
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and path.resolve().is_relative_to(trial_dir.resolve())
+            ):
+                saved_files.append((relative, {"size_bytes": path.stat().st_size}))
+        for relative, observed in saved_files:
+            if ("trial", relative) in known:
+                continue
+            path = trial_dir / relative
+            size = observed.get("size_bytes", 0)
+            if observed.get("read_status") == "failed" or not path.is_file():
+                continue
+            if size <= 65536:
+                entry = make_artifact_entry("art:" + relative, trial_dir, relative, "trial")
+            else:
+                entry = {
+                    "artifact_id": "art:" + relative,
+                    "rel_path": relative,
+                    "abs_path": str(path.resolve()),
+                    "scope": "trial",
+                    "exists": True,
+                    "size_bytes": size,
+                    "sha256": None,
+                    "hash_status": "size_limit",
+                }
+            evidence["artifacts"].append(entry)
+            known.add(("trial", relative))
+    for idx, finding in enumerate(
+        evidence["deliverable_audit"].get("verified_missing_outputs") or []
+    ):
+        relative = finding["collected_rel_path"]
+        if trial_dir is not None and ("trial", relative) not in known:
+            evidence["artifacts"].append(
+                make_artifact_entry("art:" + relative, trial_dir, relative, "trial")
+            )
+            known.add(("trial", relative))
+        evidence["contract_observations"].append(
+            {
+                "contract_id": f"contract:declared_missing:{idx}",
+                "item": "file:" + relative,
+                "prompt_requirement": "declared_collection_path",
+                "verifier_requirement": "required",
+                "agent_output_status": "missing_at_verify",
+                "alignment": "missing_output_evidence",
+                "details": finding["observed_text"],
+                "source_refs": finding["evidence_refs"],
+            }
+        )
+        evidence["verifier_observations"].append(
+            {
+                "obs_id": f"ver:declared_missing:{idx}",
+                "type": "missing_deliverable",
+                "path": relative,
+                "declared_path": finding["declared_source"],
+                "matched_text": finding["observed_text"],
+                "source_ref": finding["source_ref"],
+                "source_pointer": finding["source_pointer"],
+            }
+        )
     anchors = trace_causal_anchors(evidence)
     if anchors:
         evidence["causal_anchors"] = anchors
@@ -735,7 +839,7 @@ def build_causal_attribution(
                     else f"Agent executed deliverable generation at `{chosen_anchor.get('step_id')}` "
                     f"resulting in verification failure."
                 )
-    return result
+    return assess_static(evidence, result)
 
 
 def _build_raw_causal_attribution(

@@ -2,26 +2,26 @@
 
 English · [简体中文](README.zh.md)
 
-CFA is a skill for analyzing failed scientific-computing benchmarks. It reads logs, agent trajectories, task instructions, verifier code, and deliverables, then attributes failures to agent decisions, verifier rules, task design, or infrastructure. Reports cite the evidence; insufficient evidence yields an unknown result.
+CFA is a portable skill for analyzing failed scientific-computing benchmarks across agent clients. It reads logs, agent trajectories, task instructions, verifier code, and deliverables, then attributes failures to agent decisions, verifier rules, task design, or infrastructure. Reports cite the evidence; insufficient evidence yields an unknown result.
 
 ![Analysis workflow: collect, cross-check, attribute, review](docs/images/cfa-workflow.en.svg)
 
-Requires Python 3.9+ with no third-party runtime dependencies. Reports support Chinese, English, or both.
+Requires Python 3.9+ with no third-party runtime dependencies. Reviews saved artifacts and benchmark verification records without rerunning calculations. Reports support Chinese, English, or both.
 
 ## Usage
 
-From this repository root, export to Codex's user-level skills directory:
+From this repository root, export to your client’s skill directory ([installation locations](docs/en/guide.md#installation-and-invocation)):
 
 ```bash
-python3 scripts/export_skill.py --dest "$HOME/.agents/skills/case-failure-analyzer"
+python3 scripts/export_skill.py --dest /path/to/skills/case-failure-analyzer
 ```
 
-Then enter this prompt in a Codex chat:
+Invoke it in an agent chat. Clients without skill discovery can read `SKILL.md` from the exported directory:
 
 ```text
-$case-failure-analyzer Analyze task208 in /path/to/benchmark.
-Explain the primary cause and the evidence for all four categories in English,
-and link the report.
+Use case-failure-analyzer to analyze task208 in /path/to/benchmark.
+Audit missing deliverables and existing verifier records, then explain the
+candidate cause and evidence gaps in English.
 ```
 
 Or run the CLI directly in a terminal:
@@ -42,4 +42,4 @@ Task-ID mode writes to `<benchmark>/failure-report/<task_id>/` and returns an at
 
 [Installation and invocation](docs/en/guide.md#installation-and-invocation) · [Taxonomy](docs/en/taxonomy.md) · [Attribution rules](docs/en/attribution-protocol.md)
 
-[Evidence fields](docs/en/evidence-schema.md) · [Report format](docs/en/report-schema.md) · [Skill prescriptions](docs/en/skill-prescription-policy.md) · [Skill definition](SKILL.md)
+[Evidence fields](docs/en/evidence-schema.md) · [Report format](docs/en/report-schema.md) · [Skill prescriptions](docs/en/skill-prescription-policy.md) · [Evidence review](docs/en/evidence-review.md) · [Skill definition](SKILL.md)

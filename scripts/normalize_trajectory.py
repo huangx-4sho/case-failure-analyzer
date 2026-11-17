@@ -408,7 +408,11 @@ def truncate_with_head_tail(
 def extract_exit_code_and_error(obs_text: str) -> Tuple[Optional[int], bool]:
     if not obs_text:
         return None, False
-    m = re.search(r"(?:Exit code|Return code|exit status)[:\s]+(\d+)", obs_text, re.IGNORECASE)
+    m = re.search(
+        r"(?:Exit code|Return code|exit status|Process exited with code)[:\s]+(-?\d+)",
+        obs_text,
+        re.IGNORECASE,
+    )
     if m:
         code = int(m.group(1))
         return code, code != 0
@@ -442,15 +446,29 @@ def extract_exit_code_and_error(obs_text: str) -> Tuple[Optional[int], bool]:
     return 0, False
 
 
+def _patch_paths(patch: Any) -> List[str]:
+    """Only explicit apply_patch headers establish mutation targets."""
+    if not isinstance(patch, str) or "*** Begin Patch" not in patch:
+        return []
+    return [
+        m.group(1).strip()
+        for m in re.finditer(r"(?m)^\*\*\* (?:Add File|Update File|Move to): (.+)$", patch)
+    ]
+
+
 def classify_tool_event(
     tool_name: str, args: Dict[str, Any], has_error: bool
 ) -> Tuple[str, Optional[str]]:
-    t_lower = (tool_name or "").lower()
+    t_lower = (tool_name or "").lower().rsplit(".", 1)[-1]
+    if t_lower == "apply_patch":
+        patch = args.get("patch") or args.get("input") or args.get("raw") or ""
+        paths = _patch_paths(patch)
+        return "file_write", paths[0] if paths else None
     if t_lower in ("read", "view", "cat"):
         return "file_read", args.get("file_path") or args.get("path")
     if t_lower in ("write", "edit", "multiedit", "replace"):
         return "file_write", args.get("file_path") or args.get("path")
-    if t_lower in ("bash", "shell", "exec"):
+    if t_lower in ("bash", "shell", "exec", "exec_command"):
         cmd = args.get("command") or args.get("cmd") or ""
         if has_error:
             return "shell_error", cmd
@@ -459,34 +477,97 @@ def classify_tool_event(
 
 
 def _parse_trajectory_payload(text: str) -> Dict[str, Any]:
-    """Parse standard ATIF JSON, JSON array of messages, or JSONL stream into a normalized dict."""
-    stripped = text.strip()
+    """Read recorded messages/events; retain partial JSONL with explicit coverage."""
+    diagnostics: List[str] = []
     try:
-        parsed = json.loads(stripped)
-        if isinstance(parsed, dict):
-            if "steps" not in parsed and isinstance(parsed.get("messages"), list):
-                parsed["steps"] = _convert_messages_to_steps(parsed["messages"])
-                parsed.setdefault("schema_version", "ATIF-v1.7")
-            return parsed
-        if isinstance(parsed, list):
-            return {"schema_version": "ATIF-v1.7", "steps": _convert_messages_to_steps(parsed)}
-    except Exception:
-        pass
-
-    # Fallback: try line-delimited JSONL
-    lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
-    if lines:
-        objs = []
-        for ln in lines:
-            objs.append(json.loads(ln))
-        return {"schema_version": "ATIF-v1.7", "steps": _convert_messages_to_steps(objs)}
-    raise ValueError("Unable to parse trajectory file as JSON or JSONL")
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = []
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                parsed.append(json.loads(line))
+            except json.JSONDecodeError:
+                diagnostics.append(f"Malformed JSONL record at line {line_no}")
+    if isinstance(parsed, dict) and isinstance(parsed.get("steps"), list):
+        parsed["normalization"] = {
+            "format": "atif",
+            "coverage": "complete",
+            "diagnostics": [],
+            "pointer_space": "source",
+        }
+        return parsed
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("messages"), list):
+            parsed = parsed["messages"]
+        elif isinstance(parsed.get("output"), list):
+            parsed = parsed["output"]
+        else:
+            parsed = [parsed]
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+    formats = set()
+    records = []
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            diagnostics.append(f"Unsupported record {idx}: expected object")
+            continue
+        rec = item
+        kind = rec.get("type", "")
+        if kind == "response_item" and isinstance(rec.get("payload"), dict):
+            formats.add("codex_rollout")
+            rec = dict(rec["payload"], timestamp=item.get("timestamp"))
+        elif kind in ("session_meta", "turn_context", "event_msg"):
+            formats.add("codex_rollout")
+            continue  # Rollout metadata duplicates response items; never execution evidence.
+        elif kind in ("response.output_item.done", "response.completed"):
+            formats.add("openai_responses")
+            if kind == "response.completed":
+                # Calls/results are deduplicated below by their recorded call IDs.
+                response = rec.get("response") or {}
+                records.extend(response.get("output") or [])
+                continue
+            rec = rec.get("item") or {}
+        elif isinstance(rec.get("message"), dict):
+            formats.add("claude_code")
+        elif kind in (
+            "function_call",
+            "function_call_output",
+            "custom_tool_call",
+            "custom_tool_call_output",
+            "message",
+        ):
+            formats.add("openai_responses")
+        elif rec.get("role"):
+            formats.add("chat_messages")
+        elif "step_id" in rec or "source" in rec:
+            formats.add("atif_steps")
+        else:
+            diagnostics.append(f"Unsupported record {idx}: type={kind!r}")
+            continue
+        records.append(rec)
+    steps = _convert_messages_to_steps(records, diagnostics)
+    if not records:
+        diagnostics.append("No supported message or tool records found")
+    return {
+        "schema_version": "ATIF-v1.7",
+        "steps": steps,
+        "normalization": {
+            "format": "+".join(sorted(formats)) or "unsupported",
+            "coverage": "partial" if diagnostics else "complete",
+            "diagnostics": diagnostics,
+            "pointer_space": "normalized_steps",
+            "input_records": len(parsed),
+            "recognized_records": len(records),
+        },
+    }
 
 
 def _normalize_tool_call(tc: Dict[str, Any], fallback_idx: int) -> Dict[str, Any]:
     """Normalize OpenAI, Anthropic, or ATIF tool-call dicts into ATIF shape."""
     fn_block = tc.get("function") if isinstance(tc.get("function"), dict) else {}
-    call_id = tc.get("tool_call_id") or tc.get("id") or tc.get("call_id") or f"call_{fallback_idx}"
+    call_id = tc.get("tool_call_id") or tc.get("call_id") or tc.get("id") or f"call_{fallback_idx}"
     fn_name = tc.get("function_name") or fn_block.get("name") or tc.get("name") or "unknown"
     if "arguments" in tc:
         raw_args = tc.get("arguments")
@@ -517,6 +598,19 @@ def _normalize_tool_call(tc: Dict[str, Any], fallback_idx: int) -> Dict[str, Any
     }
 
 
+def _result_with_status(record: Dict[str, Any], content: Any) -> str:
+    text = _extract_result_text(content)
+    if isinstance(content, dict):
+        record = dict(content, **record)
+    for key in ("exit_code", "return_code"):
+        if isinstance(record.get(key), int):
+            text += f"\nExit code: {record[key]}"
+            break
+    if record.get("is_error") is True:
+        text += "\nERROR: tool result marked is_error"
+    return text
+
+
 def _extract_result_text(content: Any) -> str:
     """Flatten string, list-of-blocks, or structured tool result content to text."""
     if content is None:
@@ -541,7 +635,7 @@ def _extract_result_text(content: Any) -> str:
     return str(content)
 
 
-def _attach_tool_result(steps: List[Dict[str, Any]], call_id: str, result_text: str) -> None:
+def _attach_tool_result(steps: List[Dict[str, Any]], call_id: str, result_text: str) -> bool:
     """Attach a tool result to the matching preceding assistant step's observation.results."""
     target_step: Optional[Dict[str, Any]] = None
     resolved_id = call_id
@@ -554,26 +648,73 @@ def _attach_tool_result(steps: List[Dict[str, Any]], call_id: str, result_text: 
             if target_step is not None:
                 break
     elif steps:
-        for step in reversed(steps):
-            if step.get("source") == "agent" and (step.get("tool_calls") or []):
-                target_step = step
-                first_tc = step["tool_calls"][0]
-                resolved_id = str(first_tc.get("tool_call_id") or "")
-                break
+        pending = [
+            (step, tc)
+            for step in steps
+            for tc in step.get("tool_calls", [])
+            if not any(
+                r.get("source_call_id") == tc["tool_call_id"]
+                for r in step.get("observation", {}).get("results", [])
+            )
+        ]
+        if len(pending) == 1:
+            target_step, tc = pending[0]
+            resolved_id = tc["tool_call_id"]
 
     if target_step is None:
-        return
+        return False
     obs = target_step.setdefault("observation", {})
     if not isinstance(obs, dict):
         obs = {}
         target_step["observation"] = obs
     results = obs.setdefault("results", [])
     results.append({"source_call_id": resolved_id, "content": result_text})
+    return True
 
 
-def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _convert_messages_to_steps(
+    items: List[Dict[str, Any]], diagnostics: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
     """Convert generic OpenAI/Anthropic/Claude Code/Codex JSONL or message records into ATIF steps."""
     steps: List[Dict[str, Any]] = []
+    diagnostics = diagnostics if diagnostics is not None else []
+
+    recorded_calls: Dict[str, Dict[str, Any]] = {}
+    recorded_results: Dict[str, str] = {}
+    conflicting_call_ids: set[str] = set()
+
+    def accept_call(call: Dict[str, Any], raw: Dict[str, Any]) -> bool:
+        if not any(raw.get(k) for k in ("id", "call_id", "tool_call_id")):
+            return True  # Synthetic fallback IDs do not establish record identity.
+        cid = call["tool_call_id"]
+        if cid in recorded_calls:
+            if recorded_calls[cid] != call:
+                diagnostics.append(f"Conflicting tool call payloads for ID: {cid!r}")
+                conflicting_call_ids.add(cid)
+            return False
+        recorded_calls[cid] = call
+        return True
+
+    def attach(call_id: str, text: str) -> None:
+        if call_id and call_id in recorded_results:
+            if recorded_results[call_id] != text:
+                diagnostics.append(f"Conflicting tool results for ID: {call_id!r}")
+                # Conflicting snapshots cannot establish a successful mutation.
+                for step in steps:
+                    for result in step.get("observation", {}).get("results", []):
+                        if result.get("source_call_id") == call_id:
+                            result["content"] = (
+                                "ERROR: conflicting recorded tool results\n"
+                                + recorded_results[call_id]
+                                + "\n"
+                                + text
+                            )
+            return
+        if call_id:
+            recorded_results[call_id] = text
+        if not _attach_tool_result(steps, call_id, text):
+            diagnostics.append(f"Unmatched tool result: {call_id!r}")
+
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -598,8 +739,10 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
 
         # Codex JSONL top-level function_call / function_call_output events
         rec_type = rec.get("type")
-        if "role" not in rec and rec_type == "function_call":
+        if "role" not in rec and rec_type in ("function_call", "custom_tool_call"):
             tc = _normalize_tool_call(rec, 0)
+            if not accept_call(tc, rec):
+                continue
             steps.append(
                 {
                     "step_id": len(steps) + 1,
@@ -610,9 +753,9 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
                 }
             )
             continue
-        if "role" not in rec and rec_type == "function_call_output":
+        if "role" not in rec and rec_type in ("function_call_output", "custom_tool_call_output"):
             cid = str(rec.get("call_id") or rec.get("tool_call_id") or "")
-            _attach_tool_result(steps, cid, _extract_result_text(rec.get("output")))
+            attach(cid, _result_with_status(rec, rec.get("output")))
             continue
 
         role = str(rec.get("role") or rec.get("source") or "agent").lower()
@@ -621,14 +764,13 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
         if role in ("tool", "function"):
             cid = str(rec.get("tool_call_id") or rec.get("tool_use_id") or rec.get("call_id") or "")
             raw_res = rec.get("content") if "content" in rec else rec.get("output")
-            _attach_tool_result(steps, cid, _extract_result_text(raw_res))
+            attach(cid, _result_with_status(rec, raw_res))
             continue
 
         content = rec.get("content")
         text_parts: List[str] = []
         thinking_parts: List[str] = []
         extracted_calls: List[Dict[str, Any]] = []
-        seen_call_ids: set[str] = set()
         tool_results: List[Tuple[str, str]] = []
 
         if isinstance(content, list):
@@ -640,7 +782,7 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
                 if not isinstance(block, dict):
                     continue
                 btype = block.get("type")
-                if btype == "text":
+                if btype in ("text", "output_text", "input_text"):
                     t = block.get("text", "")
                     if t:
                         text_parts.append(str(t))
@@ -650,11 +792,11 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
                         thinking_parts.append(str(th))
                 elif btype == "tool_use":
                     norm_tc = _normalize_tool_call(block, len(extracted_calls))
-                    seen_call_ids.add(norm_tc["tool_call_id"])
-                    extracted_calls.append(norm_tc)
+                    if accept_call(norm_tc, block):
+                        extracted_calls.append(norm_tc)
                 elif btype == "tool_result":
                     cid = str(block.get("tool_use_id") or block.get("tool_call_id") or "")
-                    rtext = _extract_result_text(block.get("content"))
+                    rtext = _result_with_status(block, block.get("content"))
                     tool_results.append((cid, rtext))
             msg_str = "\n".join(text_parts)
         else:
@@ -665,13 +807,12 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
             if not isinstance(raw_tc, dict):
                 continue
             norm_tc = _normalize_tool_call(raw_tc, len(extracted_calls) + tc_idx)
-            if norm_tc["tool_call_id"] not in seen_call_ids:
-                seen_call_ids.add(norm_tc["tool_call_id"])
+            if accept_call(norm_tc, raw_tc):
                 extracted_calls.append(norm_tc)
 
         if tool_results:
             for cid, rtext in tool_results:
-                _attach_tool_result(steps, cid, rtext)
+                attach(cid, rtext)
             if not msg_str.strip() and not extracted_calls and not thinking_parts:
                 continue
 
@@ -689,6 +830,18 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
         if isinstance(thinking_val, str) and thinking_val.strip():
             step_dict["thinking"] = thinking_val.strip()
         steps.append(step_dict)
+    for step in steps:
+        for result in step.get("observation", {}).get("results", []):
+            if result.get("source_call_id") in conflicting_call_ids:
+                result["content"] = (
+                    "ERROR: conflicting recorded tool call payloads\n" + result["content"]
+                )
+        result_ids = {
+            r.get("source_call_id") for r in step.get("observation", {}).get("results", [])
+        }
+        for tc in step.get("tool_calls", []):
+            if tc["tool_call_id"] not in result_ids:
+                diagnostics.append(f"Tool call without recorded result: {tc['tool_call_id']!r}")
     return steps
 
 
@@ -739,6 +892,11 @@ def normalize_trajectory(
             "exists": False,
             "schema_version": None,
             "warnings": ["agent/trajectory.json is missing"],
+            "normalization": {
+                "format": "unknown",
+                "coverage": "unavailable",
+                "diagnostics": ["Trajectory missing"],
+            },
             "events": [],
             "behavioral_signals": [],
             "written_files": [],
@@ -751,6 +909,11 @@ def normalize_trajectory(
             return {
                 "exists": True,
                 "schema_version": None,
+                "normalization": {
+                    "format": "unknown",
+                    "coverage": "partial",
+                    "diagnostics": ["Trajectory exceeds size limit"],
+                },
                 "warnings": [
                     f"trajectory.json size ({file_size} bytes) exceeds max_file_bytes ({max_file_bytes})"
                 ],
@@ -767,6 +930,11 @@ def normalize_trajectory(
             "exists": True,
             "schema_version": None,
             "warnings": [f"Failed to parse trajectory.json: {exc}"],
+            "normalization": {
+                "format": "unknown",
+                "coverage": "partial",
+                "diagnostics": [str(exc)],
+            },
             "events": [],
             "behavioral_signals": [],
             "written_files": [],
@@ -774,7 +942,7 @@ def normalize_trajectory(
         }
 
     schema_version = raw.get("schema_version")
-    warnings: List[str] = []
+    warnings: List[str] = list(raw.get("normalization", {}).get("diagnostics", []))
     if schema_version not in SUPPORTED_SCHEMAS:
         warnings.append(
             f"Unknown trajectory schema_version={schema_version!r}; preserving raw step pointers."
@@ -786,6 +954,15 @@ def normalize_trajectory(
     written_files: List[str] = []
     read_files: List[str] = []
     script_targets: Dict[str, List[str]] = {}
+
+    all_results: Dict[str, str] = {}
+    for recorded_step in steps:
+        for recorded_result in (recorded_step.get("observation") or {}).get("results") or []:
+            cid = recorded_result.get("source_call_id")
+            if cid:
+                all_results[str(cid)] = _result_with_status(
+                    recorded_result, recorded_result.get("content")
+                )
 
     prev_commands: List[Tuple[str, bool, str, int]] = []  # (cmd, failed, event_id, epoch)
     mutation_epoch = 0  # bumps whenever the agent edits/writes anything
@@ -814,7 +991,7 @@ def normalize_trajectory(
                     "observation": trunc_msg,
                     "observation_sha256": msg_sha,
                     "exit_code": None,
-                    "source_file": "agent/trajectory.json",
+                    "source_file": str(trajectory_path),
                     "source_pointer": step_ptr,
                 }
             )
@@ -834,7 +1011,7 @@ def normalize_trajectory(
                     "observation": t_trunc,
                     "observation_sha256": t_sha,
                     "exit_code": None,
-                    "source_file": "agent/trajectory.json",
+                    "source_file": str(trajectory_path),
                     "source_pointer": f"{step_ptr}/thinking",
                 }
             )
@@ -854,7 +1031,7 @@ def normalize_trajectory(
                     "observation": trunc_msg,
                     "observation_sha256": msg_sha,
                     "exit_code": None,
-                    "source_file": "agent/trajectory.json",
+                    "source_file": str(trajectory_path),
                     "source_pointer": f"{step_ptr}/message",
                 }
             )
@@ -883,8 +1060,19 @@ def normalize_trajectory(
                 except Exception:
                     args = {"raw": args}
 
-            obs_text = obs_by_call_id.get(tc_id, "")
+            obs_text = all_results.get(str(tc_id), obs_by_call_id.get(tc_id, ""))
+            result_recorded = str(tc_id) in all_results or tc_id in obs_by_call_id
             exit_code, has_error = extract_exit_code_and_error(obs_text)
+            has_error = has_error or "ERROR: tool result marked is_error" in obs_text
+            mutation_succeeded = result_recorded and not has_error
+            if not result_recorded:
+                diagnostic = f"Tool call without recorded result: {tc_id!r}"
+                normalization = raw.setdefault("normalization", {})
+                normalization["coverage"] = "partial"
+                if diagnostic not in normalization.setdefault("diagnostics", []):
+                    normalization["diagnostics"].append(diagnostic)
+                if diagnostic not in warnings:
+                    warnings.append(diagnostic)
             ev_type, cmd_or_path = classify_tool_event(fn_name, args, has_error)
             trunc_obs, obs_sha, _ = truncate_with_head_tail(obs_text, max_obs_bytes)
             ev_id = f"trajectory:step:{step_id}:tool:{t_idx}"
@@ -892,7 +1080,10 @@ def normalize_trajectory(
 
             # Check for repeated command
             norm_cmd = (cmd_or_path or "").strip()
-            if fn_name.lower() in ("bash", "shell", "exec") and norm_cmd:
+            if (
+                fn_name.lower().rsplit(".", 1)[-1] in ("bash", "shell", "exec", "exec_command")
+                and norm_cmd
+            ):
                 for prev_cmd, prev_failed, prev_ev, prev_epoch in prev_commands:
                     if prev_cmd == norm_cmd:
                         ev_type = "repeated_command"
@@ -950,7 +1141,7 @@ def normalize_trajectory(
                     )
 
                 hd_path = heredoc_written_path(norm_cmd)
-                if hd_path:
+                if hd_path and mutation_succeeded:
                     written_files.append(hd_path)
                     _record_script_targets(
                         script_targets,
@@ -959,7 +1150,7 @@ def normalize_trajectory(
                         replace=True,
                     )
 
-                if not has_error and script_targets:
+                if mutation_succeeded and script_targets:
                     for s_key, bound_targets in list(script_targets.items()):
                         if not bound_targets:
                             continue
@@ -976,7 +1167,9 @@ def normalize_trajectory(
                                 results_json_written = True
                                 results_json_verified_after_write = False
 
-                if _SHELL_MUTATION_RE.search(strip_fd_redirects(norm_cmd)) or hd_path:
+                if mutation_succeeded and (
+                    _SHELL_MUTATION_RE.search(strip_fd_redirects(norm_cmd)) or hd_path
+                ):
                     mutation_epoch += 1
                 # A command's own output redirects must not count as an edit between
                 # it and its identical retry; finalize its epoch after its own bump.
@@ -1034,13 +1227,16 @@ def normalize_trajectory(
                 ) and any(r_k in norm_cmd for r_k in ("cat ", "head ", "tail ", "grep ", "python")):
                     inspected_sim_log = True
 
-                if "results.json" in norm_cmd and any(
-                    w in norm_cmd for w in (">", "tee", "json.dump", "write_text", "open(")
+                if (
+                    mutation_succeeded
+                    and "results.json" in norm_cmd
+                    and any(w in norm_cmd for w in (">", "tee", "json.dump", "write_text", "open("))
                 ):
                     results_json_written = True
                     results_json_verified_after_write = False
                 elif (
-                    results_json_written
+                    mutation_succeeded
+                    and results_json_written
                     and "results.json" in norm_cmd
                     and any(r in norm_cmd for r in ("cat ", "json.load", "head "))
                 ):
@@ -1081,10 +1277,14 @@ def normalize_trajectory(
                     )
 
             code_payload = None
-            if ev_type == "file_write" and cmd_or_path:
+            if ev_type == "file_write" and cmd_or_path and mutation_succeeded:
                 mutation_epoch += 1
                 code_payload = summarize_code_payload(args)
                 written_files.append(cmd_or_path)
+                if fn_name.lower().rsplit(".", 1)[-1] == "apply_patch":
+                    written_files.extend(
+                        _patch_paths(args.get("patch") or args.get("input") or args.get("raw"))
+                    )
                 raw_code = (
                     args.get("content") or args.get("new_string") or args.get("newString") or ""
                 )
@@ -1142,10 +1342,14 @@ def normalize_trajectory(
                     "event_type": ev_type,
                     "tool_name": fn_name,
                     "command": cmd_or_path,
+                    "arguments": args,
+                    "tool_call_id": tc_id,
+                    "result_recorded": result_recorded,
+                    "tool_succeeded": mutation_succeeded,
                     "observation": trunc_obs,
                     "observation_sha256": obs_sha,
                     "exit_code": exit_code,
-                    "source_file": "agent/trajectory.json",
+                    "source_file": str(trajectory_path),
                     "source_pointer": tc_ptr,
                     **({"code_payload": code_payload} if code_payload else {}),
                 }
@@ -1173,6 +1377,7 @@ def normalize_trajectory(
         for ev in events
         if ev.get("event_type") in ("tool_call", "shell_error", "repeated_command")
         and ev.get("command")
+        and ev.get("tool_succeeded") is True
     ]
 
     if declared_deliverables and events:
@@ -1238,6 +1443,8 @@ def normalize_trajectory(
         "exists": True,
         "schema_version": schema_version,
         "session_id": raw.get("session_id"),
+        "normalization": raw.get("normalization", {}),
+        "source_file": str(trajectory_path),
         "warnings": warnings,
         "events": events,
         "behavioral_signals": signals,

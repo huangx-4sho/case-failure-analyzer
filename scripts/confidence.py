@@ -283,7 +283,7 @@ def build_confidence_breakdown(
         final_missing = []
         if numeric < 0.75 and not ruled_out and not verdict_passed:
             if not counterfactual_supported:
-                final_missing.append("需独立复算值或唯一失败检查以构成反事实闭环")
+                final_missing.append("需从已有记录补足因果关联证据；唯一失败检查本身不构成证明")
             if margin is None:
                 final_missing.append("验证器未提供定量数值偏差与容差比值")
 

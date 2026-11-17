@@ -481,7 +481,9 @@ class TestBuildConfidenceBreakdown(unittest.TestCase):
         self.assertEqual(bd["denominator"], 6)
         # 4/6 = 0.67 < 0.75
         self.assertEqual(len(bd["missing_to_raise"]), 2)
-        self.assertIn("需独立复算值或唯一失败检查以构成反事实闭环", bd["missing_to_raise"])
+        self.assertIn(
+            "需从已有记录补足因果关联证据；唯一失败检查本身不构成证明", bd["missing_to_raise"]
+        )
         self.assertIn("验证器未提供定量数值偏差与容差比值", bd["missing_to_raise"])
 
     def test_missing_to_raise_not_populated_when_confidence_ge_75(self) -> None:

@@ -4,7 +4,7 @@
 
 <a id="证据与归因-json-模式规范-failure-analysis-v1"></a>
 
-**本页：** [证据字段](#1-evidencejson-客观证据模式) · [归因字段](#2-analysisjson-因果归因模式) · [Harbor 扩展](#3-harbor-协议扩展) · [核对与溯源](#4-数值核对与溯源扩展)
+**本页：** [证据字段](#1-evidencejson-客观证据模式) · [归因字段](#2-analysisjson-因果归因模式) · [Harbor 扩展](#3-harbor-协议扩展) · [核对与溯源](#4-数值核对与溯源扩展) · [证据审查](#5-已有证据审查字段)
 
 本文说明证据、归因及扩展字段。示例可按需展开；标识、字段名和枚举值保持代码中的写法。
 
@@ -380,3 +380,17 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 - **`stale_deliverable_sync` 与 `recomputed_match_in_trajectory_ref`**：在非 delta 分歧中，仅当 `trial_dir` 磁盘上存在匹配 `metric` 与 `reported_value`（且尚未匹配 `recomputed_value`）的交付文件，并且某步无报错的执行 `observation`（不包含 `tool_calls` 输入代码）包含 `metric` 与接近复算值的数值（至少 4 位有效数字，误差不超过 `max(1e-9, abs(recomputed_value) * 5e-4)`）时触发。它仍未验证计算与落盘时间戳先后，仅作待核实线索。
 - **`deliverable_diagnostics`**：扫描 `artifacts/` 下的 JSON/CSV/TSV，字段为 `scanned_files`、`empty_deliverables`、`nan_or_inf_values`、`results_json_files`、`results_json_keys` 和 `missing_checked_keys`。上限为 200 个文件、每文件 8,000,000 字节、每表 200,000 行、每 JSON 20,000 个节点。缺键检查比较所有已找到的 `results.json` 的键名并集；没有此文件时不产生缺键条目。无法解析或超限的内容可能被跳过，诊断为空不表示交付物完整。相关 `contract_observations` 还要求 `verify.log` 中有对应失败信息。
 - **`parameter_evolution`**：按目标脚本文件（`file`）作用域聚合识别到的科学参数赋值（`cutoff`、`eta`、`alpha`、`tol`、`tolerance`、`ecutwfc`、`ecutrho`、`dt`、`timestep`、`kpoints`、`conv_thr`、`mixing_beta`、`nsteps`），覆盖写/改文件、heredoc 及指向该脚本的命令；当首末值不同时记录 `file`、`initial`、`final`、`from_event` 和 `to_event`，并按 `algo_anchor.target_path` 过滤后附加至 `causal_anchors.algorithm_or_param_definition`。它不保留完整中间历史，也不证明参数在运行时生效。关联失败产物的生成候选另有 `+15` 排序加分；两者均为定位线索。
+
+## 5. 已有证据审查字段
+
+| 字段 | 含义 |
+| --- | --- |
+| `evidence.deliverable_audit` | 声明、路径映射、采集状态、扫描覆盖和验证器明确缺失记录；不推断未生成 |
+| `evidence.trajectory_normalization` | 格式、覆盖程度、诊断与源指针空间 |
+| `analysis.causal_assessment.level` | `not_applicable`、`observed_failure`、`candidate_cause` 或 `evidence_supported_cause` |
+| `causal_assessment.existing_verification` | 既有检查及数值记录、声明覆盖和限制；`new_calculation_performed` 为 false |
+| `causal_assessment.decision` | 具体决策、实际执行、有效输入输出、适用依据、最终观测和推理 |
+| `causal_assessment.alternatives` | 各替代解释的状态、理由和证据引用；未解决项保留 |
+| `causal_assessment.capability` | 当前试次范围内的疑似指导，不能单独确认模型能力不足 |
+
+审查记录绑定输入 JSON 和保存来源摘要，详见[已有证据审查](evidence-review.md)。这些字段记录证据和审阅判断，不保证科学解释绝对正确。

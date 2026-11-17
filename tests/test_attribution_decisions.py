@@ -589,7 +589,7 @@ DECISION_TABLE: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = [
         {
             "gate_id": "gate4_numerical_divergence",
             "category": "agent",
-            "code": "AGENT_SCIENTIFIC_PARAMETER_SELECTION",
+            "code": "AGENT_RESULT_VALIDATION",
             "verdict": "failed",
             "failure_stage": "agent_execution",
         },
@@ -854,7 +854,7 @@ class TestAttributionDecisionTable(unittest.TestCase):
         for label, evidence, _ in DECISION_TABLE:
             with self.subTest(row=label):
                 analysis = run_attribution_engine(evidence, {"candidate_hypotheses": []})
-                expected_keys = list(OUTCOME_KEYS) + ["decision_trace"]
+                expected_keys = list(OUTCOME_KEYS) + ["decision_trace", "causal_assessment"]
                 self.assertEqual(list(analysis.keys()), expected_keys, label)
 
                 trace = analysis["decision_trace"]
@@ -1202,8 +1202,10 @@ class TestEnhancedAttributionGates(unittest.TestCase):
                 self.assertEqual(an["primary_root_cause"]["category"], "agent")
                 self.assertEqual(an["primary_root_cause"]["code"], expected_code)
                 self.assertGreater(an["primary_root_cause"]["confidence"], 0.0)
+                self.assertIsNone(an["skill_prescription"])
+                self.assertEqual(an["causal_assessment"]["level"], "candidate_cause")
                 if has_prescription:
-                    self.assertIsNotNone(an["skill_prescription"])
+                    self.assertIsNotNone(an["causal_assessment"]["capability"]["proposed_guidance"])
 
 
 class TestGate4RecomputeDivergencePath(unittest.TestCase):
@@ -1354,12 +1356,8 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         )
         self.assertGreater(prc["confidence"], legacy)
 
-    # (ii) check_localization="single" whose unique failing check contains the
-    # diverging metric name turns the counterfactual on and lifts the score
-    # above the margin-only variant. The stats dict is built by the real
-    # `build_check_stats` from a log with per-check pass markers (a fail-fast
-    # log with a lone FAIL line never sets `single_failure`).
-    def test_gate4_single_failure_counterfactual_raises_confidence_further(self) -> None:
+    # A unique named failure localizes evidence, but is not an executed intervention.
+    def test_gate4_single_failure_localizes_without_claiming_executed_counterfactual(self) -> None:
         ev = self._gate4_agent_evidence()
         ev["verifier_check_stats"] = build_check_stats(
             "PASS: results.json exists\n"
@@ -1371,13 +1369,17 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         expected, _, _ = compute_evidence_confidence(
             direct_causal_evidence=3,
             cross_source_corroboration=1,
-            counterfactual_supported=True,
+            counterfactual_supported=False,
             margin_ratio=self.FIXTURE_MARGIN_RATIO,
             check_localization="single",
         )
         self.assertEqual(prc["confidence"], expected)
         self.assertEqual(prc["evidence_strength"], "high")
         self.assertGreater(prc["confidence"], 0.75)
+
+        self.assertFalse(
+            an["causal_assessment"]["existing_verification"]["new_calculation_performed"]
+        )
 
     def test_gate4_counterfactual_stays_off_when_single_failure_is_unrelated(self) -> None:
         """A single failing check that does not name the diverging metric must
@@ -1529,7 +1531,7 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         expected4, _, _ = compute_evidence_confidence(
             direct_causal_evidence=3, cross_source_corroboration=1
         )
-        self.assertEqual(an4["primary_root_cause"]["code"], "AGENT_SCIENTIFIC_PARAMETER_SELECTION")
+        self.assertEqual(an4["primary_root_cause"]["code"], "AGENT_RESULT_VALIDATION")
         self.assertEqual(an4["primary_root_cause"]["confidence"], expected4)
         self.assertEqual(an4["primary_root_cause"]["confidence"], 0.67)
 
@@ -1600,7 +1602,16 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
         self.assertEqual(prc["category"], "agent")
         self.assertEqual(prc["code"], "AGENT_RESULT_VALIDATION")
         self.assertEqual(prc["subtype"], "result_validation")
-        self.assertGreaterEqual(prc["confidence"], 0.75)
+        expected, _, _ = compute_evidence_confidence(
+            direct_causal_evidence=2,
+            cross_source_corroboration=1,
+            check_localization="single",
+            margin_ratio=1.59869e-06 / 1.00001e-10,
+        )
+        self.assertEqual(prc["confidence"], expected)
+        self.assertFalse(
+            an["causal_assessment"]["existing_verification"]["new_calculation_performed"]
+        )
         self.assertIn("0.898982845013923", prc["summary"])
         self.assertNotIn("self-report matches", json.dumps(an["excluded_hypotheses"]))
         self.assertEqual(an["first_unrecovered_deviation"]["status"], "identified")

@@ -1,6 +1,6 @@
 # Evidence & Analysis JSON Schemas (`failure-analysis-v1`)
 
-**On this page:** [Evidence](#1-evidencejson-schema) · [Analysis](#2-analysisjson-schema) · [Harbor](#3-harbor-protocol-extensions-additive-optional-keys) · [Cross-checks](#4-additive-cross-check-deliverable--provenance-extensions)
+**On this page:** [Evidence](#1-evidencejson-schema) · [Analysis](#2-analysisjson-schema) · [Harbor](#3-harbor-protocol-extensions-additive-optional-keys) · [Cross-checks](#4-additive-cross-check-deliverable--provenance-extensions) · [Evidence review](#5-existing-evidence-review-fields)
 
 This page describes evidence, attribution, and optional extension fields. Expand examples as needed; identifiers, keys, and enum values retain their code spelling.
 
@@ -372,3 +372,17 @@ The following is a partial field illustration, not a captured run.
 - **`stale_deliverable_sync` & `recomputed_match_in_trajectory_ref`**: For non-delta divergences, triggers only when `trial_dir` has an on-disk delivered artifact matching `metric` and `reported_value` (without already matching `recomputed_value`), and an error-free execution `observation` (excluding `tool_calls` input code) contains `metric` plus a near-recomputed numeric token (>=4 significant digits within `max(1e-9, abs(recomputed_value) * 5e-4)`). It still does not prove timestamp ordering between calculation and file write and remains a lead to verify.
 - **`deliverable_diagnostics`**: Scans JSON/CSV/TSV under `artifacts/`, returning `scanned_files`, `empty_deliverables`, `nan_or_inf_values`, `results_json_files`, `results_json_keys`, and `missing_checked_keys`. Limits are 200 files, 8,000,000 bytes per file, 200,000 rows per table, and 20,000 nodes per JSON file. Missing-key checks use the union of keys in discovered `results.json` files; no such file means no missing-key entries. Unparseable or oversized content may be skipped, so empty diagnostics do not establish completeness. Related `contract_observations` also require corresponding failure text in `verify.log`.
 - **`parameter_evolution`**: Scoped per target script file (`file`), tracking recognized scientific parameter assignments (`cutoff`, `eta`, `alpha`, `tol`, `tolerance`, `ecutwfc`, `ecutrho`, `dt`, `timestep`, `kpoints`, `conv_thr`, `mixing_beta`, `nsteps`) across writes, edits, heredocs, and commands referencing that script, recording `initial`, `final`, `from_event`, and `to_event` when the first and last values differ, and filtering to `algo_anchor.target_path` on `causal_anchors.algorithm_or_param_definition`. It does not retain all intermediate changes or prove effective runtime values. Candidates associated with implicated artifacts separately receive a `+15` generation-ranking bonus; both features are localization aids.
+
+## 5. Existing-evidence review fields
+
+| Field | Meaning |
+| --- | --- |
+| `evidence.deliverable_audit` | Declarations, mappings, capture states, scan coverage, and explicit saved missing-output statements; no inference of non-production |
+| `evidence.trajectory_normalization` | Format, coverage, diagnostics, and source-pointer space |
+| `analysis.causal_assessment.level` | `not_applicable`, `observed_failure`, `candidate_cause`, or `evidence_supported_cause` |
+| `causal_assessment.existing_verification` | Saved checks/numerical records, declared coverage and limits; `new_calculation_performed` is false |
+| `causal_assessment.decision` | Specific decision, execution, effective inputs/outputs, applicable basis, terminal observation, and reasoning |
+| `causal_assessment.alternatives` | Status, rationale, and evidence for alternatives; unresolved items remain explicit |
+| `causal_assessment.capability` | This-trial suspected guidance; not independent confirmation of model incapacity |
+
+Review records bind input JSON and saved-source digests; see [existing-evidence review](evidence-review.md). These fields record evidence and reviewer judgments, not a guarantee of scientific correctness.

@@ -6,6 +6,8 @@
 
 **本页：** [核心章节与呈现方式](#核心章节与呈现方式) · [通过试次的精简视图](#通过试次的精简视图) · [批次汇总](#批次汇总job_summarymd--job_summaryjson) · [任务号报告](#任务号快捷回答---task-id-task208)
 
+报告首先标明 `causal_assessment.level`：已观察到失败、候选原因，或现有证据及结构化审查支持的本次原因。单条数值差异、未命中其他规则和启发式分数都不等于因果确认。交付物表区分已采集、采集目录未找到、采集故障与无法判定；已有验证器记录和覆盖限制单独呈现。单试次不生成已确认的能力处方，详见[已有证据审查](evidence-review.md)。
+
 失败报告按下面的顺序包含四个核心章节。标题以 `## <N>. <Title>` 顶格书写，各节正文不能为空，供人工和 `scripts/validate_analysis.py` 核验。通过试次采用后文规定的两节精简视图。
 
 评分明细放在可展开区域中，主表保留分数、评分方式和证据强度。完全重复的主因解释在偏离点和假设条目中省略，事件标识、支持证据和不同观点仍保留。JSON 数据链接按实际输出布局生成；缺失文件与运行器结果记录不应描述成已提交的计算产物。
@@ -140,7 +142,6 @@
 │   ├── task207.md                    # 主归因报告（干净 Markdown）
 │   ├── task207.en.md                 # 仅 --lang bilingual 时生成的英文版
 │   ├── summary.md                    # 根因速览卡片（与 stdout 完全一致）
-│   ├── skill-prescription.md         # 仅在发现智能体能力缺口时生成
 │   ├── data/
 │   │   ├── evidence.json
 │   │   ├── analysis.json
@@ -162,7 +163,6 @@
 | `summary.md` | 结论卡，与 stdout 逐字节一致 |
 | `data/summary.json` | 机器可读的结论卡（`cfa-verdict-card-v1`） |
 | `data/evidence.json`、`data/analysis.json`、`data/candidate-hypotheses.json` | 结构化证据 / 归因 / 候选假设 |
-| `skill-prescription.md` | 仅在发现智能体能力缺口时生成 |
 | `.cfa_manifest.json` | 任务目录内的发布清单，将清理范围限定在本任务文件内 |
 
 路径模式（`--job` + `--output`）保留旧有的无前缀文件名（`report.md`、`evidence.json` 等）。

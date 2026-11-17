@@ -48,7 +48,7 @@
         }
       ],
       "missing_to_raise": [
-        "需独立复算值或唯一失败检查以构成反事实闭环",
+        "需从已有记录补足因果关联证据；唯一失败检查本身不构成证明",
         "验证器未提供定量数值偏差与容差比值"
       ]
     }
@@ -97,7 +97,7 @@
           }
         ],
         "missing_to_raise": [
-          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "需从已有记录补足因果关联证据；唯一失败检查本身不构成证明",
           "验证器未提供定量数值偏差与容差比值"
         ]
       }
@@ -129,7 +129,7 @@
           }
         ],
         "missing_to_raise": [
-          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "需从已有记录补足因果关联证据；唯一失败检查本身不构成证明",
           "验证器未提供定量数值偏差与容差比值"
         ]
       }
@@ -164,7 +164,7 @@
           }
         ],
         "missing_to_raise": [
-          "需独立复算值或唯一失败检查以构成反事实闭环",
+          "需从已有记录补足因果关联证据；唯一失败检查本身不构成证明",
           "验证器未提供定量数值偏差与容差比值"
         ]
       }
@@ -189,26 +189,5 @@
       "action": "Software emitted `scf_convergence_not_achieved` (quantum-espresso), but agent failed to diagnose the physical/input cause and repeatedly re-executed the failing setup (`sig:repeated_fail:2:0`)."
     }
   ],
-  "skill_prescription": {
-    "recommended_skill": {
-      "name": "quantum-espresso-scf-convergence-not-achieved-diagnosis",
-      "trigger": [
-        "quantum-espresso outputs `convergence NOT achieved after 100 iterations`",
-        "Error family `scf_convergence_not_achieved` encountered during simulation"
-      ],
-      "capability_gap": [
-        "Agent failed to diagnose `scf_convergence_not_achieved` and repeated identical failing runs."
-      ],
-      "required_guidance": [
-        "Inspect `electron_maxstep` and `mixing_beta` in `&ELECTRONS`, `occupations` and `degauss` in `&SYSTEM` before rerunning.",
-        "Address candidate physical causes: insufficient_electron_maxstep, high_mixing_beta, metallic_state_without_smearing."
-      ],
-      "anti_patterns": [
-        "Do not rerun the exact same command/input after a deterministic convergence or stability error."
-      ],
-      "evidence_cases": [
-        "qe-scf:trajectory:step:2:tool:0"
-      ]
-    }
-  }
+  "skill_prescription": null
 }

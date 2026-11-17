@@ -30,6 +30,7 @@ from .gates import (
 from .gates.gate1c_runner_collection import gate1c_runner_artifact_collection as _gate1c
 from .schema import make_attribution
 from .trace import DecisionTrace
+from causal_assessment import assess_static
 
 #: Evaluation order. Gate ids are stable identifiers used by the decision trace.
 GATE_ORDER: Tuple[str, ...] = (
@@ -92,7 +93,7 @@ def run_attribution_engine(
         )
         # Appended last so the first 15 keys keep the canonical contract order.
         analysis["decision_trace"] = ctx.trace.to_dict()
-        return analysis
+        return assess_static(evidence, analysis)
 
     raise RuntimeError(
         "attribution engine exhausted every gate without a match; gate6 must "

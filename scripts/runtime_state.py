@@ -25,6 +25,7 @@ TRAJECTORY_REL_PATHS = (
     "agent/events.jsonl",
     "trajectory.json",
     "trajectory.jsonl",
+    "messages.json",
 )
 
 VERIFIER_SCRIPT_REL_PATHS = (
@@ -44,6 +45,11 @@ def resolve_trajectory_path(trial_dir: Optional[Path]) -> Optional[Path]:
         cand = trial_dir / rel
         if cand.is_file():
             return cand
+    # Only documented rollout filenames in the trial or agent directory.
+    for directory in (trial_dir / "agent", trial_dir):
+        for cand in sorted(directory.glob("rollout*.jsonl")):
+            if cand.is_file() and not cand.is_symlink():
+                return cand
     return trial_dir / "agent" / "trajectory.json"
 
 

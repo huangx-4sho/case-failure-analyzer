@@ -10,37 +10,43 @@
 
 ## 安装与调用
 
-### 安装到 Codex
+<a id="安装到-codex"></a>
 
-需要 Python 3.9+。从本仓库根目录导出技能，运行时不需要安装第三方 Python 包：
+### 安装到不同客户端
+
+运行脚本需要 Python 3.9+，无需第三方运行时包。技能主体是 `SKILL.md`、`scripts/` 和 `references/`；`agents/openai.yaml` 只提供 Codex 的显示信息，不是其他客户端的运行依赖。
+
+| 客户端 | 常见本地安装目录 | 调用方式 |
+| --- | --- | --- |
+| Codex | `~/.agents/skills/case-failure-analyzer/` | `$case-failure-analyzer` |
+| Claude Code | `~/.claude/skills/case-failure-analyzer/` 或项目 `.claude/skills/` | `/case-failure-analyzer` |
+| Cursor | `~/.cursor/skills/case-failure-analyzer/` 或项目 `.cursor/skills/` | 在 `/` 菜单选择技能，或明确说明技能名 |
+| GitHub Copilot | 项目 `.github/skills/case-failure-analyzer/`；支持的本地界面也可用 `~/.copilot/skills/` | 按界面的技能入口或自然语言请求调用 |
+| 其他能读文件、运行 Python 的 agent | 客户端可访问的任意导出目录 | 明确要求读取该目录的 `SKILL.md` 后执行流程 |
+
+安装位置按各客户端当前文档列出：[Codex](https://learn.chatgpt.com/docs/build-skills)、[Claude Code](https://code.claude.com/docs/en/skills)、[Cursor](https://cursor.com/docs/skills)、[GitHub Copilot](https://docs.github.com/en/copilot/concepts/customizations/agent-skills)。云端、远程会话和受组织策略管理的界面不一定读取本机用户目录，应使用相应客户端支持的位置。
+
+从本源码仓库根目录导出，例如：
 
 ```bash
-python3 scripts/export_skill.py --dest "$HOME/.agents/skills/case-failure-analyzer"
+python3 scripts/export_skill.py --dest "$HOME/.claude/skills/case-failure-analyzer"
 ```
 
-导出内容为 `SKILL.md`、`agents/`、`scripts/` 和 `references/`。README、测试、文档页面和本地生成报告不随技能导出。脚本会拒绝将导出目标设为本仓库内部、仓库父目录或其他受保护位置。
-
-| 使用范围 | 安装位置 | 说明 |
-| --- | --- | --- |
-| 当前用户的各个项目 | `~/.agents/skills/case-failure-analyzer/` | 上述命令使用此位置 |
-| 指定基准仓库 | `<benchmark>/.agents/skills/case-failure-analyzer/` | 将 `--dest` 改为该路径；目标基准仓库应与本源码仓库分开 |
-| 已有自定义技能目录 | 客户端实际发现的目录 | 导出到同一位置，避免同名技能的多个副本 |
-
-本仓库的 `make export-skill` 默认使用 `$CODEX_HOME/skills/case-failure-analyzer`（未设置时为 `~/.codex/skills/case-failure-analyzer`）。按上面的示例显式指定 `--dest`，可以与当前 Codex 的用户级技能发现目录保持一致。Codex 会自动发现技能变更；若列表中未出现，再重启客户端。目录和触发规则见 [Codex 官方技能说明](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)。
+将 `--dest` 换成所用客户端的目录即可。导出包含 `SKILL.md`、`agents/`、`scripts/`、`references/`，不包含测试、本地报告或文档页面。项目级安装应导出到目标基准仓库，不能导出到本源码仓库内部；导出器会检查路径边界。`make export-skill` 的历史默认值仍是 `$CODEX_HOME/skills/case-failure-analyzer`，建议显式指定目标目录。
 
 ### 在聊天中调用
 
-推荐显式写出 `$case-failure-analyzer`，并提供任务引用和可访问的基准仓库路径。技能的显示名称为 `case failure analyzer`，实际标识为 `case-failure-analyzer`。
+明确说明技能名、任务引用和可访问的基准仓库路径。下面的自然语言请求不依赖某一种 harness；原生技能前缀按上表选择。
 
 ```text
-$case-failure-analyzer 分析 task208，基准仓库是 /path/to/benchmark。
+使用 case-failure-analyzer 分析 task208，基准仓库是 /path/to/benchmark。
 请用中文回答主根因、四类原因的判断依据，并给出完整报告链接。
 ```
 
 只写任务编号时，默认选择匹配任务中修改时间最新的试次。锁定某次运行时，提供完整试次名：
 
 ```text
-$case-failure-analyzer 分析试次 "task 208__jaekojA"，
+使用 case-failure-analyzer 分析试次 "task 208__jaekojA"，
 基准仓库是 /path/to/benchmark。保留原始输入，输出中文归因报告。
 ```
 
@@ -55,7 +61,7 @@ $case-failure-analyzer 分析试次 "task 208__jaekojA"，
 智能体可根据自然语言请求匹配技能；显式点名便于确认使用哪个工作流。批量分析可以写：
 
 ```text
-$case-failure-analyzer 分析 /path/to/benchmark 下的全部任务，
+使用 case-failure-analyzer 分析 /path/to/benchmark 下的全部任务，
 生成中文报告并更新 failure-report/INDEX.md。
 ```
 
@@ -72,7 +78,7 @@ $case-failure-analyzer 分析 /path/to/benchmark 下的全部任务，
 | 技能未出现 | 安装目录是否包含 `SKILL.md`、`scripts/` 和 `references/`；客户端是否已发现更新 |
 | 同名技能重复 | 是否在用户目录和项目目录同时安装了相同技能 |
 | 找不到任务 | 提供绝对基准路径；核对 `jobs/`、任务编号或完整试次名 |
-| 能运行脚本但未按技能回答 | 在聊天中明确点名 `$case-failure-analyzer`，并要求返回归因摘要和报告链接 |
+| 能运行脚本但未按技能回答 | 在聊天中明确点名技能，或要求先读取导出目录的 `SKILL.md`，并要求返回归因摘要和报告链接 |
 | `diff` 缺少证据 | 先生成审计报告；需要完整试次证据时在审计阶段使用 `--archive-evidence` |
 
 <a id="输入参数-inputs"></a>
@@ -106,8 +112,7 @@ $case-failure-analyzer 分析 /path/to/benchmark 下的全部任务，
 使用统一 CLI（`scripts/cfa.py`）执行任务 ID 审计、只读脱敏检视与跨任务/跨试次对比，或对已知路径调用 `scripts/analyze_case.py`：
 
 ```bash
-SKILL_DIR="$HOME/.agents/skills/case-failure-analyzer"
-[ -d "$SKILL_DIR" ] || SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
+SKILL_DIR="/path/to/skills/case-failure-analyzer"
 BENCH_ROOT="/path/to/benchmark"
 python3 "$SKILL_DIR/scripts/cfa.py" audit task208 --jobs-root "$BENCH_ROOT" --lang zh
 python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --jobs-root "$BENCH_ROOT" --section artifacts
@@ -197,13 +202,15 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 
 ## Harbor 定位与结果复核
 
+缺失产物的分级核验、已有复算记录和结构化因果审查见[已有证据审查](evidence-review.md)。
+
 任务编号模式先匹配常见 Harbor 目录，再在未命中时进行有深度限制、跳过重型目录的搜索。支持平铺的 `jobs/<job>/task208__<trial>` 和按套件组织的 `<suite>/jobs/<job>/task208__<trial>`；题目定义可放在套件根目录或 `tasks/` 下。同号任务优先绑定所选试次所在套件的定义；仍有多个候选时会报错，不按目录字母序猜测。
 
 分析会读取 job/trial 的 `result.json` 与日志、`agent/trajectory.json` 或可识别的 JSONL 轨迹、`verifier/` 判定、题目说明和验证脚本，并检查 `task.toml` 声明路径在 `artifacts/` 下的采集结果。数字任务编号是本项目的快捷约定；任意名称任务可通过 `--job`、`--task` 和 `--output` 显式指定。
 
 ### 支持范围
 
-- 当前交付路径提取支持 `task.toml` 中的字符串或字符串数组。带 `source` / `service` 的对象声明尚未完整适配，不能把未提取到路径解释成已验证交付完整。
+- 交付物核验读取字符串、字符串数组和带 `source` / `service` 的声明。没有明确服务映射依据时，service 产物保留为无法判定，不会按主容器路径猜测。
 - 数值核对主要处理 JSON/CSV/TSV 和可识别日志。文件扫描、字节数和轨迹读取均有限额，不是对任意二进制科学产物的完整验证。
 - 分析读取本地已保存记录，不会自动下载 Harbor Hub 作业，也不执行独立科学复算。规则分数表示证据强度，不是根因正确的概率。
 
@@ -221,14 +228,14 @@ python3 "$SKILL_DIR/scripts/validate_analysis.py" \
   --report "$REPORT_DIR/task208.md"
 ```
 
-校验会检查字段、证据标识、归因约束和报告章节，但不能证明物理结论或因果判断必然正确。科学结论仍需在适当环境中独立复算或由领域人员复核；证据不足时保留 `unknown`。
+校验会检查字段、证据标识、归因约束和报告章节，但不能证明物理结论或因果判断必然正确。优先检查测评已保存的复算过程、字段和覆盖范围；本 skill 不追加计算。材料不足时保留候选或 `unknown`，并说明需要找回的既有记录。
 
 ## 开发与导出
 
 | 文件或目录 | 用途 | 随技能导出 |
 | --- | --- | --- |
 | `SKILL.md` | 智能体执行流程与回答要求 | 是 |
-| `agents/openai.yaml` | Codex 显示名称、简介和默认提示词 | 是 |
+| `agents/openai.yaml` | 可选的 Codex 显示名称、简介和默认提示词 | 是 |
 | `scripts/` | 分析、校验、报告生成与导出脚本 | 是 |
 | `references/` | 归因协议、字段定义与软件规则 | 是 |
 | `docs/`、`README*` | 面向读者的说明与配图 | 否 |

@@ -1211,7 +1211,7 @@ class TestRedesignedReportingAndLocalization(unittest.TestCase):
         self.assertIn("|---|---|\n| **可信度拆解**", rep_zh)
         self.assertIn("`7/10 分`", rep_zh)
         self.assertIn("✓ 直接因果实证(+2)", rep_zh)
-        self.assertIn("提分缺口：跨源互证、独立复算", rep_zh)
+        self.assertIn("证据缺口：跨源互证、独立复算", rep_zh)
 
         # 2. Report English rendering
         rep_en = render_report_markdown(evidence, analysis, lang="en")
@@ -1219,7 +1219,7 @@ class TestRedesignedReportingAndLocalization(unittest.TestCase):
         self.assertIn("| **Confidence breakdown** |", rep_en)
         self.assertIn("`7/10 pts`", rep_en)
         self.assertIn("✓ Direct causal evidence(+2)", rep_en)
-        self.assertIn("Gap to raise: 跨源互证, 独立复算", rep_en)
+        self.assertIn("Evidence gaps: 跨源互证, 独立复算", rep_en)
 
         # 3. Verdict card rendering
         card = build_verdict_card(evidence, analysis)

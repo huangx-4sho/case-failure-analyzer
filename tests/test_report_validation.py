@@ -7,7 +7,7 @@ and all 7 Golden Case archetypes from Section 13.2 of the implementation specifi
   1. Docker apt / network failure before agent starts -> `infra` (never `agent`)
   2. Prompt references non-existent pseudopotential -> `case`
   3. File exists in container (`/opt/...`) but Agent did not search -> `agent` (`AGENT_PATH_OR_DEPENDENCY_DISCOVERY`)
-  4. SCF error followed by Agent repeating identical parameters -> `agent` (`AGENT_ERROR_DIAGNOSIS`) + `skill_prescription`
+  4. SCF error followed by Agent repeating identical parameters -> `agent` (`AGENT_ERROR_DIAGNOSIS`) + unverified capability proposal
   5. Physical value valid (`D+03` / slash path) but verifier regex fails -> `verifier`
   6. MD trajectory instantaneous divergence while ensemble statistics match -> `numerical`
   7. Missing logs and irreproducible state -> `unknown`
@@ -81,7 +81,8 @@ class TestGoldenCasesAndValidation(unittest.TestCase):
             _, an, _ = self._run_case(job_dir, task_dir)
             self.assertEqual(an["primary_root_cause"]["category"], "agent")
             self.assertEqual(an["primary_root_cause"]["code"], "AGENT_ERROR_DIAGNOSIS")
-            self.assertIsNotNone(an["skill_prescription"])
+            self.assertIsNone(an["skill_prescription"])
+            self.assertIsNotNone(an["causal_assessment"]["capability"]["proposed_guidance"])
 
     def test_golden_5_verifier_regex_d_exponent_or_slash_defect(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
