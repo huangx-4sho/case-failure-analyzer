@@ -63,7 +63,11 @@ python3 "$SKILL_DIR/scripts/cfa.py" review apply \
   --output /path/to/reviewed-cases/task208
 ```
 
-输出包含 `evidence.json`、`analysis.json`、`review.json`、`report.zh.md` 和 `report.en.md`，原始输入不变。JSON 和源文件摘要检查用于发现材料变化；源文件新鲜度检查最多读取每文件 1 MiB、合计 8 MiB。引用的来源未能核验时，会限制结论升级。结构校验检查引用、绑定、审查一致性和归因规则，不能自动判断领域解释在科学上是否正确。
+输出包含 `evidence.json`、`original-analysis.json`、`analysis.json`、`review.json`、`report.zh.md` 和 `report.en.md`，原始输入不变。JSON 和源文件摘要检查用于发现材料变化；源文件新鲜度检查最多读取每文件 1 MiB、合计 8 MiB。引用的来源未能核验时，会限制结论升级。结构校验检查引用、绑定、审查一致性和归因规则，不能自动判断领域解释在科学上是否正确。
+
+审查可选填 `proposed_attribution`，包含 `category`、`subtype`、规范归因代码 `code`，以及分别撰写的 `summary_en` 和 `summary_zh`。类别必须与 `decision.kind` 一致。验证器、题目和环境问题可以使用相应类型的已保存观测作为决策锚点；Agent 原因仍须绑定执行事件。各类审查都需要引用有效输入、输出、适用要求和终止观测，并逐项检查竞争解释。
+
+输出保留原始分析快照，供校验器重建归因变更。审查不会修改原始测评结论或奖励；保留的数值置信度会明确标为**原规则证据评分**，不能解释为本次审查的可信程度。源文件检查覆盖实际引用的来源，引用轨迹事件时也检查轨迹文件；无关共享任务日志的增长不会让已结束试次的审查失效。未能核验的引用仍记为限制。
 
 ## 能力判断
 

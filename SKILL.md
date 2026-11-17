@@ -1,6 +1,6 @@
 ---
 name: case-failure-analyzer
-description: Analyze failed scientific-computing benchmark cases from job artifacts, agent trajectories, task definitions, and verifier code; attribute failures across four peer-level categories (Agent decisions, Verifier rules, Case design, or Infrastructure environment). Output concise bilingual (Chinese & English) causal audit reports with evidence file pointers.
+description: Analyze failed scientific-computing benchmark cases from job artifacts, agent trajectories, task definitions, and verifier code; attribute failures across four peer-level categories (Agent decisions, Verifier rules, Case design, or Infrastructure environment). Output concise Chinese and/or English causal audit reports as requested, with evidence file pointers.
 metadata:
   short-description: Audit scientific benchmark case failures across 4 peer categories with concise reports
 ---
@@ -29,6 +29,7 @@ python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
 python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkout> --lang zh
 ```
 
+- **Choose report language explicitly**: use `--lang bilingual` when both languages are requested, `--lang en` for English, and `--lang zh` for Chinese. The example above uses Chinese only; `report.md` is not an English filename. Verify the generated edition before linking it.
 - `--jobs-root` is optional: it falls back to `$CFA_JOBS_ROOT`, then the current directory, then its parent. Pass it explicitly when the benchmark checkout is elsewhere.
 - The resolver finds the newest trial for that task and the task definition folder (`task.toml`). `--report-dir <path>` overrides the output location; `--no-verdict-stdout` suppresses the printed answer.
 - **Output landing**: reports land in `<bench_root>/failure-report/<task_id>/`, with an auto-updated global board `<bench_root>/failure-report/INDEX.md`:
@@ -147,6 +148,16 @@ Field definitions, missing-output examples, and commands: [evidence-review.md](r
    python3 scripts/validate_analysis.py --evidence <dir>/evidence.json --analysis <dir>/analysis.json [--report <dir>/report.md]
    python3 scripts/render_report.py --evidence <dir>/evidence.json --analysis <dir>/analysis.json --output-report <dir>/report.md --lang bilingual
    ```
+
+### Contract rejection and report language
+
+When a saved verifier rejects text, JSON shape, enum values, paths, or derived labels, compare the exact failed rule with all available public contract files and the submitted representation. Read `contract_review`: `semantic_rejection`, `hidden_format_requirement`, and `definition_ambiguity` are review tags under the existing case/verifier categories, not automatic verdict changes. Do not assume a number is wrong because a structural check failed. A first rejection does not establish the outcome of later checks.
+
+Inspect `execution_scope_findings` before treating a captured file as missing: a verifier may have checked a fresh replay directory. Inspect `requirement_coverage_findings` before concluding sample coverage is absent: labels may occur in nested maps even if direct keys fail a check. Mathematical differences such as maximum force component versus maximum per-atom norm are not semantic aliases; inspect the saved applied code and the public definition.
+
+Keep runtime failures separate from output defects. A terminal harness context/output limit, a timeout, and a contract mismatch can coexist. `verifier_started` does not mean a score was produced; use `score_produced` and retain named `reward_metrics` without relabeling a submission check as scientific accuracy.
+
+Request `--lang bilingual` when the user needs both languages. In path mode, `report.md` is the selected primary edition, `report.zh.md` is Chinese, and `report.en.md` is English; a Chinese primary plus its Chinese alias is not an English report. Generated narrative follows the selected language. Preserve untranslatable source text as a clearly labeled quotation, and use explicit `summary_en` / `summary_zh` or corresponding localized fields for reviewed prose.
 
 ### Core Attribution Hard Rules
 

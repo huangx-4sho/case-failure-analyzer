@@ -34,9 +34,15 @@ from report_style import (
     evidence_strength_label,
     format_confidence_breakdown,
     localize_engine_text,
+    localized_field,
+    localized_items,
+    report_text,
+    source_quotation,
     remediation,
     render_error_matrix_table,
     render_deliverable_audit,
+    render_contract_review,
+    render_scientific_contract_review,
     resolve_evidence_item,
     resolve_key_evidence_summary,
     section_title,
@@ -283,7 +289,11 @@ def _display_actions(analysis: Dict[str, Any], lang: str) -> List[tuple[str, str
         raw = " ".join(str(r.get("action") or "").split())
         restates = bool(summary) and bool(raw) and raw[:80] == summary[:80]
         rem = remediation(prc.get("category"), prc.get("subtype"), lang) if restates else ""
-        text = rem or (raw if lang == "en" else localize_engine_text(raw, lang))
+        text = (
+            localized_field(r, "action", lang)
+            if r.get(f"action_{lang}")
+            else rem or localized_field(r, "action", lang)
+        )
         out.append((str(r.get("owner") or "General"), text))
     return out
 
@@ -308,19 +318,22 @@ def _manifestation_summary(evidence: Dict[str, Any], direct_cause: Any, lang: st
                 return f"The verifier failed {len(names)} named check(s): {shown}{tail}"
             tail = f" 等 {len(names)} 项" if more > 0 else f" {len(names)} 项"
             return f"验证器具名检查未通过{tail}：{shown}"
-    return clean_prose(localize_engine_text(direct_cause, lang), 300)
+    return clean_prose(report_text(direct_cause, lang), 300)
 
 
 def _attribution_sentence(prc: Dict[str, Any], fallback: Any, lang: str = "zh") -> str:
     """Localized one-line cause statement built from the structured finding."""
     cat = prc.get("category", "unknown")
     subtype = prc.get("subtype", "unknown")
+    explicit = prc.get(f"summary_{lang}")
+    if explicit:
+        return clean_prose(explicit, 300)
     narrative = cause_narrative(cat, subtype, lang)
     if narrative:
         if lang == "en":
             return f"{category_label(cat, 'en')} — {subtype_label(subtype, 'en')}: {narrative}."
         return f"{category_label(cat, 'zh')} · {subtype_label(subtype, 'zh')}：{narrative}。"
-    return clean_prose(localize_engine_text(fallback, lang), 300)
+    return clean_prose(report_text(fallback, lang), 300)
 
 
 def _excluded_reason(eh: Dict[str, Any], runtime: Dict[str, Any], lang: str = "zh") -> str:
@@ -331,16 +344,16 @@ def _excluded_reason(eh: Dict[str, Any], runtime: Dict[str, Any], lang: str = "z
     if cat == "infra" and agent_started:
         if lang == "en":
             return (
-                "the container built and the agent ran"
-                + (", and the verifier ran to completion" if verifier_started else "")
+                "agent startup was recorded"
+                + (", and verifier startup was recorded" if verifier_started else "")
                 + " (`runtime.agent_started == true`)"
             )
         return (
-            "容器构建与 Agent 执行均正常"
-            + ("，验证器也已完成判定" if verifier_started else "")
+            "已记录智能体启动"
+            + ("，也已记录验证器启动" if verifier_started else "")
             + "（`runtime.agent_started == true`）"
         )
-    return clean_prose(localize_engine_text(eh.get("reason"), lang), 220)
+    return clean_prose(localized_field(eh, "reason", lang), 220)
 
 
 def _render_gate_warning(
@@ -526,7 +539,7 @@ def _render_verifier_report_block(evidence: Dict[str, Any], lang: str = "bilingu
                 name = str(check.get("name") or "unnamed_check")
                 layer = str(check.get("layer") or "unspecified")
                 core = " [core]" if check.get("core") else ""
-                detail = clean_prose(check.get("detail"), 260)
+                detail = clean_prose(source_quotation(check.get("detail"), lang), 300)
                 source = check.get("source")
                 line = f"  - `[{layer}] {name}`{core}"
                 if detail:
@@ -548,7 +561,7 @@ def _render_verifier_report_block(evidence: Dict[str, Any], lang: str = "bilingu
     if low_diag:
         sep = "; " if lang == "en" else "；"
         reasons = sep.join(
-            localize_engine_text(r, lang) for r in (report.get("diagnosability_reasons") or [])
+            report_text(r, lang) for r in (report.get("diagnosability_reasons") or [])
         )
         lines.append(f"- ⚠️ **{diag_label}**: {reasons}\n")
     # `render_report_markdown` joins with "\n"; keep the section header's own
@@ -571,8 +584,8 @@ def _render_diagnostics_block(evidence: Dict[str, Any], lang: str = "bilingual")
         code = record.get("code") or "UNKNOWN_DIAGNOSTIC"
         stage = record.get("stage") or "unknown"
         severity = record.get("severity")
-        message = clean_prose(record.get("message"), 300)
-        impact = clean_prose(record.get("impact"), 200)
+        message = clean_prose(localized_field(record, "message", lang), 300)
+        impact = clean_prose(localized_field(record, "impact", lang), 200)
         source_ref = record.get("source_ref")
         if lang == "zh":
             line = (
@@ -981,7 +994,7 @@ def _render_chinese_bilingual_core(
     lines.append(render_assessment(analysis, lang))
 
     if isinstance(manifestation, dict):
-        direct_cause = manifestation.get("summary") or "N/A"
+        direct_cause = localized_field(manifestation, "summary", lang) or "N/A"
     elif isinstance(manifestation, str):
         direct_cause = manifestation
     else:
@@ -1037,6 +1050,15 @@ def _render_chinese_bilingual_core(
 
     # 2. 失败证据链
     lines.append(f"## {section_title(2, lang)}\n")
+    lines.extend(render_scientific_contract_review(evidence, lang=lang))
+    lines.extend(
+        render_contract_review(
+            evidence,
+            lang=lang,
+            reviewed=(analysis.get("causal_assessment") or {}).get("level")
+            == "evidence_supported_cause",
+        )
+    )
     lines.extend(render_deliverable_audit(evidence, lang=lang))
     lines.extend(_render_verifier_report_block(evidence, lang=lang))
 
@@ -1048,7 +1070,10 @@ def _render_chinese_bilingual_core(
         if isinstance(stored_anchors, dict) and stored_anchors
         else trace_causal_anchors(evidence)
     )
-    if anchors:
+    if anchors and not (
+        (analysis.get("causal_assessment") or {}).get("level") == "evidence_supported_cause"
+        and prc.get("category") in ("verifier", "case", "infra")
+    ):
         lines.extend(render_causal_anchors_markdown(anchors, lang=lang))
 
     fail_snippets = []
@@ -1073,7 +1098,7 @@ def _render_chinese_bilingual_core(
         fud_status = fud.get("status", "identified" if fud.get("event_ref") else "not_identified")
         fud_ref = fud.get("event_ref")
         status_txt = "已定位" if fud_status == "identified" else "未定位"
-        fud_summary = localize_engine_text(fud.get("summary"), "zh")
+        fud_summary = localized_field(fud, "summary", "zh")
         if not fud_summary:
             fud_summary = cause_narrative(prc.get("category"), prc.get("subtype"), "zh") or ""
         fud_detail = (
@@ -1130,7 +1155,7 @@ def _render_chinese_bilingual_core(
         cat_h = ch.get("category", "")
         subtype_h = ch.get("subtype", "")
         score = float(ch.get("confidence", 0.0))
-        claim = ch.get("claim", "")
+        claim = localized_field(ch, "claim", "zh")
         ev_text = format_evidence_list_text(
             ch.get("evidence_for"),
             ch.get("evidence_against"),
@@ -1141,9 +1166,15 @@ def _render_chinese_bilingual_core(
         claim_detail = (
             "" if claim_text.strip() == attribution.strip() else ": " + clean_prose(claim_text, 220)
         )
+        reviewed = (
+            hid == "H_REVIEW"
+            and (analysis.get("causal_assessment") or {}).get("level") == "evidence_supported_cause"
+        )
+        if reviewed:
+            role = "审查归因"
+        qualifier = "" if reviewed else f"，置信度 `{score:.2f}`"
         lines.append(
-            f"- **{role} `{hid}` (`{cat_h}` · {subtype_label(subtype_h, 'zh')} / `{subtype_h}`，"
-            f"置信度 `{score:.2f}`)**{claim_detail}{ev_text}"
+            f"- **{role} `{hid}` (`{cat_h}` · {subtype_label(subtype_h, 'zh')} / `{subtype_h}`{qualifier})**{claim_detail}{ev_text}"
         )
 
     for eh in ex_hyps:
@@ -1159,9 +1190,9 @@ def _render_chinese_bilingual_core(
 
     if not comp_hyps and not ex_hyps:
         lines.append(
-            "- 该试次已通过验证，无竞争性失败假设 / Case passed; no competing hypotheses."
+            "- 未记录竞争性失败假设 / No competing failure hypotheses were recorded."
             if include_en_labels
-            else "- 该试次已通过验证，无竞争性失败假设。"
+            else "- 未记录竞争性失败假设。"
         )
 
     cfs = analysis.get("contributing_factors") or []
@@ -1169,7 +1200,7 @@ def _render_chinese_bilingual_core(
         cf_cat = cf.get("category")
         cf_code = cf.get("code")
         cf_score = float(cf.get("confidence", 0.0))
-        cf_summary = clean_prose(localize_engine_text(cf.get("summary"), "zh"), 220)
+        cf_summary = clean_prose(localized_field(cf, "summary", "zh"), 220)
         if include_en_labels:
             lines.append(
                 f"- **伴随因素 (`{cf_cat}` / `{cf_code}`，置信度 `{cf_score:.2f}`)**: {cf_summary}"
@@ -1199,23 +1230,23 @@ def _render_chinese_bilingual_core(
             lines.append(f"- **[{owner}]**: {clean_prose(text, 240)}")
     else:
         lines.append(
-            "- 无需改进（该试次已通过验证） / No action required (case passed)."
+            "- 未记录改进建议 / No recommended action was recorded."
             if include_en_labels
-            else "- 无需改进（该试次已通过验证）。"
+            else "- 未记录改进建议。"
         )
 
     sp = analysis.get("skill_prescription")
     if sp and isinstance(sp, dict):
         rec_skill = sp.get("recommended_skill") or sp
         name = rec_skill.get("name")
-        raw_gaps = rec_skill.get("capability_gap") or []
+        raw_gaps = localized_items(rec_skill, "capability_gap", lang)
         if include_en_labels:
             gap_str = ", ".join(str(g) for g in raw_gaps)
             lines.append(
                 f"- **技能处方 (Skill prescription)**: 建议新增/更新 `{name}` (Capability gap: {gap_str})"
             )
         else:
-            gap_str = "；".join(localize_engine_text(str(g), "zh") for g in raw_gaps)
+            gap_str = "；".join(raw_gaps)
             lines.append(f"- **技能处方**: 建议新增/更新 `{name}`（能力缺口：{gap_str}）")
 
     missing = evidence.get("missing_artifacts") or []
@@ -1283,7 +1314,7 @@ def _render_english_edition(
     lines.append(f"## {section_title(1, 'en')}\n")
     lines.append(render_assessment(analysis, "en"))
     if isinstance(manifestation, dict):
-        direct_cause = manifestation.get("summary") or "N/A"
+        direct_cause = localized_field(manifestation, "summary", "en") or "N/A"
     elif isinstance(manifestation, str):
         direct_cause = manifestation
     else:
@@ -1317,6 +1348,15 @@ def _render_english_edition(
 
     # 2. Failure Evidence Chain
     lines.append(f"## {section_title(2, 'en')}\n")
+    lines.extend(render_scientific_contract_review(evidence, lang="en"))
+    lines.extend(
+        render_contract_review(
+            evidence,
+            lang="en",
+            reviewed=(analysis.get("causal_assessment") or {}).get("level")
+            == "evidence_supported_cause",
+        )
+    )
     lines.extend(render_deliverable_audit(evidence, lang="en"))
     lines.extend(_render_verifier_report_block(evidence, lang="en"))
 
@@ -1328,7 +1368,10 @@ def _render_english_edition(
         if isinstance(stored_anchors, dict) and stored_anchors
         else trace_causal_anchors(evidence)
     )
-    if anchors:
+    if anchors and not (
+        (analysis.get("causal_assessment") or {}).get("level") == "evidence_supported_cause"
+        and prc.get("category") in ("verifier", "case", "infra")
+    ):
         lines.extend(render_causal_anchors_markdown(anchors, lang="en"))
 
     fail_snippets = []
@@ -1338,7 +1381,7 @@ def _render_english_edition(
             if snippet:
                 fail_snippets.append(snippet)
     if fail_snippets:
-        lines.append("- **Verifier message**:")
+        lines.append("- **Verifier message (source quotation, original language)**:")
         lines.append("```text")
         for snip in dict.fromkeys(fail_snippets[:2]):
             lines.append(snip)
@@ -1349,7 +1392,7 @@ def _render_english_edition(
         fud_status = fud.get("status", "identified" if fud.get("event_ref") else "not_identified")
         fud_ref = fud.get("event_ref")
         status_txt = "identified" if fud_status == "identified" else "not identified"
-        fud_summary = str(fud.get("summary") or "")
+        fud_summary = localized_field(fud, "summary", "en")
         fud_detail = (
             ""
             if fud_summary.strip() == attribution_line.strip()
@@ -1387,7 +1430,7 @@ def _render_english_edition(
         cat_h = ch.get("category", "")
         subtype_h = ch.get("subtype", "")
         score = float(ch.get("confidence", 0.0))
-        claim = ch.get("claim", "")
+        claim = localized_field(ch, "claim", "en")
         ev_text = format_evidence_list_text(
             ch.get("evidence_for"), ch.get("evidence_against"), lang="en"
         )
@@ -1399,9 +1442,15 @@ def _render_english_edition(
         claim_detail = (
             "" if str(claim).strip() == attribution_line.strip() else ": " + clean_prose(claim, 220)
         )
+        reviewed = (
+            hid == "H_REVIEW"
+            and (analysis.get("causal_assessment") or {}).get("level") == "evidence_supported_cause"
+        )
+        if reviewed:
+            role = "Reviewed attribution"
+        qualifier = "" if reviewed else f", confidence `{score:.2f}`"
         lines.append(
-            f"- **{role} `{hid}` (`{cat_h}` / `{subtype_h}`, confidence `{score:.2f}`)**"
-            f"{claim_detail}{ev_text}"
+            f"- **{role} `{hid}` (`{cat_h}` / `{subtype_h}`{qualifier})**{claim_detail}{ev_text}"
         )
 
     for eh in ex_hyps:
@@ -1410,13 +1459,13 @@ def _render_english_edition(
             f"{_excluded_reason(eh, runtime, 'en')}"
         )
     if not comp_hyps and not ex_hyps:
-        lines.append("- Case passed; no competing failure hypotheses.")
+        lines.append("- No competing failure hypotheses were recorded.")
 
     for cf in analysis.get("contributing_factors") or []:
         cf_cat = cf.get("category")
         cf_code = cf.get("code")
         cf_score = float(cf.get("confidence", 0.0))
-        cf_summary = clean_prose(localize_engine_text(cf.get("summary"), "en"), 220)
+        cf_summary = clean_prose(localized_field(cf, "summary", "en"), 220)
         lines.append(
             f"- **Contributing `{cf_cat}` / `{cf_code}` (confidence `{cf_score:.2f}`)**: {cf_summary}"
         )
@@ -1435,13 +1484,13 @@ def _render_english_edition(
         for owner, text in _display_actions(analysis, "en"):
             lines.append(f"- **[{owner}]**: {clean_prose(text, 240)}")
     else:
-        lines.append("- No action required (case passed).")
+        lines.append("- No recommended action was recorded.")
 
     sp = analysis.get("skill_prescription")
     if sp and isinstance(sp, dict):
         rec_skill = sp.get("recommended_skill") or sp
         name = rec_skill.get("name")
-        gap_str = ", ".join(rec_skill.get("capability_gap") or [])
+        gap_str = ", ".join(localized_items(rec_skill, "capability_gap", "en"))
         lines.append(
             f"- **Skill prescription**: add or update `{name}` (capability gap: {gap_str})"
         )
@@ -1605,7 +1654,7 @@ def _render_passed_edition(
                 cov_parts.append(f"覆盖率 `{cov_val}`" if lang != "en" else f"coverage `{cov_val}`")
             if limits:
                 if isinstance(limits, list):
-                    lim_first = clean_prose(limits[0], 110) if limits else ""
+                    lim_first = clean_prose(report_text(limits[0], lang), 160) if limits else ""
                     lim_extra = (
                         f" 等 {len(limits)} 条"
                         if len(limits) > 1 and lang != "en"
@@ -1613,7 +1662,7 @@ def _render_passed_edition(
                     )
                     lim_str = f"{lim_first}{lim_extra}"
                 else:
-                    lim_str = clean_prose(limits, 120)
+                    lim_str = clean_prose(report_text(limits, lang), 180)
                 cov_parts.append(f"验证说明：{lim_str}" if lang != "en" else f"scope: {lim_str}")
             if lang == "en":
                 lines.append(f"- **Check coverage**: {', '.join(cov_parts)}\n")
@@ -1759,12 +1808,36 @@ def render_report_markdown(
         rendered = _render_chinese_bilingual_core(
             evidence, analysis, include_en_labels=lang != "zh", output_format=output_format
         )
+    metrics = (evidence.get("runtime") or {}).get("reward_metrics") or {}
+    if metrics and set(metrics) != {"reward"}:
+        label = "Score metrics (original names)" if lang == "en" else "评分指标（保留原名）"
+        detail = ", ".join(f"`{key}={value}`" for key, value in metrics.items())
+        marker = "## " + section_title(1, lang, passed=analysis.get("verdict") == "passed")
+        rendered = rendered.replace(marker, marker + "\n\n> **" + label + "**: " + detail, 1)
+    if (analysis.get("primary_root_cause") or {}).get(
+        "confidence_kind"
+    ) == "original_rule_evidence_score":
+        rendered = (
+            rendered.replace("| **置信度** |", "| **原规则评分** |")
+            .replace("| **Confidence** |", "| **Original rule score** |")
+            .replace("| **置信度 (Confidence)** |", "| **原规则评分 (Original rule score)** |")
+        )
     assessment = analysis.get("causal_assessment") or {}
     if assessment and analysis.get("verdict") != "passed":
-        rendered = rendered.replace("**主因**", "**规则候选**").replace(
-            "**Primary cause**", "**Rule candidate**"
+        supported = assessment.get("level") == "evidence_supported_cause"
+        rendered = rendered.replace(
+            "**主因**", "**审查归因**" if supported else "**规则候选**"
+        ).replace(
+            "**Primary cause**", "**Reviewed attribution**" if supported else "**Rule candidate**"
         )
-        rendered = rendered.replace("**主因 (Primary cause)**", "**规则候选 (Rule candidate)**")
+        rendered = rendered.replace(
+            "**主因 (Primary cause)**",
+            "**审查归因 (Reviewed attribution)**" if supported else "**规则候选 (Rule candidate)**",
+        )
+        if supported:
+            rendered = rendered.replace(
+                "**Contract review required**", "**Original contract observation**"
+            ).replace("**需复核评分契约**", "**原评分契约观测**")
         rendered = rendered.replace("**已排除 ", "**规则排除候选 ").replace(
             "**Excluded ", "**Rule exclusion candidate "
         )
@@ -1808,11 +1881,13 @@ def render_skill_prescription_markdown(
     zh_section = "\n".join(
         [
             f"- **建议技能名称**: `{name}`",
-            "- **触发条件 (`trigger`)**: " + "；".join(rec.get("trigger") or []),
-            "- **能力缺口 (`capability_gap`)**: " + "；".join(rec.get("capability_gap") or []),
+            "- **触发条件 (`trigger`)**: " + "；".join(localized_items(rec, "trigger", "zh")),
+            "- **能力缺口 (`capability_gap`)**: "
+            + "；".join(localized_items(rec, "capability_gap", "zh")),
             "- **核心执行指引 (`required_guidance`)**: "
-            + "；".join(rec.get("required_guidance") or []),
-            "- **禁止的反模式 (`anti_patterns`)**: " + "；".join(rec.get("anti_patterns") or []),
+            + "；".join(localized_items(rec, "required_guidance", "zh")),
+            "- **禁止的反模式 (`anti_patterns`)**: "
+            + "；".join(localized_items(rec, "anti_patterns", "zh")),
             "",
         ]
     )
@@ -1820,25 +1895,26 @@ def render_skill_prescription_markdown(
     en_section = "\n".join(
         [
             f"- **Recommended Skill Name**: `{name}`",
-            "- **Trigger Conditions (`trigger`)**: " + "; ".join(rec.get("trigger") or []),
+            "- **Trigger Conditions (`trigger`)**: "
+            + "; ".join(localized_items(rec, "trigger", "en")),
             "- **Capability Gap (`capability_gap`)**: "
-            + "; ".join(rec.get("capability_gap") or []),
+            + "; ".join(localized_items(rec, "capability_gap", "en")),
             "- **Required Guidance (`required_guidance`)**: "
-            + "; ".join(rec.get("required_guidance") or []),
+            + "; ".join(localized_items(rec, "required_guidance", "en")),
             "- **Anti-Patterns to Avoid (`anti_patterns`)**: "
-            + "; ".join(rec.get("anti_patterns") or []),
+            + "; ".join(localized_items(rec, "anti_patterns", "en")),
             "",
         ]
     )
 
     if lang == "zh":
-        return f"# 领域技能处方 (`Skill Prescription`): `{name}`\n\n## 1. 结构化定义 (YAML)\n\n{yaml_block}\n## 2. 中文执行指引\n\n{zh_section}"
+        return f"# 领域技能处方: `{name}`\n\n## 1. 结构化原文定义（YAML，保留原语言）\n\n{yaml_block}\n## 2. 中文执行指引\n\n{zh_section}"
     if lang == "en":
-        return f"# Domain Skill Prescription: `{name}`\n\n## 1. Structured Specification (YAML)\n\n{yaml_block}\n## 2. Execution Guidance\n\n{en_section}"
+        return f"# Domain Skill Prescription: `{name}`\n\n## 1. Source Specification (YAML, original language)\n\n{yaml_block}\n## 2. Execution Guidance\n\n{en_section}"
 
     return (
         f"# Skill Prescription / 领域技能处方 (中英双版): `{name}`\n\n"
-        f"## 1. Structured Specification (YAML)\n\n{yaml_block}\n"
+        f"## 1. Source Specification (YAML, original language)\n\n{yaml_block}\n"
         f"## 2. 中文说明 (Chinese Guidance)\n\n{zh_section}\n"
         f"## 3. English Guidance\n\n{en_section}"
     )

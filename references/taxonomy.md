@@ -111,12 +111,15 @@ The failure belongs to the underlying runtime platform or execution infrastructu
 | `INFRA_DISK`<br>`disk` | **Disk exhaustion.** The container exhausts its storage allocation (`No space left on device`). |
 | `INFRA_AGENT_TIMEOUT`<br>`agent_timeout` | **Agent timeout.** Agent reasoning and tool interactions exceed the total time budget. |
 | `INFRA_RUNNER_LIFECYCLE`<br>`runner_lifecycle` | **Runner lifecycle.** Benchmark scheduler deadlock, forced cancellation, or runner-host crash. |
+| `INFRA_VERIFIER_INTERPRETER_MISSING`<br>`verifier_interpreter_missing` | **Missing scoring interpreter.** The scoring entrypoint could not launch its Python interpreter and produced no valid score. |
+| `INFRA_AGENT_AUTOCOMPACT_THRASHING`<br>`autocompact_thrashing` | **Terminal compaction loop.** The harness identifies this as the terminal cause; earlier recovered API notices are not substituted for it. |
+| `INFRA_AGENT_OUTPUT_TOKEN_LIMIT`<br>`output_token_limit` | **Terminal output limit.** The recorded exit identifies an output-token limit; scientific output defects are assessed separately. |
 
 <a id="24-评测验证与规则判定缺陷-verifier"></a>
 
 ### 2.4 Verifier rules and scoring (`verifier`)
 
-The verification scripts (`verify.py`, `test.sh`) or scoring rules incorrectly reject calculations or artifacts that satisfy the physical or chemical objective.
+The verification scripts (`verify.py`, `test.sh`), scoring rules, or scoring dependencies are defective. A bound verifier fault does not by itself establish that the submitted scientific result is correct or that the whole task should pass.
 
 | Code and subtype | Meaning and examples |
 | --- | --- |
@@ -125,6 +128,8 @@ The verification scripts (`verify.py`, `test.sh`) or scoring rules incorrectly r
 | `VERIFIER_REGEX_OR_PARSER_DEFECT`<br>`regex_or_parser_defect` | **Text parsing and regular expressions.** The parser fails to filter repeated LAMMPS run 0 headers or to handle scientific notation such as Fortran `D+03` or multiline output. |
 | `VERIFIER_HIDDEN_CONTRACT`<br>`hidden_contract` | **Undisclosed private contract.** The verifier checks intermediate files, column order, or private fields never declared in the task. |
 | `VERIFIER_RECOMPUTE_DEFECT`<br>`recompute_defect` | **Verifier recomputation crash.** Independent recomputation crashes because of missing temporary-directory configuration, unescaped paths, or missing environment dependencies. |
+| `VERIFIER_TRUSTED_ASSET_HASH_MISMATCH`<br>`trusted_asset_hash_mismatch` | **Trusted scoring asset hash mismatch.** Bound to an actual scoring rejection; do not resolve it by bypassing validation. |
+| `VERIFIER_REFERENCE_LFS_POINTER`<br>`reference_lfs_pointer` | **Reference file is an LFS pointer.** Saved read failures and the reference header establish the missing payload. |
 
 <a id="25-辅助类别未知与证据缺失-unknown"></a>
 
@@ -150,3 +155,9 @@ Harbor collects the declared deliverables (`task.toml` → `artifacts`) with `do
 **Causal priority inside the pre-verification window:** a causal `INFRA_AGENT_TIMEOUT` outranks a downstream `INFRA_ARTIFACT_COLLECTION_CRASH`, because the agent was stopped before it could write the paths. The collection crash is then recorded as a contributing factor. When the verifier did start (e.g. a timeout whose trial still scored `reward=0`), the verdict stays `failed` with `detection_stage: verifier_execution`, but the primary root cause remains `infra`.
 
 **Three-state verdicts:** `passed` and scored `failed` are *scored* states; trials that died in this window are *not scored* (`reward=None`, `verifier_started == false`). A batch board must report both an overall pass rate (`passed / total`) and a scored pass rate (`passed / (passed + scored_failed)`); not-scored trials must not be counted as agent failures.
+
+## 4. Representation and contract review tags
+
+`Verifier / Case contract mismatch` is a review group spanning case/verifier, not a fifth peer cause. Its tags are `semantic_rejection`, `hidden_format_requirement`, and `definition_ambiguity`. Static findings must bind the actual rejected rule, submitted representation, and public material; they remain review targets, not automatic verifier blame or a pass override.
+
+Mathematically different quantities (such as a maximum force component versus a maximum per-atom vector norm), unfinished public requirements, and replay scripts that omit outputs need separate analysis. They are not all overly strict formatting.

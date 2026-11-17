@@ -61,7 +61,11 @@ python3 "$SKILL_DIR/scripts/cfa.py" review apply \
   --output /path/to/reviewed-cases/task208
 ```
 
-The bundle contains `evidence.json`, `analysis.json`, `review.json`, `report.zh.md`, and `report.en.md`. Inputs remain unchanged. JSON/source digest checks detect stale material; source freshness reads are bounded to 1 MiB per file and 8 MiB overall. Unchecked cited sources limit promotion. Structural validation checks references, bindings, review consistency, and attribution rules; it cannot decide whether a domain interpretation is scientifically sound.
+The bundle contains `evidence.json`, `original-analysis.json`, `analysis.json`, `review.json`, `report.zh.md`, and `report.en.md`. Inputs remain unchanged. JSON/source digest checks detect stale material; source freshness reads are bounded to 1 MiB per file and 8 MiB overall. Unchecked cited sources limit promotion. Structural validation checks references, bindings, review consistency, and attribution rules; it cannot decide whether a domain interpretation is scientifically sound.
+
+A review may optionally provide `proposed_attribution` with `category`, `subtype`, a canonical `code`, and authored `summary_en` / `summary_zh`. The category must agree with `decision.kind`. Verifier, case, and infrastructure reviews can anchor the decision to a typed saved verifier, contract, or runtime observation; agent-cause reviews still require an execution event. All reviews require cited effective inputs, outputs, applicable requirements, terminal observations, and examination of competing explanations.
+
+The original analysis snapshot is retained so validation can reconstruct the change. A reviewed attribution does not alter the benchmark verdict or reward. Any retained numerical confidence is explicitly the **original rule evidence score**, not confidence in the review. Freshness checks cover the cited sources (and the trajectory source when used); growth of an unrelated shared job log does not invalidate a completed trial's review. Unchecked cited sources remain a limitation.
 
 ## Capability scope
 

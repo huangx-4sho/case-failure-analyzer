@@ -4,7 +4,7 @@
 
 <a id="证据与归因-json-模式规范-failure-analysis-v1"></a>
 
-**本页：** [证据字段](#1-evidencejson-客观证据模式) · [归因字段](#2-analysisjson-因果归因模式) · [Harbor 扩展](#3-harbor-协议扩展) · [核对与溯源](#4-数值核对与溯源扩展) · [证据审查](#5-已有证据审查字段)
+**本页：** [证据字段](#1-evidencejson-客观证据模式) · [归因字段](#2-analysisjson-因果归因模式) · [Harbor 扩展](#3-harbor-协议扩展) · [核对与溯源](#4-数值核对与溯源扩展) · [证据审查](#5-已有证据审查字段) · [评分契约](#6-评分契约与运行阶段复核)
 
 本文说明证据、归因及扩展字段。示例可按需展开；标识、字段名和枚举值保持代码中的写法。
 
@@ -42,7 +42,7 @@
     "started_at": "ISO-8601 或 null",
     "finished_at": "ISO-8601 或 null",
     "execution_status": "completed|errored|not_started|unknown",
-    "verification_status": "passed|failed|not_run",
+    "verification_status": "passed|failed|errored|not_run",
     "verdict": "passed|failed|errored|unknown",
     "exit_status": "completed|failed|errored|unknown",
     "reward": 0.0,
@@ -348,7 +348,7 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
         "kind": "unit_conversion",
         "factor": 0.036749,
         "label": "Hartree/eV (÷27.211386)",
-        "unit_token_corroborated": true
+        "unit_token_corroborated": false
       },
       "stale_deliverable_sync": true,
       "recomputed_match_in_trajectory_ref": "trajectory:step:18"
@@ -394,3 +394,16 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 | `causal_assessment.capability` | 当前试次范围内的疑似指导，不能单独确认模型能力不足 |
 
 审查记录绑定输入 JSON 和保存来源摘要，详见[已有证据审查](evidence-review.md)。这些字段记录证据和审阅判断，不保证科学解释绝对正确。
+
+## 6. 评分契约与运行阶段复核
+
+| 字段 | 用途 |
+| --- | --- |
+| `runtime.score_produced` | 是否实际产出可识别分数；验证器启动不等于评分完成 |
+| `runtime.reward_metrics` | 原始命名的数值指标，如 `submission_checks`；不改称科学准确率 |
+| `contract_review.review_items` | `semantic_rejection`、`hidden_format_requirement`、`definition_ambiguity`，保留公开要求、实际提交、失败规则和覆盖限制 |
+| `contract_review.execution_scope_findings` | 原始采集产物与隔离重放产物的检查范围差异 |
+| `contract_review.requirement_coverage_findings` | 直接标签键、嵌套标签出现位置与原文中的核验状态，避免只按表层结构推断覆盖缺失 |
+| `scientific_contract_review.findings` | 由已保存源码、公开要求、实际执行和失败检查关联的科学定义差异；保持候选状态 |
+
+评分器启动后异常且未产出分数时，`verification_status` 为 `errored`。有运行异常但仍产出零分的试次保留评分失败和运行异常两个事实，不重复计数。契约复核项不会将原始失败改判为通过；第一个拒绝条件之后的检查可能没有执行。

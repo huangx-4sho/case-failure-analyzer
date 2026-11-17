@@ -24,7 +24,10 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from report_style import (
-    localize_engine_text,
+    localized_field,
+    report_text,
+    source_quotation,
+    format_confidence_breakdown,
     remediation,
     render_error_matrix_table,
     subtype_label,
@@ -159,31 +162,27 @@ def _reason_for(
     excluded = analysis.get("excluded_hypotheses") or []
 
     if status == "primary":
-        return _text(localize_engine_text(prc.get("summary"), lang))
+        return _text(localized_field(prc, "summary", lang))
     if status == "contributing":
         item = next(c for c in contributing if c.get("category") == category)
         prefix = "Contributing: " if en else "伴随因素："
-        detail = localize_engine_text(item.get("summary") or item.get("code"), lang)
+        detail = localized_field(item, "summary", lang) or str(item.get("code") or "")
         return _text(f"{prefix}{detail}")
     if status == "excluded":
         item = next(e for e in excluded if e.get("category") == category)
         runtime = evidence.get("runtime") or {}
         if category == "infra" and runtime.get("agent_started"):
             detail = (
-                "Container built cleanly and the agent ran"
-                + (
-                    ", and the verifier ran to completion"
-                    if runtime.get("verifier_started")
-                    else ""
-                )
+                "Agent startup was recorded"
+                + (", and verifier startup was recorded" if runtime.get("verifier_started") else "")
                 + " (`runtime.agent_started == true`)"
                 if en
-                else "容器构建与 Agent 执行均正常"
-                + ("，验证器也已完成判定" if runtime.get("verifier_started") else "")
+                else "已记录智能体启动"
+                + ("，也已记录验证器启动" if runtime.get("verifier_started") else "")
                 + "（`runtime.agent_started == true`）"
             )
         else:
-            detail = localize_engine_text(item.get("reason"), lang)
+            detail = localized_field(item, "reason", lang)
         return _text(detail)
 
     # Evidence-grounded fallbacks: never claim a cause without an observation.
@@ -276,8 +275,18 @@ def _recommended_actions(analysis: Dict[str, Any], prc: Dict[str, Any]) -> List[
         actions.append(
             {
                 "owner": a.get("owner"),
-                "action": _text(rem_en or raw, 260),
-                "action_zh": _text(rem_zh or localize_engine_text(raw, "zh"), 260),
+                "action": _text(
+                    localized_field(a, "action", "en")
+                    if a.get("action_en")
+                    else rem_en or localized_field(a, "action", "en"),
+                    260,
+                ),
+                "action_zh": _text(
+                    localized_field(a, "action", "zh")
+                    if a.get("action_zh")
+                    else rem_zh or localized_field(a, "action", "zh"),
+                    260,
+                ),
             }
         )
     return actions
@@ -314,11 +323,9 @@ def build_verdict_card(
             ),
             None,
         )
-        reviewed_reason = None
         if reviewed and cat != primary_cat:
             if reviewed.get("status") in ("ruled_out", "not_applicable"):
                 status = "excluded"
-                reviewed_reason = reviewed.get("reason")
             elif reviewed.get("status") == "unresolved":
                 status = "unresolved"
         categories.append(
@@ -329,12 +336,15 @@ def build_verdict_card(
                 "status": status,
                 "status_label": STATUS_LABELS[status][0],
                 "status_label_en": STATUS_LABELS[status][1],
-                "reason": reviewed_reason or "规则未选为主因，尚需独立核查替代解释"
+                "reason": localized_field(reviewed or {}, "reason", "zh")
+                or "规则未选为主因，尚需独立核查替代解释"
                 if status == "unresolved"
-                else reviewed_reason or _reason_for(cat, status, analysis, evidence, lang="zh"),
+                else localized_field(reviewed or {}, "reason", "zh")
+                or _reason_for(cat, status, analysis, evidence, lang="zh"),
                 "reason_en": "Not selected by rules; independent review remains"
                 if status == "unresolved"
-                else reviewed_reason or _reason_for(cat, status, analysis, evidence, lang="en"),
+                else localized_field(reviewed or {}, "reason", "en")
+                or _reason_for(cat, status, analysis, evidence, lang="en"),
             }
         )
 
@@ -346,8 +356,9 @@ def build_verdict_card(
             "subtype_label_en": _subtype_label_en(str(prc.get("subtype") or "")),
             "code": prc.get("code"),
             "confidence": prc.get("confidence"),
-            "summary": _text(prc.get("summary"), 400),
-            "summary_zh": _text(localize_engine_text(prc.get("summary"), "zh"), 400),
+            "confidence_kind": prc.get("confidence_kind"),
+            "summary": _text(localized_field(prc, "summary", "en"), 400),
+            "summary_zh": _text(localized_field(prc, "summary", "zh"), 400),
             "role": "primary",
         }
     ]
@@ -360,8 +371,8 @@ def build_verdict_card(
                 "subtype_label_en": _subtype_label_en(str(c.get("subtype") or "")),
                 "code": c.get("code"),
                 "confidence": c.get("confidence"),
-                "summary": _text(c.get("summary"), 400),
-                "summary_zh": _text(localize_engine_text(c.get("summary"), "zh"), 400),
+                "summary": _text(localized_field(c, "summary", "en"), 400),
+                "summary_zh": _text(localized_field(c, "summary", "zh"), 400),
                 "role": "contributing",
             }
         )
@@ -375,8 +386,8 @@ def build_verdict_card(
                     "subtype_label_en": _subtype_label_en(str(h.get("subtype") or "")),
                     "code": None,
                     "confidence": h.get("confidence"),
-                    "summary": _text(h.get("claim"), 400),
-                    "summary_zh": _text(localize_engine_text(h.get("claim"), "zh"), 400),
+                    "summary": _text(localized_field(h, "claim", "en"), 400),
+                    "summary_zh": _text(localized_field(h, "claim", "zh"), 400),
                     "role": "candidate",
                 }
             )
@@ -394,22 +405,33 @@ def build_verdict_card(
         else trace_causal_anchors(evidence)
     )
 
+    runtime = evidence.get("runtime") or {}
+    reward = runtime.get("reward")
+    scored = (
+        bool(runtime["score_produced"])
+        if "score_produced" in runtime
+        else (isinstance(reward, (int, float)) and not isinstance(reward, bool))
+        or analysis.get("verdict") in ("passed", "failed")
+    )
     return {
         "schema_version": "cfa-verdict-card-v1",
         "task_id": task_id or evidence.get("case_id"),
         "trial_name": analysis.get("trial_name") or evidence.get("trial_name"),
         "verdict": analysis.get("verdict"),
-        "scored": bool((evidence.get("runtime") or {}).get("verifier_started")),
+        "scored": scored,
         "primary_root_cause": {
             "category": primary_cat,
             "category_label": _category_label(primary_cat),
             "subtype": prc.get("subtype"),
             "code": prc.get("code"),
             "confidence": prc.get("confidence"),
-            "summary": _text(prc.get("summary"), 400),
-            "summary_zh": _text(localize_engine_text(prc.get("summary"), "zh"), 400),
+            "confidence_kind": prc.get("confidence_kind"),
+            "summary": _text(localized_field(prc, "summary", "en"), 400),
+            "summary_zh": _text(localized_field(prc, "summary", "zh"), 400),
         },
         "failure_reason": _failure_reason(evidence, analysis),
+        "failure_reason_en": source_quotation(_failure_reason(evidence, analysis), "en"),
+        "failure_reason_zh": source_quotation(_failure_reason(evidence, analysis), "zh"),
         "four_categories": categories,
         "subcategories": subcategories,
         "causal_anchors": anchors,
@@ -500,33 +522,19 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
         lead = lead.replace("**主根因**", "**规则候选**").replace(
             "**Primary**", "**Rule candidate**"
         )
+    if prc.get("confidence_kind") == "original_rule_evidence_score":
+        lead = lead.replace("置信度", "原规则评分").replace("confidence", "original rule score")
     lines: List[str] = [title, "", lead, "", render_assessment(card, lang)]
-    cb = card.get("confidence_breakdown")
-    if cb and isinstance(cb, dict) and cb.get("factors"):
-        badge = "🟢" if float(conf or 0) >= 0.65 else ("🟡" if float(conf or 0) >= 0.40 else "🔴")
-        points = cb.get("points")
-        denom = cb.get("denominator", 10)
-        score_label = f"`{points}/{denom} 分`" if not is_en else f"`{points}/{denom} pts`"
-        factor_parts = []
-        for f in cb.get("factors") or []:
-            delta = f.get("delta", 0)
-            lbl = f.get("label_en") if is_en else (f.get("label_zh") or f.get("key"))
-            sign = f"+{delta}" if delta > 0 else str(delta)
-            icon = "✓" if delta > 0 else ("⚠️" if delta < 0 else "—")
-            factor_parts.append(f"{icon} {lbl}({sign})")
-        parts_str = " · ".join(factor_parts)
-        cb_line = (
-            f"{badge} {score_label} · {parts_str}" if factor_parts else f"{badge} {score_label}"
-        )
-        missing = cb.get("missing_to_raise") or []
-        if missing and float(conf or 0) < 0.75:
-            gap_label = "证据缺口：" if not is_en else "Evidence gaps: "
-            gap_items = "、".join(missing) if not is_en else ", ".join(missing)
-            cb_line += f"（{gap_label}{gap_items}）" if not is_en else f" ({gap_label}{gap_items})"
-        cb_hdr = "**Confidence breakdown**" if is_en else "**可信度拆解**"
-        lines.append(f"{cb_hdr}: {cb_line}")
+    cb_row = format_confidence_breakdown(card.get("confidence_breakdown"), float(conf or 0), lang)
+    if cb_row:
+        label, detail = cb_row.strip().strip("|").split("|", 1)
+        lines.append(f"{label.strip()}: {detail.strip().rstrip('|').strip()}")
 
-    lines += ["", f"{reason_hdr}: {card['failure_reason']}", ""]
+    lines += [
+        "",
+        f"{reason_hdr}: {card.get('failure_reason_en' if is_en else 'failure_reason_zh') or report_text(card['failure_reason'], lang)}",
+        "",
+    ]
     if card.get("selected_gate"):
         lines += [f"> {gate_hdr}: `{card['selected_gate']}` · {report_line}", ""]
 

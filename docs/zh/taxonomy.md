@@ -111,10 +111,13 @@ flowchart TD
 | `INFRA_DISK`<br>`disk` | **磁盘空间耗尽**。容器存储配额耗尽 (`No space left on device`) |
 | `INFRA_AGENT_TIMEOUT`<br>`agent_timeout` | **智能体执行超时**。智能体推理与工具交互超出总时限门禁 |
 | `INFRA_RUNNER_LIFECYCLE`<br>`runner_lifecycle` | **评测宿主调度异常**。评测框架调度死锁、强制取消或 Runner 宿主崩溃 |
+| `INFRA_VERIFIER_INTERPRETER_MISSING`<br>`verifier_interpreter_missing` | **评分解释器缺失。** 评分入口未能启动所调用的 Python，且没有有效分数。 |
+| `INFRA_AGENT_AUTOCOMPACT_THRASHING`<br>`autocompact_thrashing` | **上下文压缩循环终止。** harness 明确记录终止原因；不以早先可恢复的 API 提示代替。 |
+| `INFRA_AGENT_OUTPUT_TOKEN_LIMIT`<br>`output_token_limit` | **输出上限终止。** 终止记录明确指向输出 token 限制，与科学结果问题分别分析。 |
 
 ### 2.4 评测验证与规则判定缺陷 (`verifier`)
 
-**责任主体**：评测验证脚本（`verify.py`、`test.sh`）与考核规则。Agent 的计算或产物在物理/化学目标上完全正确，但被判分脚本错误拒绝。
+**责任主体**：评测验证脚本（`verify.py`、`test.sh`）、评分规则或评分依赖。定位到验证器缺陷，不等于已经证明提交的科学结果正确或整个任务应通过。
 
 | 编码与子类 | 含义与示例 |
 | --- | --- |
@@ -123,6 +126,8 @@ flowchart TD
 | `VERIFIER_REGEX_OR_PARSER_DEFECT`<br>`regex_or_parser_defect` | **验证器文本解析与正则缺陷**。验证器正则未过滤 LAMMPS run 0 打印的重复表头、无法解析科学记数法（如 Fortran `D+03`）或多行输出 |
 | `VERIFIER_HIDDEN_CONTRACT`<br>`hidden_contract` | **验证器隐藏未公开私有契约**。验证器校验了题干从未声明的内部中间文件、特定列顺序或非标私有字段 |
 | `VERIFIER_RECOMPUTE_DEFECT`<br>`recompute_defect` | **验证器自身重算崩溃**。验证器独立重算脚本因自身临时目录配置缺失、路径未转义或缺失环境依赖而抛出异常崩溃 |
+| `VERIFIER_TRUSTED_ASSET_HASH_MISMATCH`<br>`trusted_asset_hash_mismatch` | **可信评分资料哈希不一致。** 与实际评分拒绝直接关联，不通过跳过校验处理。 |
+| `VERIFIER_REFERENCE_LFS_POINTER`<br>`reference_lfs_pointer` | **参考文件仍为 LFS 指针。** 现有日志报告读取失败，文件头也证实缺少预期载荷。 |
 
 ### 2.5 辅助类别：未知与证据缺失 (`unknown`)
 
@@ -148,3 +153,9 @@ Harbor 在 Agent 执行之后、验证之前，用 `docker cp` 采集已声明�
 **验证前窗口内的因果优先级：** 作为因果项的 `INFRA_AGENT_TIMEOUT` 优先于下游的 `INFRA_ARTIFACT_COLLECTION_CRASH`，因为 Agent 在来得及写出这些路径之前就已被停止；采集崩溃随后记为伴随因素。若验证器确已启动（例如超时但 Trial 仍评分 `reward=0`），裁定仍为 `failed` 且 `detection_stage: verifier_execution`，但主根因依旧是 `infra`。
 
 **三态裁定：** `passed` 与已评分的 `failed` 属于*已评分*状态；在该窗口内中止的 Trial 属于*未评分*（`reward=None`、`verifier_started == false`）。批次看板必须同时给出总体通过率（`passed / total`）与已评分通过率（`passed / (passed + scored_failed)`）；未评分 Trial 绝不能被计为 Agent 失败。
+
+## 4. 表示与契约复核标签
+
+`Verifier / Case contract mismatch` 是跨 case/verifier 的复核标签，不新增第五个根因大类。其下区分：`semantic_rejection`（语义误拒）、`hidden_format_requirement`（未公开格式要求）和 `definition_ambiguity`（定义歧义）。静态发现必须绑定实际拒绝规则、提交表示和公开材料；只作为待复核线索，不自动宣判 verifier 有错或把失败改成通过。
+
+数学上不同的量（如力分量最大值与每原子力向量范数最大值）、公开要求下仍未完成的核验、以及重放脚本漏生成产物，应分别检查，不能统一解释为“格式过严”。

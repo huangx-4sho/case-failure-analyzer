@@ -51,7 +51,10 @@ from render_report import (
     render_skill_prescription_markdown,
 )
 from render_verdict import build_verdict_card, render_verdict_card_markdown
-from runtime_state import resolve_trajectory_path
+from runtime_state import resolve_trajectory_path, score_was_produced
+from contract_review import audit_contract_review
+from scientific_contract_review import audit_scientific_contracts
+from scoring_dependencies import collect_scoring_dependency_observations
 from task_ref import TaskRef, TaskRefError, REPORT_DIR_NAME, resolve_task_ref
 from trace_causal_anchors import trace_causal_anchors
 from staging import (
@@ -486,6 +489,12 @@ def collect_case_evidence(
         normalized_traj=norm_traj,
     )
 
+    dependencies = collect_scoring_dependency_observations(
+        task_dir, trial_dir, trial_inv.get("runtime")
+    )
+    if dependencies:
+        contract_res["verifier_observations"] = dependencies + contract_res["verifier_observations"]
+
     verifier_report = build_verifier_report(trial_dir)
     if verifier_report is not None:
         _attach_unscored_verifier_fault(verifier_report, contract_res["verifier_observations"])
@@ -661,7 +670,63 @@ def collect_case_evidence(
     anchors = trace_causal_anchors(evidence)
     if anchors:
         evidence["causal_anchors"] = anchors
+    evidence["contract_review"] = audit_contract_review(evidence)
+    try:
+        evidence["scientific_contract_review"] = audit_scientific_contracts(evidence)
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        evidence["scientific_contract_review"] = {
+            "findings": [],
+            "uncertainty": [f"Static scientific review incomplete: {type(exc).__name__}"],
+        }
+        diagnostics.append(
+            make_diagnostic(
+                stage="contract",
+                code="SCIENTIFIC_REVIEW_INCOMPLETE",
+                severity=WARNING,
+                message="Saved scientific-definition evidence could not be inspected",
+                impact="No scientific-definition conclusion can be drawn from this review",
+            )
+        )
+    for index, finding in enumerate(evidence["scientific_contract_review"].get("findings") or []):
+        event_ref = (finding.get("observed_code") or {}).get("event_ref")
+        if (
+            finding.get("application_binding") != "bound"
+            or not finding.get("public_requirement")
+            or event_ref not in {event.get("event_id") for event in evidence["timeline"]}
+        ):
+            continue
+        evidence["contract_observations"].append(
+            {
+                "contract_id": f"contract:scientific_definition:{index}",
+                "alignment": "agent_mismatch",
+                "item": "stopping_force_definition",
+                "prompt_requirement": "maximum atomic force",
+                "verifier_requirement": "maximum per-atom Euclidean force norm",
+                "agent_output_status": "maximum absolute Cartesian force component used for stopping",
+                "details": finding["summary"],
+                "source_refs": [event_ref],
+            }
+        )
     cand_hyps = generate_candidate_hypotheses(evidence)
+    for item in evidence["contract_review"].get("review_items") or []:
+        categories = (
+            ["verifier"] if item["category"] == "semantic_rejection" else ["case", "verifier"]
+        )
+        for category in categories:
+            cand_hyps["candidate_hypotheses"].append(
+                {
+                    "hypothesis_id": f"H_{item['review_id'].replace(':', '_')}_{category}",
+                    "category": category,
+                    "subtype": item["category"],
+                    "claim": item["summary"],
+                    "claim_zh": item.get("summary_zh"),
+                    "confidence": 0.0,
+                    "evidence_for": [item["review_id"]],
+                    "evidence_against": [],
+                    "missing_evidence": [item["uncertainty"]],
+                    "counterfactual_test": "Review the saved public contract, submitted representation, and bound rejection rule; no new execution.",
+                }
+            )
     return evidence, norm_traj, contract_res, cand_hyps
 
 
@@ -839,6 +904,71 @@ def build_causal_attribution(
                     else f"Agent executed deliverable generation at `{chosen_anchor.get('step_id')}` "
                     f"resulting in verification failure."
                 )
+    primary = result.get("primary_root_cause") or {}
+    if primary.get("category") == "agent" and primary.get("code") == "AGENT_TASK_UNDERSTANDING":
+        for finding in (evidence.get("scientific_contract_review") or {}).get("findings") or []:
+            event_ref = (finding.get("observed_code") or {}).get("event_ref")
+            if (
+                finding.get("application_binding") == "bound"
+                and finding.get("public_requirement")
+                and event_ref in {event.get("event_id") for event in evidence.get("timeline") or []}
+            ):
+                result["first_unrecovered_deviation"] = {
+                    "status": "identified",
+                    "event_ref": event_ref,
+                    "summary": finding["summary"],
+                }
+                break
+    # A representation/definition rejection is not evidence of inaccurate
+    # physical values. Keep runtime faults and directly bound numerical paths.
+    review_items = (evidence.get("contract_review") or {}).get("review_items") or []
+    primary = result.get("primary_root_cause") or {}
+    selected = (result.get("decision_trace") or {}).get("selected") or {}
+    if (
+        review_items
+        and primary.get("category") == "agent"
+        and primary.get("code") == "AGENT_RESULT_VALIDATION"
+        and selected.get("gate_id") == "gate6_agent_primary"
+    ):
+        primary.update(
+            category="unknown",
+            subtype="insufficient_evidence",
+            code="UNKNOWN_INSUFFICIENT_EVIDENCE",
+            confidence=0.0,
+            summary="Verifier / Case contract mismatch requires review; the recorded rejection does not establish a scientific-result error.",
+            summary_zh="验证器与公开契约的一致性需要复核；现有拒绝记录不足以认定科学结果错误。",
+        )
+        primary["summary_en"] = primary["summary"]
+        primary.pop("confidence_breakdown", None)
+        for hypothesis in result.get("competing_hypotheses") or []:
+            if (
+                hypothesis.get("category") == "agent"
+                and hypothesis.get("subtype") == "result_validation"
+            ):
+                hypothesis["confidence"] = 0.0
+                hypothesis["evidence_strength"] = "low"
+                hypothesis.pop("confidence_breakdown", None)
+                hypothesis["missing_evidence"] = list(hypothesis.get("missing_evidence") or []) + [
+                    "Resolve the bound public/verifier contract disagreement before attributing scientific error"
+                ]
+        primary["evidence_strength"] = "low"
+        result["failure_stage"] = "unknown"
+        result["first_unrecovered_deviation"] = {
+            "status": "not_identified",
+            "event_ref": None,
+            "summary": primary["summary"],
+        }
+        result["evidence_refs"] = list(
+            dict.fromkeys(result["evidence_refs"] + [item["review_id"] for item in review_items])
+        )
+        result["decision_trace"]["contract_review_correction"] = (
+            "Generic agent result-validation inference withheld pending contract review"
+        )
+        result["decision_trace"]["final_attribution"] = {
+            "category": "unknown",
+            "code": "UNKNOWN_INSUFFICIENT_EVIDENCE",
+            "reason": "contract_review_required",
+        }
     return assess_static(evidence, result)
 
 
@@ -998,6 +1128,8 @@ def write_outputs(
         sp = analysis.get("skill_prescription")
         main_report = f"{basename}.md" if is_hierarchical else name("report.md")
         planned_files.add(main_report)
+        if not is_hierarchical and lang in ("zh", "en"):
+            planned_files.add(name(f"report.{lang}.md"))
         if lang == "bilingual":
             en_report = f"{basename}.en.md" if is_hierarchical else name("report.en.md")
             planned_files.add(en_report)
@@ -1250,7 +1382,7 @@ def compute_batch_statistics(summary_rows: List[Dict[str, Any]]) -> Dict[str, An
     low_diagnosability_count = sum(
         1 for row in summary_rows if row.get("verifier_diagnosability") == "low"
     )
-    scored_trial_count = verifier_started_count
+    scored_trial_count = sum(score_was_produced(row) for row in summary_rows)
     not_scored_trial_count = max(0, len(summary_rows) - scored_trial_count)
     passed_count = int(verdict_counts.get("passed", 0))
     scored_pass_rate = (
@@ -1626,6 +1758,8 @@ def main() -> None:
                             "verdict": ev["runtime"].get("verdict"),
                             "agent_started": bool(ev["runtime"].get("agent_started")),
                             "verifier_started": bool(ev["runtime"].get("verifier_started")),
+                            "score_produced": score_was_produced(ev["runtime"]),
+                            "reward": ev["runtime"].get("reward"),
                             "phase": "collect",
                             **_summary_diagnostic_fields(ev),
                         }
@@ -1669,6 +1803,8 @@ def main() -> None:
                             "verdict": an["verdict"],
                             "agent_started": bool(ev["runtime"].get("agent_started")),
                             "verifier_started": bool(ev["runtime"].get("verifier_started")),
+                            "score_produced": score_was_produced(ev["runtime"]),
+                            "reward": ev["runtime"].get("reward"),
                             "failure_stage": an["failure_stage"],
                             "detection_stage": an["detection_stage"],
                             "category": an["primary_root_cause"]["category"],

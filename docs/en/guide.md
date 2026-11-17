@@ -196,6 +196,8 @@ The registry contains 11 software groups and 60 error families. These are log-ma
 
 ## Harbor discovery and result review
 
+Task-ID resolution also accepts numeric-prefixed names such as `136-task136` and `136-task136__trial`. Use `--lang bilingual` for separate language editions; the unsuffixed primary report is not necessarily English. Contract review distinguishes semantic rejection, undisclosed formats, and ambiguous definitions without overturning scores.
+
 See [existing-evidence review](evidence-review.md) for missing-output diagnosis, saved recomputation records, and structured causal assessment.
 
 Task-ID mode first matches common Harbor layouts, then falls back to a depth-limited search that prunes heavy directories. It supports flat `jobs/<job>/task208__<trial>` and suite-based `<suite>/jobs/<job>/task208__<trial>` layouts, with task definitions at the suite root or under `tasks/`. Duplicate task numbers prefer a definition from the selected trial's suite. Remaining ambiguity raises an error instead of choosing lexically.

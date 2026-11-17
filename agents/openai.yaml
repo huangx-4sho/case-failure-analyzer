@@ -1,4 +1,4 @@
 interface:
   display_name: "case failure analyzer"
   short_description: "Audit scientific benchmark case failures and root causes"
-  default_prompt: "Use $case-failure-analyzer to audit this failed benchmark case and produce a bilingual causal report."
+  default_prompt: "Use $case-failure-analyzer to audit this failed benchmark case using existing evidence and produce reports in the requested language(s)."

@@ -16,6 +16,7 @@ from causal_assessment import (
     assess_static,
     digest,
     promotion_ready,
+    proposed_attribution_errors,
     review_errors,
 )
 from validate_analysis import collect_valid_evidence_ids
@@ -98,6 +99,7 @@ def plan(evidence: dict, analysis: dict) -> dict:
         "binding": {
             "evidence_digest": digest(evidence),
             "analysis_digest": analysis_binding(analysis),
+            "original_analysis_digest": digest(analysis),
             "source_fingerprints": source_fingerprints(evidence),
         },
         "reviewer": "",
@@ -111,6 +113,88 @@ def plan(evidence: dict, analysis: dict) -> dict:
     }
 
 
+def cited_source_refs(evidence: dict, review: dict) -> set:
+    """Resolve every cited claim and alternative to its saved source inventory."""
+    decision = review.get("decision") or {}
+    refs = {
+        r
+        for key in ("execution_binding", "basis", "outcome")
+        for r in (decision.get(key) or {}).get("evidence_refs", [])
+    }
+    if decision.get("event_ref"):
+        refs.add(decision["event_ref"])
+    refs.update((decision.get("execution_binding") or {}).get("effective_input_refs", []))
+    refs.update((decision.get("execution_binding") or {}).get("effective_output_refs", []))
+    refs.update(
+        r for item in review.get("alternatives") or [] for r in item.get("evidence_refs", [])
+    )
+    observations = {}
+    for collection, key in (
+        ("timeline", "event_id"),
+        ("verifier_observations", "obs_id"),
+        ("contract_observations", "contract_id"),
+        ("scientific_observations", "sci_id"),
+        ("error_observations", "error_id"),
+        ("behavioral_signals", "signal_id"),
+    ):
+        observations.update({o[key]: o for o in evidence.get(collection) or [] if o.get(key)})
+    observations.update(
+        {
+            f"verifier_report.failed_checks[{i}]": item
+            for i, item in enumerate(
+                (evidence.get("verifier_report") or {}).get("failed_checks") or []
+            )
+        }
+    )
+    observations.update(
+        {
+            o["review_id"]: o
+            for o in (evidence.get("contract_review") or {}).get("review_items") or []
+            if o.get("review_id")
+        }
+    )
+    pending = list(refs)
+    while pending:
+        ref = pending.pop()
+        item = observations.get(ref, {})
+        sources = list(item.get("source_refs") or [])
+        sources.extend(
+            item.get(k)
+            for k in (
+                "source_ref",
+                "source_file",
+                "source",
+                "event_ref",
+                "agent_artifact_ref",
+                "agent_ref",
+            )
+        )
+        if ref.startswith("verifier_report.failed_checks["):
+            sources.append((evidence.get("verifier_report") or {}).get("primary_report"))
+        for source in sources:
+            if isinstance(source, str) and source and source not in refs:
+                refs.add(source)
+                pending.append(source)
+    trajectory_cited = any(
+        r.startswith("trajectory:")
+        or r in {o.get("event_id") for o in evidence.get("timeline") or []}
+        for r in refs
+    )
+    source_paths = {r.split(":L", 1)[0] for r in refs}
+    for artifact in evidence.get("artifacts") or []:
+        rel = str(artifact.get("rel_path") or "")
+        if any(path and (rel == path or rel.endswith("/" + path)) for path in source_paths) or (
+            trajectory_cited
+            and (
+                artifact.get("artifact_id") == "art:trajectory_json"
+                or rel == "agent/trajectory.json"
+            )
+        ):
+            if artifact.get("artifact_id"):
+                refs.add(artifact["artifact_id"])
+    return refs
+
+
 def check_binding(review: dict, evidence: dict, analysis: dict) -> None:
     if review.get("schema_version") != REVIEW_SCHEMA:
         raise ValueError("Invalid evidence review schema")
@@ -119,17 +203,46 @@ def check_binding(review: dict, evidence: dict, analysis: dict) -> None:
         "analysis_digest"
     ) != analysis_binding(analysis):
         raise ValueError("Stale or tampered evidence/analysis binding")
-    if binding.get("source_fingerprints") != source_fingerprints(evidence):
-        raise ValueError("Stale or tampered saved source artifacts")
+    if binding.get("original_analysis_digest") is not None and binding[
+        "original_analysis_digest"
+    ] != digest(analysis):
+        raise ValueError("Stale or tampered original analysis snapshot")
+    # Shared job logs can continue changing while an ended trial is reviewed.
+    # Freshness must bind the sources actually used by this review, not unrelated
+    # inventory files. The full evidence JSON still remains digest-bound above.
+    refs = cited_source_refs(evidence, review)
+    selected = [
+        a
+        for a in evidence.get("artifacts") or []
+        if {
+            a.get("artifact_id"),
+            a.get("rel_path"),
+            f"{a.get('scope', 'trial')}:{a.get('rel_path')}",
+        }.intersection(refs)
+    ]
+    original = {
+        (x.get("artifact_id"), x.get("path")): x for x in binding.get("source_fingerprints") or []
+    }
+    current = source_fingerprints({**evidence, "artifacts": selected})
+    for artifact, now in zip(selected, current):
+        previous = original.get((artifact.get("artifact_id"), artifact.get("abs_path")))
+        if previous is None or (
+            (previous.get("status") == "checked" or artifact.get("exists") is False)
+            and previous != now
+        ):
+            raise ValueError("Stale or tampered saved source artifacts")
 
 
 def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
     check_binding(review, evidence, analysis)
-    errors = review_errors(
+    errors = proposed_attribution_errors(review, analysis)
+    proposed = review.get("proposed_attribution")
+    category = (proposed or analysis.get("primary_root_cause") or {}).get("category")
+    errors += review_errors(
         evidence,
         review,
         collect_valid_evidence_ids(evidence),
-        (analysis.get("primary_root_cause") or {}).get("category"),
+        category,
     )
     if errors:
         raise ValueError("; ".join(errors))
@@ -139,15 +252,83 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
     ):
         raise ValueError("Review requires reviewer identity and written rationale")
     result = copy.deepcopy(analysis)
+    if proposed:
+        original_cause = copy.deepcopy(result.get("primary_root_cause") or {})
+        result["primary_root_cause"] = {
+            **original_cause,
+            **copy.deepcopy(proposed),
+            "summary": proposed["summary_en"],
+            "confidence_kind": "original_rule_evidence_score",
+            "confidence_provenance": {
+                "source": "original-analysis.json",
+                "primary_root_cause": original_cause,
+            },
+        }
+        event_ref = review["decision"]["event_ref"]
+        result["first_unrecovered_deviation"] = {
+            "status": "identified",
+            "event_ref": event_ref,
+            "summary": proposed["summary_en"],
+        }
+        if proposed["category"] == "verifier":
+            result["failure_stage"] = "verifier_execution"
+        elif proposed["category"] == "infra":
+            observed = next(
+                (
+                    o
+                    for o in evidence.get("error_observations") or []
+                    if o.get("error_id") == event_ref
+                ),
+                {},
+            )
+            if observed.get("stage"):
+                result["failure_stage"] = observed["stage"]
+        cited = list(
+            dict.fromkeys(
+                [review["decision"]["event_ref"]]
+                + [
+                    r
+                    for key in ("execution_binding", "basis", "outcome")
+                    for r in review["decision"][key].get("evidence_refs", [])
+                ]
+                + review["decision"]["execution_binding"].get("effective_input_refs", [])
+                + review["decision"]["execution_binding"].get("effective_output_refs", [])
+            )
+        )
+        result["evidence_refs"] = cited
+        result["competing_hypotheses"] = [
+            {
+                "hypothesis_id": "H_REVIEW",
+                "category": proposed["category"],
+                "subtype": proposed["subtype"],
+                "claim": proposed["summary_en"],
+                "claim_en": proposed["summary_en"],
+                "claim_zh": proposed["summary_zh"],
+                "confidence": original_cause.get("confidence", 0.0),
+                "evidence_for": cited,
+                "evidence_against": [],
+            }
+        ] + [
+            h
+            for h in result.get("competing_hypotheses") or []
+            if (h.get("category"), h.get("subtype")) != (proposed["category"], proposed["subtype"])
+        ]
+        result["excluded_hypotheses"] = [
+            h
+            for h in result.get("excluded_hypotheses") or []
+            if h.get("category") != proposed["category"]
+        ]
+        result["contributing_factors"] = [
+            h
+            for h in result.get("contributing_factors") or []
+            if h.get("category") != proposed["category"]
+        ]
     assess_static(evidence, result)
     a = result["causal_assessment"]
     a["decision"] = copy.deepcopy(review["decision"])
     a["alternatives"] = copy.deepcopy(review["alternatives"])
     fingerprints = review["binding"]["source_fingerprints"]
-    cited_artifacts = set(
-        a["decision"].get("execution_binding", {}).get("effective_input_refs", [])
-        + a["decision"].get("execution_binding", {}).get("effective_output_refs", [])
-    )
+    cited_artifacts = cited_source_refs(evidence, review)
     unchecked = []
     for artifact, fingerprint in zip(evidence.get("artifacts") or [], fingerprints):
         aliases = {
@@ -169,10 +350,7 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
     if a["level"] != "not_applicable":
         a["level"] = (
             "evidence_supported_cause"
-            if not unchecked
-            and promotion_ready(
-                evidence, review, (analysis.get("primary_root_cause") or {}).get("category")
-            )
+            if not unchecked and promotion_ready(evidence, review, category)
             else "candidate_cause"
         )
     a["review"] = {
@@ -186,7 +364,11 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
 
 def validate_bundle(root: Path, evidence: dict, analysis: dict) -> None:
     review = read(root / "review.json")
-    expected = reviewed_analysis(evidence, analysis, review)
+    original_path = root / "original-analysis.json"
+    original = read(original_path) if original_path.exists() else analysis
+    if review.get("proposed_attribution") and not original_path.exists():
+        raise ValueError("Proposed attribution bundle requires original-analysis.json")
+    expected = reviewed_analysis(evidence, original, review)
     if expected != analysis:
         raise ValueError("Reviewed analysis differs from its bound evidence review")
     if read(root / "evidence.json") != evidence or read(root / "analysis.json") != analysis:
@@ -223,6 +405,7 @@ def apply(evidence_path: Path, analysis_path: Path, review_path: Path, output: P
     try:
         write(staging / "evidence.json", evidence)
         write(staging / "analysis.json", result)
+        write(staging / "original-analysis.json", analysis)
         write(staging / "review.json", review)
         for name, content in reports.items():
             (staging / name).write_text(content, encoding="utf-8")

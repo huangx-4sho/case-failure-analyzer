@@ -68,7 +68,7 @@
       ],
       "evidence_against": [],
       "missing_evidence": [],
-      "counterfactual_test": "Correct the agent's input script / workflow decision and run `verify.py`.",
+      "counterfactual_test": "Inspect saved execution, effective inputs, public requirements, and verifier comparisons to isolate the implicated decision; no new execution.",
       "confidence": 0.71,
       "confidence_kind": "heuristic_evidence_score",
       "evidence_strength": "high",

@@ -1219,7 +1219,9 @@ class TestRedesignedReportingAndLocalization(unittest.TestCase):
         self.assertIn("| **Confidence breakdown** |", rep_en)
         self.assertIn("`7/10 pts`", rep_en)
         self.assertIn("✓ Direct causal evidence(+2)", rep_en)
-        self.assertIn("Evidence gaps: 跨源互证, 独立复算", rep_en)
+        self.assertIn(
+            "Evidence gaps: Cross-source corroboration, Independent recomputation", rep_en
+        )
 
         # 3. Verdict card rendering
         card = build_verdict_card(evidence, analysis)

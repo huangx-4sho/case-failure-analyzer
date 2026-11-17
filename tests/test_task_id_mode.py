@@ -357,7 +357,8 @@ class VerdictCardTests(unittest.TestCase):
         card = build_verdict_card(evidence, self._analysis())
         infra_reason = card["four_categories"][3]["reason"]
         self.assertNotIn("已排除", infra_reason)
-        self.assertIn("容器构建", infra_reason)
+        self.assertIn("已记录智能体启动", infra_reason)
+        self.assertNotIn("已完成判定", infra_reason)
 
     def test_embedded_json_blob_is_stripped(self) -> None:
         analysis = self._analysis()

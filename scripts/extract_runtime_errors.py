@@ -282,7 +282,10 @@ def extract_runtime_errors(
     agent_started = bool(rt_state["agent_started"])
     verifier_started = bool(rt_state["verifier_started"])
     exc_info = trial_res.get("exception_info")
-    has_unrecovered_runner_failure = bool(rt_state["has_trial_exception"] or not agent_started)
+    has_unrecovered_runner_failure = bool(
+        rt_state["verification_status"] != "passed"
+        and (rt_state["has_trial_exception"] or not agent_started)
+    )
 
     sources_to_scan: List[Tuple[str, str, str]] = []
     if isinstance(exc_info, dict) and exc_info.get("exception_message"):
@@ -318,6 +321,62 @@ def extract_runtime_errors(
             )
         )
 
+    # Scoring shell output is distinct from agent startup diagnostics.
+    if trial_dir:
+        stdout_path = trial_dir / "verifier" / "test-stdout.txt"
+        stdout = read_text_head_tail(stdout_path, max_log_bytes)
+        match = re.search(
+            r"(?:exec:\s*)?(python(?:3(?:\.\d+)?)?): (?:not found|command not found)", stdout
+        )
+        if match:
+            causal = rt_state["reward"] is None and rt_state["verification_status"] != "passed"
+            error_observations.append(
+                {
+                    "error_id": "err:verifier_interpreter",
+                    "code": "INFRA_VERIFIER_INTERPRETER_MISSING",
+                    "subtype": "verifier_interpreter_missing",
+                    "stage": "verifier_execution",
+                    "matched_text": stdout.strip()[:300],
+                    "causal_candidate": causal,
+                    "transient": not causal,
+                    "source_file": "verifier/test-stdout.txt",
+                    "source_pointer": "L1",
+                    "scoring_reached": False,
+                }
+            )
+        # Only a terminal SDK result with is_error=true binds an SDK failure.
+        sdk_path = trial_dir / "agent" / "claude-code.txt"
+        terminal = None
+        for line in read_text_head_tail(sdk_path, max_log_bytes).splitlines():
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(event, dict) and event.get("type") == "result":
+                terminal = event
+        sdk_codes = {
+            "autocompact_thrashing": ("INFRA_AGENT_AUTOCOMPACT_THRASHING", "autocompact_thrashing"),
+            "max_output_tokens": ("INFRA_AGENT_OUTPUT_TOKEN_LIMIT", "output_token_limit"),
+        }
+        if terminal and terminal.get("is_error") and terminal.get("api_error") in sdk_codes:
+            code, subtype = sdk_codes[terminal["api_error"]]
+            causal = bool(
+                rt_state["has_trial_exception"] and rt_state["verification_status"] != "passed"
+            )
+            error_observations.append(
+                {
+                    "error_id": "err:terminal_sdk",
+                    "code": code,
+                    "subtype": subtype,
+                    "stage": "agent_execution",
+                    "matched_text": str(terminal.get("result") or terminal["api_error"])[:300],
+                    "causal_candidate": causal,
+                    "transient": not causal,
+                    "source_file": "agent/claude-code.txt",
+                    "source_pointer": "terminal_result",
+                }
+            )
+
     seen_codes_per_file = set()
     err_counter = 1
 
@@ -347,7 +406,12 @@ def extract_runtime_errors(
                 re.IGNORECASE,
             )
         )
-        if is_docker_build_fail and has_network_timeout_or_apt:
+        if (
+            is_docker_build_fail
+            and has_network_timeout_or_apt
+            and (not agent_started or not exc_info)
+            and not (src_file == "job.log" and trial_dir is not None)
+        ):
             key = (src_file, "INFRA_EXTERNAL_NETWORK")
             if key not in seen_codes_per_file:
                 seen_codes_per_file.add(key)
@@ -399,6 +463,29 @@ def extract_runtime_errors(
                     is_causal = has_unrecovered_runner_failure
                 else:
                     is_causal = has_unrecovered_runner_failure
+
+                # An earlier recovered error in a log does not become causal merely
+                # because a later, different terminal exception exists.
+                terminal_text = str(exc_info or {})
+                if (
+                    src_file in ("trial.log", "job.log")
+                    and exc_info
+                    and not pattern.search(terminal_text)
+                ):
+                    is_causal = False
+                if src_file == "job.log" and trial_dir is not None:
+                    # Shared job logs contain other trials; local terminal evidence
+                    # must establish causality instead of aggregate log matches.
+                    is_causal = False
+                if (
+                    code == "INFRA_RUNNER_LIFECYCLE"
+                    and isinstance(exc_info, dict)
+                    and exc_info.get("exception_type")
+                    not in ("KeyboardInterrupt", "CancelledError")
+                ):
+                    is_causal = False
+                if rt_state["verification_status"] == "passed":
+                    is_causal = False
 
                 observation: Dict[str, Any] = {
                     "error_id": f"err:{err_counter}",

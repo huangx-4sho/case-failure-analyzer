@@ -8,6 +8,10 @@ Reports first show `causal_assessment.level`: observed failure, candidate cause,
 
 Failure reports use four core sections in the order below. Each report heading starts at the beginning of a line as `## <N>. <Title>` and has a non-empty body, so reviewers and `scripts/validate_analysis.py` can check it. Passed trials use the separate two-section view described below.
 
+`report.md` is the primary edition selected by `--lang`, not the English edition. In path mode, `--lang bilingual` produces separate `report.zh.md` and `report.en.md`; with `--lang zh`, `report.zh.md` is a Chinese alias. Task-ID mode uses `<task_id>.en.md` for English. Generated labels and narrative follow the selected language; untranslated source text is explicitly quoted. Reviewed prose may provide fields such as `summary_en` and `summary_zh`.
+
+Scoring coverage counts produced scores rather than verifier launches. Reports retain original metric names and runtime exceptions, and separately display scoring-contract review, replay scope, and scientific-definition findings in the evidence section.
+
 ## Required Sections & Visual Structure
 
 Present the verdict, primary category → subtype (`CODE`), stages, and confidence in a compact Markdown property table. Follow it with the failure manifestation and attribution mechanism. These are different claims: one describes where verification failed; the other explains the proposed cause.

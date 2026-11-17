@@ -30,6 +30,8 @@ Or run the CLI directly in a terminal:
 python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang en
 ```
 
+Use `--lang bilingual` for a separate English edition: `<task_id>.en.md` in task-ID mode or `report.en.md` in path mode. The unsuffixed Markdown file is the primary report, not necessarily the English edition.
+
 Replace the example path with a benchmark checkout containing `jobs/` and `tasks/`. A task number selects the most recently modified matching trial. See the [guide](docs/en/guide.md) for specific trials, batch audits, inspection, comparisons, and updates.
 
 ## Output

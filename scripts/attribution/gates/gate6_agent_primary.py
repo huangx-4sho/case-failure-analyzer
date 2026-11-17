@@ -289,6 +289,16 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                 else (timeline[-1]["event_id"] if timeline else "ver:fail_log")
             )
         )
+        scientific_contract = next(
+            (
+                item
+                for item in agent_mismatch_contracts
+                if item.get("item") == "stopping_force_definition"
+            ),
+            None,
+        )
+        if scientific_contract and not premature_sigs:
+            summary = scientific_contract["details"]
         if remote_exit:
             summary = remote_exit["description"]
             fud_ref = remote_exit["event_ref"]
@@ -564,8 +574,8 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             declared = (ctx.evidence.get("metadata") or {}).get("declared_deliverables") or []
             target = f"`{declared[0]}`" if declared else "`results.json`"
             summary = (
-                f"Agent wrote {target} without sanity validation, "
-                f"producing inaccurate physical/numerical values: {failure_excerpt}"
+                f"The verifier rejected saved deliverables at {target}: {failure_excerpt}. "
+                f"This rejection alone does not establish numerical inaccuracy or a scientific decision error."
             )
             skill_prescription = None
 
@@ -683,6 +693,12 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         check_localization=loc,
         hypothesis_separation=ctx.hypothesis_separation,
     )
+    if code == "AGENT_RESULT_VALIDATION":
+        prc["summary_en"] = summary
+        prc["summary_zh"] = (
+            f"验证器拒绝已保存的交付内容，原始记录为“{failure_excerpt}”。"
+            "仅凭这一拒绝不足以认定数值错误或科学决策错误，仍需核对契约与执行依据。"
+        )
     h1 = attach_confidence_metadata(
         {
             "hypothesis_id": "H1",
@@ -692,7 +708,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             "evidence_for": ev_refs,
             "evidence_against": [],
             "missing_evidence": [],
-            "counterfactual_test": "Correct the agent's input script / workflow decision and run `verify.py`.",
+            "counterfactual_test": "Inspect saved execution, effective inputs, public requirements, and verifier comparisons to isolate the implicated decision; no new execution.",
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=cross_source,

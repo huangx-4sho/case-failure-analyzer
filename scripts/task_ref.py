@@ -29,8 +29,8 @@ from typing import List, Optional, Set
 REPORT_DIR_NAME = "failure-report"
 
 _TASK_REF_RE = re.compile(r"^\s*(?:task[\s_-]*)?0*(\d+)\s*$", re.IGNORECASE)
-_TRIAL_DIR_RE = re.compile(r"^task[\s_-]*0*(\d+)(?:__|[-_])", re.IGNORECASE)
-_TASK_DEF_DIR_RE = re.compile(r"^task[\s_-]*0*(\d+)\s*$", re.IGNORECASE)
+_TRIAL_DIR_RE = re.compile(r"^(?:\d+-)?task[\s_-]*0*(\d+)(?:__|[-_])", re.IGNORECASE)
+_TASK_DEF_DIR_RE = re.compile(r"^(?:\d+-)?task[\s_-]*0*(\d+)\s*$", re.IGNORECASE)
 #: Directories that are never descended into when searching for task folders.
 _SKIP_DIRS = {
     ".git",
@@ -114,7 +114,7 @@ def normalize_task_ref(raw: str) -> str:
     """
     if not isinstance(raw, str) or not raw.strip():
         raise TaskRefError("task reference must be a non-empty string")
-    text = raw.strip()
+    text = re.sub(r"^\d+-(?=task)", "", raw.strip(), flags=re.IGNORECASE)
     m = _TASK_REF_RE.match(text)
     if m:
         number = str(int(m.group(1)))
@@ -183,6 +183,8 @@ def _fast_candidates(root: Path, number: str) -> tuple[List[Path], List[Path]]:
         f"*/*/jobs/*/task{number}__*",
         f"jobs/*/task {number}__*",
         f"jobs/*/task{number}__*",
+        f"jobs/*/*-task{number}__*",
+        f"*/jobs/*/*-task{number}__*",
         f"jobs/*/task {number}-*",
         f"jobs/*/task{number}-*",
         f"*/task {number}__*",
@@ -194,6 +196,9 @@ def _fast_candidates(root: Path, number: str) -> tuple[List[Path], List[Path]]:
         f"*/*/task{number}",
         f"task {number}",
         f"task{number}",
+        f"*-task{number}",
+        f"*/*-task{number}",
+        f"*/*/*-task{number}",
     )
     trials: List[Path] = []
     task_defs: List[Path] = []

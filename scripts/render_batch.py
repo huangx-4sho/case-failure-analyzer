@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List
+from runtime_state import score_was_produced
 
 
 def escape_md_cell(val: Any) -> str:
@@ -44,9 +45,9 @@ def _scoring_coverage(
     are **not scored** and must not be counted as agent failures in a pass rate.
     """
     verdict_counts = batch_stats.get("verdict_counts") or {}
-    has_flags = any("verifier_started" in t for t in trials)
+    has_flags = any("score_produced" in t or "verifier_started" in t for t in trials)
     if has_flags:
-        scored = sum(1 for t in trials if bool(t.get("verifier_started")))
+        scored = sum(score_was_produced(t) for t in trials)
     else:
         scored = int(batch_stats.get("scored_trial_count") or 0)
         if scored == 0:
@@ -79,37 +80,37 @@ def _render_coverage_block(
         out = [
             "### 1.1 评分覆盖与三态分布 (Scoring Coverage)\n\n",
             "| 状态 | 数量 | 说明 |\n|---|:---:|---|\n",
-            f"| 已评分·通过 (Scored Passed) | `{sp}` | Verifier 完成且通过 |\n",
-            f"| 已评分·失败 (Scored Failed) | `{sf}` | Verifier 完成但未通过 |\n",
-            f"| 未评分 (Not Scored) | `{ns}` | Runner 在 verifier 前中止，`reward=None` |\n",
+            f"| 已评分·通过 (Scored Passed) | `{sp}` | 已产出分数且通过 |\n",
+            f"| 已评分·失败 (Scored Failed) | `{sf}` | 已产出分数但未通过 |\n",
+            f"| 未评分 (Not Scored) | `{ns}` | 未产出有效分数（可能在验证器启动前或评分过程中中止） |\n",
             f"| **可评分通过率 (Scored Pass Rate)** | **{sr:.1f}%** | 通过 / (通过 + 已评分失败) |\n\n",
             f"> **口径说明**: 全量通过率 **{overall_pass_rate:.1f}%** = 通过 / 总 Trial 数；"
-            f"可评分通过率 **{sr:.1f}%** = 通过 / 实际进入 verifier 的 Trial 数。"
+            f"可评分通过率 **{sr:.1f}%** = 通过 / 实际产出有效分数的 Trial 数。"
             "未评分 Trial 不应计为 Agent 失败。\n\n",
         ]
     elif lang == "en":
         out = [
             "### 1.1 Scoring Coverage (Three-State Breakdown)\n\n",
             "| State | Count | Meaning |\n|---|:---:|---|\n",
-            f"| Scored Passed | `{sp}` | Verifier completed and passed |\n",
-            f"| Scored Failed | `{sf}` | Verifier completed and failed |\n",
-            f"| Not Scored | `{ns}` | Runner aborted before the verifier; `reward=None` |\n",
+            f"| Scored Passed | `{sp}` | Score recorded; passed |\n",
+            f"| Scored Failed | `{sf}` | Score recorded; not passed |\n",
+            f"| Not Scored | `{ns}` | No valid score produced (before verification or during scoring) |\n",
             f"| **Scored Pass Rate** | **{sr:.1f}%** | Passed / (Passed + Scored Failed) |\n\n",
             f"> **Rate definitions**: overall pass rate **{overall_pass_rate:.1f}%** = "
             f"Passed / Total Trials; scored pass rate **{sr:.1f}%** = Passed / Trials that "
-            "actually reached the verifier. Not-scored trials are not Agent failures.\n\n",
+            "produced a valid score. Not-scored trials are not Agent failures.\n\n",
         ]
     else:
         out = [
             "### 1.1 评分覆盖与三态分布 (Scoring Coverage / Three-State Breakdown)\n\n",
             "| 状态 (State) | 数量 (Count) | 说明 (Meaning) |\n|---|:---:|---|\n",
-            f"| 已评分·通过 (Scored Passed) | `{sp}` | Verifier 完成且通过 / completed and passed |\n",
-            f"| 已评分·失败 (Scored Failed) | `{sf}` | Verifier 完成但未通过 / completed and failed |\n",
-            f"| 未评分 (Not Scored) | `{ns}` | Runner 在 verifier 前中止，`reward=None` / aborted before verifier |\n",
+            f"| 已评分·通过 (Scored Passed) | `{sp}` | 已产出分数且通过 / score recorded; passed |\n",
+            f"| 已评分·失败 (Scored Failed) | `{sf}` | 已产出分数但未通过 / score recorded; not passed |\n",
+            f"| 未评分 (Not Scored) | `{ns}` | 未产出有效分数（可能在验证器启动前或评分过程中中止） / no valid score produced |\n",
             f"| **可评分通过率 (Scored Pass Rate)** | **{sr:.1f}%** | 通过 / (通过 + 已评分失败) |\n\n",
             f"> **口径说明 (Rate definitions)**: 全量通过率 / Overall **{overall_pass_rate:.1f}%** "
-            f"= 通过 / 总 Trial 数; 可评分通过率 / Scored **{sr:.1f}%** = 通过 / 进入 verifier 的 Trial 数 "
-            "(Passed / trials that reached the verifier). 未评分 Trial 不应计为 Agent 失败 / "
+            f"= 通过 / 总 Trial 数; 可评分通过率 / Scored **{sr:.1f}%** = 通过 / 产出有效分数的 Trial 数 "
+            "(Passed / trials with a valid score). 未评分 Trial 不应计为 Agent 失败 / "
             "Not-scored trials are not Agent failures.\n\n",
         ]
 

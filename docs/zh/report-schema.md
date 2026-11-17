@@ -29,6 +29,10 @@
 
 <a id="required-sections--visual-structure"></a>
 
+`report.md` 是按 `--lang` 选择的主报告，不代表英文版。显式目录模式使用 `--lang bilingual` 才会同时生成独立的 `report.zh.md` 与 `report.en.md`；`--lang zh` 的 `report.zh.md` 是中文别名。任务号模式对应的英文版为 `<task_id>.en.md`。生成的标题与说明遵守所选语言，未翻译的来源文字明确标为原文引用；审阅者可提供 `summary_en` / `summary_zh` 等字段。
+
+评分覆盖按实际产出分数统计，而不是按验证器启动次数统计。报告保留原始命名指标和运行异常；评分契约复核、重放范围和科学定义差异在证据节分别展示。
+
 ## 核心章节与呈现方式
 
 <a id="1--1-归因结论-or--1-root-cause-verdict"></a>

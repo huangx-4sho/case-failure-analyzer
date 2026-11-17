@@ -250,6 +250,23 @@ def _text(value: Any, limit: int = 600) -> str:
     return " ".join(str(value).split())[:limit]
 
 
+def _diagnostic_message(value: str) -> str:
+    """Unwrap a saved JSON error envelope without executing or altering its verdict."""
+    if not value.lstrip().startswith("{"):
+        return value
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        return value
+    if (
+        isinstance(parsed, dict)
+        and isinstance(parsed.get("message"), str)
+        and any(k in parsed for k in ("error_type", "status", "reward"))
+    ):
+        return _text(parsed["message"])
+    return value
+
+
 def _normalize_check(
     item: Dict[str, Any],
     *,
@@ -264,7 +281,8 @@ def _normalize_check(
     )
     if name is None:
         name = str(_first_value(item, NAME_KEYS) or "")
-    detail = _text(_first_value(item, DETAIL_KEYS))
+    raw_detail = _text(_first_value(item, DETAIL_KEYS))
+    detail = _diagnostic_message(raw_detail)
     core_raw = item.get("core")
     rec: Dict[str, Any] = {
         "layer": layer or "unspecified",
@@ -274,6 +292,8 @@ def _normalize_check(
         "core": core_raw is True or str(core_raw).lower() == "true",
         "source": source,
     }
+    if detail != raw_detail:
+        rec["original_detail"] = raw_detail
     raw_ev = item.get("evidence")
     safe_ev = None
     if isinstance(raw_ev, dict) and raw_ev:
@@ -675,6 +695,15 @@ def build_verifier_report(
         if role(rel) == "historical":
             continue  # a preserved pre-regrade copy, not the current verdict
         _walk_checks(doc, rel, checks)
+    for check in checks:
+        original = str(check.get("detail") or "")
+        readable = _diagnostic_message(original)
+        if readable != original:
+            check["original_detail"] = original
+            check["detail"] = readable
+            check["failure_kind"] = _classify_failure_kind(
+                check.get("name", ""), readable, check.get("evidence")
+            )
     checks = _dedupe_checks(checks)
 
     # `core_failures` names belong in the failed-check set even when the layered

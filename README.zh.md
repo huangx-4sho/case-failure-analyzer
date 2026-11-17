@@ -29,6 +29,8 @@ python3 scripts/export_skill.py --dest /path/to/skills/case-failure-analyzer
 python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang zh
 ```
 
+需要独立英文版时使用 `--lang bilingual`：任务号模式输出 `<task_id>.en.md`，显式路径模式输出 `report.en.md`；无语言后缀的文件是主报告，不代表英文版。
+
 将示例路径换成包含 `jobs/` 与 `tasks/` 的基准仓库路径。任务编号默认匹配修改时间最新的试次。指定试次、批量分析、结果检视、对比与更新方法见[使用指南](docs/zh/guide.md)。
 
 ## 输出

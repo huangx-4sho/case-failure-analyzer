@@ -91,6 +91,9 @@ def collect_valid_evidence_ids(evidence: Dict[str, Any]) -> Set[str]:
     ):
         if isinstance(check, dict):
             ids.add(f"verifier_report.failed_checks[{index}]")
+    for item in (evidence.get("contract_review") or {}).get("review_items") or []:
+        if item.get("review_id"):
+            ids.add(item["review_id"])
     for ev in evidence.get("timeline") or []:
         if ev.get("event_id"):
             ids.add(ev["event_id"])
@@ -281,11 +284,24 @@ def validate_all(
                     f"VERIFIER_CRASH_PRIORITY violation: verifier internal crash detected with no earlier "
                     f"infra or case defect, primary_root_cause.category must be 'verifier', got {cat!r}."
                 )
-            elif analysis.get("primary_root_cause", {}).get("code") != "VERIFIER_RECOMPUTE_DEFECT":
-                errors.append(
-                    f"VERIFIER_CRASH_PRIORITY violation: verifier internal crash detected, "
-                    f"primary_root_cause.code must be 'VERIFIER_RECOMPUTE_DEFECT', got {analysis.get('primary_root_cause', {}).get('code')!r}."
+            else:
+                allowed_codes = {"VERIFIER_RECOMPUTE_DEFECT"}
+                dependency_codes = {
+                    "VERIFIER_TRUSTED_ASSET_HASH_MISMATCH",
+                    "VERIFIER_REFERENCE_LFS_POINTER",
+                }
+                allowed_codes.update(
+                    v.get("code")
+                    for v in verifier_crashes
+                    if v.get("code") in dependency_codes
+                    and v.get("triggered")
+                    and v.get("failure_binding") == "direct"
                 )
+                if analysis.get("primary_root_cause", {}).get("code") not in allowed_codes:
+                    errors.append(
+                        f"VERIFIER_CRASH_PRIORITY violation: verifier internal crash detected, "
+                        f"primary_root_cause.code must identify a bound verifier defect, got {analysis.get('primary_root_cause', {}).get('code')!r}."
+                    )
 
     valid_ids = collect_valid_evidence_ids(evidence)
 

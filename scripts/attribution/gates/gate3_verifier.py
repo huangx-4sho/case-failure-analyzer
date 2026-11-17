@@ -14,7 +14,7 @@ reviewable baseline diff.
 from __future__ import annotations
 
 from confidence import attach_confidence_metadata
-from runtime_state import SCHEMA_VERSION
+from runtime_state import SCHEMA_VERSION, score_was_produced
 
 import re
 from typing import Any, Dict, Optional
@@ -235,7 +235,7 @@ def gate3_verifier_defect(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         "schema_version": SCHEMA_VERSION,
         "case_id": case_id,
         "trial_name": trial_name,
-        "verdict": "failed",
+        "verdict": "errored" if verifier_crashes and not score_was_produced(runtime) else "failed",
         "failure_stage": "verifier_execution",
         "detection_stage": "verifier_execution",
         "first_unrecovered_deviation": {

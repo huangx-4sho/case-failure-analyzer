@@ -37,20 +37,30 @@ from ..context import AttributionContext
 #: Upstream execution faults, in descending causal priority.
 #: NOTE: a benign `litellm.BadRequestError: LLM Provider NOT provided` cost
 #: estimation warning is NOT one of these — see extract_runtime_errors.py.
-EXECUTION_INFRA_CODES = ("INFRA_AGENT_TIMEOUT",)
+EXECUTION_INFRA_CODES = (
+    "INFRA_AGENT_TIMEOUT",
+    "INFRA_AGENT_AUTOCOMPACT_THRASHING",
+    "INFRA_AGENT_OUTPUT_TOKEN_LIMIT",
+    "INFRA_VERIFIER_INTERPRETER_MISSING",
+)
 
 
 def _summary_for(primary: Dict[str, Any], verifier_started: bool) -> str:
     code = primary["code"]
+    if code == "INFRA_VERIFIER_INTERPRETER_MISSING":
+        return "Verifier shell could not launch its Python interpreter; the scoring environment failed before producing a score."
+    if code in ("INFRA_AGENT_AUTOCOMPACT_THRASHING", "INFRA_AGENT_OUTPUT_TOKEN_LIMIT"):
+        return (
+            f"Agent SDK terminated with {primary.get('subtype')}: {primary.get('matched_text', '')}"
+        )
     scoring_note = (
         "the verifier never started, so this trial was not scored"
         if not verifier_started
-        else "the verifier still ran and scored the incomplete outputs"
+        else "the verifier subsequently ran; any output defects require independent assessment"
     )
     if code == "INFRA_AGENT_TIMEOUT":
         return (
-            "Harbor killed the agent at its configured execution timeout before "
-            "the declared deliverables were complete "
+            "Harbor stopped agent execution at its configured timeout "
             f"(`{str(primary.get('matched_text') or '')[:120]}`); {scoring_note}."
         )
     return (
@@ -61,7 +71,11 @@ def _summary_for(primary: Dict[str, Any], verifier_started: bool) -> str:
 
 def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     crashes = ctx.artifact_collection_crashes
-    exec_errors = ctx.execution_infra_errors
+    exec_errors = [
+        e
+        for e in ctx.errors
+        if e.get("code") in EXECUTION_INFRA_CODES and e.get("causal_candidate")
+    ]
     if (not crashes and not exec_errors) or not ctx.agent_started:
         ctx.trace.record(
             gate_id="gate1c_runner_artifact_collection",
@@ -98,8 +112,11 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
     ev_refs = list(dict.fromkeys(err_refs + sig_refs))
 
     verifier_started = bool(ctx.verifier_started)
-    verdict = "failed" if verifier_started else "errored"
-    failure_stage = "agent_execution" if is_execution_primary else "runner"
+    score_produced = ctx.runtime.get("score_produced", ctx.runtime.get("reward") is not None)
+    verdict = "failed" if score_produced else "errored"
+    failure_stage = primary.get("stage") or (
+        "agent_execution" if is_execution_primary else "runner"
+    )
     detection_stage = "verifier_execution" if verifier_started else "runner"
     summary = _summary_for(primary, verifier_started)
     manifestation = str(primary.get("matched_text") or summary)[:300]
@@ -159,9 +176,8 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
             "evidence_against": [],
             "missing_evidence": [],
             "counterfactual_test": (
-                "Fix the runner-side fault (model gateway / agent timeout / "
-                "artifact collection tolerance) and re-run: the trial should "
-                "reach the verifier with all declared deliverables present."
+                "Inspect saved terminal execution and scoring records to distinguish "
+                "the runtime stop from independently observed output defects."
             ),
         },
         direct_causal_evidence=len(err_refs),
@@ -198,9 +214,13 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
 
     if primary["code"] == "INFRA_AGENT_TIMEOUT":
         infra_action = (
-            "Raise `agent.timeout_sec` / the job's agent timeout multiplier to a "
-            "budget that matches the task's scientific workload before re-running."
+            "Review the configured agent timeout and workload against the saved execution trace; "
+            "assess scientific and contract errors independently of the timeout."
         )
+    elif primary["code"] == "INFRA_VERIFIER_INTERPRETER_MISSING":
+        infra_action = "Provide the interpreter used by tests/test.sh in the scoring environment."
+    elif primary["code"] in ("INFRA_AGENT_AUTOCOMPACT_THRASHING", "INFRA_AGENT_OUTPUT_TOKEN_LIMIT"):
+        infra_action = "Review the terminal SDK result and adjust context/output budgets and tool output chunking."
     else:
         infra_action = (
             "Make harbor's artifact collection tolerate a missing declared path "
@@ -224,7 +244,7 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
         "failure_manifestation": {
             "type": primary.get("subtype") or "artifact_collection_crash",
             "summary": manifestation,
-            "scoring_reached": verifier_started,
+            "scoring_reached": score_produced,
             "missing_deliverables": declared_paths[:4],
         },
         "primary_root_cause": prc,

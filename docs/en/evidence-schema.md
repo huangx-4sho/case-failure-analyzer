@@ -2,7 +2,7 @@
 
 **[English](evidence-schema.md) | [简体中文](../zh/evidence-schema.md)** · [Project home](../../README.md) · [Guide](guide.md)
 
-**On this page:** [Evidence](#1-evidencejson-schema) · [Analysis](#2-analysisjson-schema) · [Harbor](#3-harbor-protocol-extensions-additive-optional-keys) · [Cross-checks](#4-additive-cross-check-deliverable--provenance-extensions) · [Evidence review](#5-existing-evidence-review-fields)
+**On this page:** [Evidence](#1-evidencejson-schema) · [Analysis](#2-analysisjson-schema) · [Harbor](#3-harbor-protocol-extensions-additive-optional-keys) · [Cross-checks](#4-additive-cross-check-deliverable--provenance-extensions) · [Evidence review](#5-existing-evidence-review-fields) · [Scoring review](#6-scoring-contract-and-runtime-review)
 
 This page describes evidence, attribution, and optional extension fields. Expand examples as needed; identifiers, keys, and enum values retain their code spelling.
 
@@ -40,7 +40,7 @@ This page describes evidence, attribution, and optional extension fields. Expand
     "started_at": "ISO-8601 or null",
     "finished_at": "ISO-8601 or null",
     "execution_status": "completed|errored|not_started|unknown",
-    "verification_status": "passed|failed|not_run",
+    "verification_status": "passed|failed|errored|not_run",
     "verdict": "passed|failed|errored|unknown",
     "exit_status": "completed|failed|errored|unknown",
     "reward": 0.0,
@@ -342,7 +342,7 @@ The following is a partial field illustration, not a captured run.
         "kind": "unit_conversion",
         "factor": 0.036749,
         "label": "Hartree/eV (÷27.211386)",
-        "unit_token_corroborated": true
+        "unit_token_corroborated": false
       },
       "stale_deliverable_sync": true,
       "recomputed_match_in_trajectory_ref": "trajectory:step:18"
@@ -388,3 +388,16 @@ The following is a partial field illustration, not a captured run.
 | `causal_assessment.capability` | This-trial suspected guidance; not independent confirmation of model incapacity |
 
 Review records bind input JSON and saved-source digests; see [existing-evidence review](evidence-review.md). These fields record evidence and reviewer judgments, not a guarantee of scientific correctness.
+
+## 6. Scoring contract and runtime review
+
+| Field | Purpose |
+| --- | --- |
+| `runtime.score_produced` | Whether a recognizable score was actually produced; verifier startup is insufficient |
+| `runtime.reward_metrics` | Original named numeric metrics, such as `submission_checks`; not relabeled as scientific accuracy |
+| `contract_review.review_items` | `semantic_rejection`, `hidden_format_requirement`, and `definition_ambiguity`, with public requirements, submissions, failed rules, and coverage limits |
+| `contract_review.execution_scope_findings` | Differences between checking original capture and isolated replay outputs |
+| `contract_review.requirement_coverage_findings` | Direct label keys, nested occurrences, and quoted verification status; avoids inferring absent coverage from shallow structure alone |
+| `scientific_contract_review.findings` | Candidate scientific-definition differences bound to saved source, public requirements, execution, and failed checks |
+
+A started verifier that errors without producing a score has `verification_status="errored"`. A runtime exception followed by a zero score retains both facts without counting the trial twice. Contract review never changes an original failure to a pass; checks after the first rejection may not have executed.

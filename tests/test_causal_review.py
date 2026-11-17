@@ -91,7 +91,232 @@ def complete_review(ev, an):
     return review
 
 
+def nonagent_review(kind="verifier"):
+    ev, an = fixture()
+    an["primary_root_cause"] = {
+        "category": "unknown",
+        "subtype": "insufficient_evidence",
+        "code": "UNKNOWN_INSUFFICIENT_EVIDENCE",
+        "confidence": 0.0,
+        "summary": "Cause unresolved",
+    }
+    ev["artifacts"].extend(
+        [
+            {
+                "artifact_id": "art:rule",
+                "rel_path": "tests/verify.py",
+                "scope": "task",
+                "exists": True,
+                "abs_path": str(Path(__file__).resolve()),
+            },
+            {
+                "artifact_id": "art:report",
+                "rel_path": "verifier/verification.json",
+                "exists": True,
+                "abs_path": str(Path(__file__).resolve()),
+            },
+        ]
+    )
+    ev["verifier_observations"][0]["source_ref"] = "verification.json"
+    ev["contract_observations"][0]["source_refs"] = ["task:tests/verify.py"]
+    ev["error_observations"] = [
+        {"error_id": "error:terminal", "causal_candidate": True, "source_ref": "verification.json"}
+    ]
+    review = complete_review(ev, an)
+    category, subtype, code, event = {
+        "verifier": (
+            "verifier",
+            "regex_or_parser_defect",
+            "VERIFIER_REGEX_OR_PARSER_DEFECT",
+            "ver:1",
+        ),
+        "case": ("case", "ambiguous_contract", "CASE_AMBIGUOUS_CONTRACT", "rule:1"),
+        "infrastructure": (
+            "infra",
+            "container_runtime",
+            "INFRA_CONTAINER_RUNTIME",
+            "error:terminal",
+        ),
+    }[kind]
+    review["proposed_attribution"] = {
+        "category": category,
+        "subtype": subtype,
+        "code": code,
+        "summary_en": "Saved rule/source and rejection support this mechanism for the reported check only.",
+        "summary_zh": "保存的规则、源码与拒绝记录支持此机制，范围仅限该检查。",
+    }
+    review["decision"].update(
+        kind=kind,
+        event_ref=event,
+        description="Review of the reported rejection, not whole-task success",
+    )
+    review["decision"]["execution_binding"].update(evidence_refs=[event, "art:rule", "art:report"])
+    review["decision"]["basis"]["evidence_refs"] = ["rule:1", "art:rule"]
+    for alternative in review["alternatives"]:
+        alternative["status"] = (
+            "supports_candidate" if alternative["category"] == category else "ruled_out"
+        )
+    return ev, an, review
+
+
 class EvidenceOnlyReviewTests(unittest.TestCase):
+    def test_nonagent_reviews_can_reclassify_unknown_without_changing_score_or_verdict(self):
+        for kind in ("verifier", "case", "infrastructure"):
+            ev, an, review = nonagent_review(kind)
+            result = reviewed_analysis(ev, an, review)
+            self.assertEqual(
+                result["primary_root_cause"]["category"], review["proposed_attribution"]["category"]
+            )
+            self.assertEqual(result["primary_root_cause"]["confidence"], 0.0)
+            self.assertEqual(
+                result["primary_root_cause"]["confidence_kind"], "original_rule_evidence_score"
+            )
+            self.assertEqual(result["causal_assessment"]["level"], "evidence_supported_cause")
+            self.assertEqual(result["verdict"], an["verdict"])
+            self.assertEqual(
+                result["competing_hypotheses"][0]["evidence_for"], result["evidence_refs"]
+            )
+            self.assertEqual(an["primary_root_cause"]["category"], "unknown")
+
+    def test_nonagent_proposals_reject_codes_kinds_and_invented_or_unbound_sources(self):
+        for change, message in (
+            (
+                lambda r: r["proposed_attribution"].update(code="CASE_AMBIGUOUS_CONTRACT"),
+                "category/subtype/code",
+            ),
+            (lambda r: r["proposed_attribution"].update(confidence=1.0), "unsupported fields"),
+            (lambda r: r["decision"].update(kind="case"), "conflicts"),
+            (lambda r: r["decision"].update(event_ref="thought:1"), "actual execution"),
+            (
+                lambda r: r["decision"]["basis"].update(evidence_refs=["invented-rule"]),
+                "unresolved evidence",
+            ),
+            (
+                lambda r: r["decision"]["execution_binding"].update(evidence_refs=["ver:1"]),
+                "saved source artifact",
+            ),
+            (
+                lambda r: r["decision"]["execution_binding"].update(effective_input_refs=[]),
+                "input and output",
+            ),
+            (
+                lambda r: r["decision"]["outcome"].update(evidence_refs=["art:output"]),
+                "terminal rejection",
+            ),
+        ):
+            ev, an, review = nonagent_review()
+            change(review)
+            with self.assertRaisesRegex(ValueError, message):
+                reviewed_analysis(ev, an, review)
+
+    def test_proposed_review_bundle_retains_original_and_rejects_stale_or_missing_original(self):
+        ev, an, review = nonagent_review()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            inputs = root / "inputs"
+            inputs.mkdir()
+            for name, value in (("evidence", ev), ("analysis", an), ("review", review)):
+                write(inputs / (name + ".json"), value)
+            with (
+                patch("render_report.render_report_markdown", return_value="report"),
+                patch("validate_analysis.validate_all", return_value=(True, [])),
+            ):
+                result = apply(
+                    inputs / "evidence.json",
+                    inputs / "analysis.json",
+                    inputs / "review.json",
+                    root / "reviewed",
+                )
+            bundle = root / "reviewed"
+            self.assertEqual(read(bundle / "original-analysis.json"), an)
+            validate_bundle(bundle, ev, result)
+            stale = copy.deepcopy(an)
+            stale["primary_root_cause"]["summary"] = "tampered original"
+            write(bundle / "original-analysis.json", stale)
+            with self.assertRaisesRegex(ValueError, "binding|original"):
+                validate_bundle(bundle, ev, result)
+            (bundle / "original-analysis.json").unlink()
+            with self.assertRaisesRegex(ValueError, "requires original-analysis"):
+                validate_bundle(bundle, ev, result)
+
+    def test_legacy_review_bundle_without_original_snapshot_remains_readable(self):
+        ev, an = fixture()
+        review = complete_review(ev, an)
+        review["binding"].pop("original_analysis_digest")
+        result = reviewed_analysis(ev, an, review)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name, value in (("evidence", ev), ("analysis", result), ("review", review)):
+                write(root / (name + ".json"), value)
+            validate_bundle(root, ev, result)
+
+    def test_trajectory_source_alias_binds_nonstandard_saved_filename(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "rollout.jsonl"
+            source.write_text("changed saved trajectory")
+            ev, an = fixture()
+            ev["artifacts"].append(
+                {
+                    "artifact_id": "art:trajectory_json",
+                    "rel_path": "agent/rollout.jsonl",
+                    "exists": True,
+                    "abs_path": str(source),
+                    "sha256": "sha256:" + hashlib.sha256(b"original saved trajectory").hexdigest(),
+                }
+            )
+            review = complete_review(ev, an)
+            self.assertEqual(
+                reviewed_analysis(ev, an, review)["causal_assessment"]["level"], "candidate_cause"
+            )
+            ev["artifacts"][-1].pop("sha256")
+            review = complete_review(ev, an)
+            source.write_text("changed after planning")
+            with self.assertRaisesRegex(ValueError, "source artifacts"):
+                reviewed_analysis(ev, an, review)
+
+    def test_stale_alternative_sources_prevent_promotion_and_changed_sources_are_rejected(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "alternative.log"
+            source.write_text("changed since collection")
+            ev, an = fixture()
+            ev["artifacts"].append(
+                {
+                    "artifact_id": "art:alternative",
+                    "rel_path": "alternative.log",
+                    "exists": True,
+                    "abs_path": str(source),
+                    "sha256": "sha256:" + hashlib.sha256(b"original").hexdigest(),
+                }
+            )
+            ev["verifier_observations"].append(
+                {
+                    "obs_id": "ver:alternative",
+                    "type": "failed_check",
+                    "source_ref": "alternative.log",
+                }
+            )
+            for ref in ("art:alternative", "ver:alternative"):
+                review = complete_review(ev, an)
+                review["alternatives"][0]["evidence_refs"] = [ref]
+                self.assertEqual(
+                    reviewed_analysis(ev, an, review)["causal_assessment"]["level"],
+                    "candidate_cause",
+                )
+            ev["artifacts"][-1].pop("sha256")
+            review = complete_review(ev, an)
+            review["alternatives"][0]["evidence_refs"] = ["ver:alternative"]
+            self.assertEqual(
+                reviewed_analysis(ev, an, review)["causal_assessment"]["level"],
+                "evidence_supported_cause",
+            )
+            source.write_text("changed after review")
+            with self.assertRaisesRegex(ValueError, "source artifacts"):
+                reviewed_analysis(ev, an, review)
+
     def test_source_changed_before_plan_is_not_fresh_evidence(self):
         import hashlib
 
@@ -159,6 +384,19 @@ class EvidenceOnlyReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "written rationale"):
             reviewed_analysis(ev, an, review)
 
+    def test_uncited_shared_job_log_does_not_invalidate_bound_review(self):
+        ev, an = fixture()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "job.log"
+            log.write_text("other trial started")
+            ev["artifacts"].append(
+                {"artifact_id": "art:job_log", "abs_path": str(log), "exists": True}
+            )
+            review = complete_review(ev, an)
+            expected = reviewed_analysis(ev, an, review)
+            log.write_text("other trial finished; another one started")
+            self.assertEqual(reviewed_analysis(ev, an, review), expected)
+
     def test_stale_json_and_changed_sources_rejected(self):
         ev, an = fixture()
         with tempfile.TemporaryDirectory() as temp:
@@ -166,6 +404,7 @@ class EvidenceOnlyReviewTests(unittest.TestCase):
             source.write_text("original")
             ev["artifacts"].append({"artifact_id": "art:1", "abs_path": str(source)})
             review = complete_review(ev, an)
+            review["decision"]["execution_binding"]["evidence_refs"].append("art:1")
             changed = copy.deepcopy(ev)
             changed["timeline"][0]["command"] = "tampered"
             with self.assertRaisesRegex(ValueError, "binding"):
@@ -233,7 +472,12 @@ class EvidenceOnlyReviewTests(unittest.TestCase):
                 result = reviewed_analysis(ev, an, review)
                 bundle = root / f"bundle-{number}"
                 bundle.mkdir()
-                for name, value in (("evidence", ev), ("analysis", result), ("review", review)):
+                for name, value in (
+                    ("evidence", ev),
+                    ("analysis", result),
+                    ("original-analysis", an),
+                    ("review", review),
+                ):
                     write(bundle / (name + ".json"), value)
                 bundles.append(str(bundle))
             request = {

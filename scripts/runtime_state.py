@@ -11,6 +11,7 @@ Provides a single source of truth for per-trial execution state, stage gates
 from __future__ import annotations
 
 from pathlib import Path
+import math
 from typing import Any, Dict, List, Optional
 
 from diagnostics import WARNING, make_diagnostic
@@ -35,6 +36,22 @@ VERIFIER_SCRIPT_REL_PATHS = (
     "tests/evaluate.py",
     "verify.py",
 )
+
+
+def score_was_produced(record: Dict[str, Any]) -> bool:
+    """Starting a verifier is not evidence that it returned a score."""
+    if "score_produced" in record:
+        return record["score_produced"] is True
+    if "scored" in record:
+        return record["scored"] is True
+    reward = record.get("reward")
+    if reward is not None:
+        return (
+            not isinstance(reward, bool)
+            and isinstance(reward, (int, float))
+            and math.isfinite(reward)
+        )
+    return record.get("verdict") in ("passed", "failed")
 
 
 def resolve_trajectory_path(trial_dir: Optional[Path]) -> Optional[Path]:
@@ -220,6 +237,8 @@ def compute_runtime_state(
         verification_status = "passed"
     elif reward_val is not None and reward_val < 1.0:
         verification_status = "failed"
+    elif verifier_started and has_trial_exception:
+        verification_status = "errored"
     elif verifier_started and verify_log_exists:
         verification_status = "failed"
     else:
@@ -230,7 +249,7 @@ def compute_runtime_state(
         execution_status = "completed"
         verdict = "passed"
         exit_status = "completed"
-    elif has_trial_exception and verification_status == "not_run":
+    elif has_trial_exception and verification_status in ("not_run", "errored"):
         execution_status = "errored"
         verdict = "errored"
         exit_status = "errored"
@@ -251,6 +270,18 @@ def compute_runtime_state(
     if not isinstance(stats, dict):
         stats = {}
 
+    verifier_result = trial_res.get("verifier_result") or {}
+    raw_metrics = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
+    reward_metrics = (
+        {
+            str(k): v
+            for k, v in list(raw_metrics.items())[:32]
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+        }
+        if isinstance(raw_metrics, dict)
+        else {}
+    )
+
     return {
         "started_at": trial_res.get("started_at")
         or (agent_exec_stage.get("started_at") if isinstance(agent_exec_stage, dict) else None)
@@ -263,9 +294,11 @@ def compute_runtime_state(
         "verdict": verdict,
         "exit_status": exit_status,  # Deprecated alias kept for schema compatibility
         "reward": reward_val,
+        "reward_metrics": reward_metrics,
         "diagnostics": diagnostics,
         "agent_started": agent_started,
         "verifier_started": verifier_started,
+        "score_produced": reward_val is not None,
         "has_trial_exception": has_trial_exception,
         "state_conflicts": state_conflicts,
         "stages": {

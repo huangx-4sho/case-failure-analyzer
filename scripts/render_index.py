@@ -21,6 +21,7 @@ import tempfile
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from runtime_state import score_was_produced
 from typing import Any, Dict, List, Optional
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -90,6 +91,7 @@ def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
                     return {
                         "task_id": card.get("task_id") or task_dir.name,
                         "verdict": card.get("verdict") or "unknown",
+                        "scored": score_was_produced(card),
                         "category": prc.get("category")
                         or ("none" if card.get("verdict") == "passed" else "unknown"),
                         "subtype": prc.get("subtype") or "—",
@@ -146,15 +148,10 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
     """Render the full index markdown text."""
     cases_sorted = sorted(cases, key=lambda c: natural_sort_key(c.get("task_id", "")))
     total = len(cases_sorted)
-    passed = sum(1 for c in cases_sorted if c.get("verdict") == "passed")
-    failed = sum(1 for c in cases_sorted if c.get("verdict") == "failed")
-    errored_unscored = sum(
-        1
-        for c in cases_sorted
-        if c.get("verdict") in ("errored", "unknown")
-        or c.get("verdict") not in ("passed", "failed")
-    )
-    scored = passed + failed
+    passed = sum(1 for c in cases_sorted if c.get("verdict") == "passed" and score_was_produced(c))
+    failed = sum(1 for c in cases_sorted if c.get("verdict") == "failed" and score_was_produced(c))
+    errored_unscored = sum(1 for c in cases_sorted if not score_was_produced(c))
+    scored = sum(score_was_produced(c) for c in cases_sorted)
     scored_pass_rate = f"{(passed / scored * 100):.1f}%" if scored > 0 else "0.0%"
 
     timestamp = updated_time or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")

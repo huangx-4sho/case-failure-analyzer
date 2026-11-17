@@ -19,6 +19,8 @@ Three rules the wording follows:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 import re
 from typing import Any, Dict, List, Optional
@@ -208,6 +210,14 @@ STAGE_LABELS_EN = {
 #: Short human label for each subtype; the phrase is a full Chinese sentence
 #: fragment used when the report needs prose instead of an enum value.
 SUBTYPE_LABELS = {
+    "trusted_asset_hash_mismatch": ("评分依赖哈希不一致", "Scoring dependency hash mismatch"),
+    "reference_lfs_pointer": ("评分参考仍为 LFS 指针", "Scoring reference is an LFS pointer"),
+    "verifier_interpreter_missing": ("评分解释器缺失", "Missing scoring interpreter"),
+    "autocompact_thrashing": ("上下文压缩循环", "Context compaction thrashing"),
+    "output_token_limit": ("输出 token 限额终止", "Output-token limit termination"),
+    "semantic_rejection": ("语义误拒复核", "Semantic rejection review"),
+    "hidden_format_requirement": ("未公开格式要求复核", "Hidden-format review"),
+    "definition_ambiguity": ("定义歧义复核", "Definition review"),
     "result_validation": ("结果未复核", "Result not validated"),
     "self_check_gap": ("自检覆盖不足", "Self-verification coverage gap"),
     "task_understanding": ("任务理解偏差", "Task misunderstood"),
@@ -335,6 +345,10 @@ EVIDENCE_STRENGTH_LABELS = {
 }
 
 CONFIDENCE_KIND_LABELS = {
+    "original_rule_evidence_score": (
+        "原规则证据评分，非本次审查置信度",
+        "Original rule evidence score, not review certainty",
+    ),
     "heuristic_evidence_score": ("启发式证据评分", "Heuristic evidence score"),
     "calibrated_evidence_score": ("校准证据评分", "Calibrated evidence score"),
 }
@@ -924,6 +938,93 @@ def localize_engine_text(value: Any, lang: str = "zh") -> str:
     return text
 
 
+# Exact stock messages emitted by the analyzer. No free-form translation is inferred.
+_REPORT_TEXT_PAIRS = (
+    ("跨源互证", "Cross-source corroboration"),
+    ("独立复算", "Independent recomputation"),
+    (
+        "Inspect detailed verifier diagnostic logs or review task specification to disambiguate competing hypotheses.",
+        "检查详细的验证器诊断日志或核对题目规格，以区分竞争假设。",
+    ),
+    (
+        "Raise `agent.timeout_sec` / the job's agent timeout multiplier to a budget that matches the task's scientific workload before re-running.",
+        "重新运行前，将 `agent.timeout_sec` 或任务的智能体超时倍率调整到与科学计算工作量相符的预算。",
+    ),
+    (
+        "需从已有记录补足因果关联证据；唯一失败检查本身不构成证明",
+        "Causal linkage must be supported by existing records; a sole failing check is not proof",
+    ),
+    (
+        "验证器未提供定量数值偏差与容差比值",
+        "The verifier did not provide a quantitative deviation-to-tolerance ratio",
+    ),
+)
+
+
+def source_quotation(value: Any, lang: str = "zh") -> str:
+    """Label retained source prose explicitly; never imply it is a translation."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    label = "Source quotation (original language)" if lang == "en" else "原文引用（保留原语言）"
+    return f"{label}: “{text}”"
+
+
+def report_text(value: Any, lang: str = "zh") -> str:
+    """Localize known templates; label untranslated prose in another language."""
+    text = " ".join(str(value or "").split())
+    target = "en" if lang == "en" else "zh"
+    if text.startswith(("Source quotation (original language):", "原文引用（保留原语言）:")):
+        return text
+    for first, second in _REPORT_TEXT_PAIRS:
+        # The last two pairs are written Chinese first for readability.
+        zh, en = (first, second) if re.search(r"[\u3400-\u9fff]", first) else (second, first)
+        if text in (zh, en):
+            return en if target == "en" else zh
+    if target == "en":
+        for en, zh in _ENGINE_TEXT_ZH:
+            if text == zh:
+                return en
+    if target == "zh":
+        match = re.fullmatch(
+            r"Fix `([^`]+)` \(([^)]+)\): ensure internal reference paths exist and use robust namelist/float/header parsing\.",
+            text,
+        )
+        if match:
+            return f"修复 `{match[1]}`（`{match[2]}`）：确保内部参考路径存在，并稳健解析 namelist、浮点数和表头。"
+        prefix = "Verify every declared deliverable exists inside the container before ending the trajectory: "
+        if text.startswith(prefix):
+            return "结束执行轨迹前，检查容器内每项声明的交付物是否存在；" + source_quotation(
+                text[len(prefix) :], target
+            )
+    localized = localize_engine_text(text, target)
+    if localized != text:
+        return localized
+    has_han = bool(re.search(r"[\u3400-\u9fff]", text))
+    if (target == "en" and has_han) or (
+        target == "zh" and not has_han and re.search(r"[A-Za-z]{2,}\s+[A-Za-z]{2,}", text)
+    ):
+        return source_quotation(text, target)
+    return text
+
+
+def localized_field(record: Dict[str, Any], key: str, lang: str = "zh") -> str:
+    """Prefer an explicitly authored edition, otherwise retain source provenance."""
+    target = "en" if lang == "en" else "zh"
+    explicit = record.get(f"{key}_{target}")
+    if explicit:
+        return " ".join(str(explicit).split())
+    return report_text(record.get(key), target)
+
+
+def localized_items(record: Dict[str, Any], key: str, lang: str = "zh") -> List[str]:
+    """Render list fields with the same explicit-edition/source rules as prose."""
+    target = "en" if lang == "en" else "zh"
+    explicit = record.get(f"{key}_{target}")
+    items = explicit if explicit is not None else record.get(key) or []
+    return [str(item) if explicit is not None else report_text(item, target) for item in items]
+
+
 # ── Confidence & Error Matrix & Evidence helpers ──────────────────────────
 
 
@@ -946,7 +1047,7 @@ def format_confidence_breakdown(
     factor_parts = []
     for f in factors:
         delta = f.get("delta", 0)
-        lbl = f.get("label_en") if lang == "en" else (f.get("label_zh") or f.get("key"))
+        lbl = localized_field(f, "label", lang) or str(f.get("key") or "—")
         sign = f"+{delta}" if delta > 0 else str(delta)
         icon = "✓" if delta > 0 else ("⚠️" if delta < 0 else "—")
         factor_parts.append(f"{icon} {lbl}({sign})")
@@ -954,10 +1055,10 @@ def format_confidence_breakdown(
     parts_str = " · ".join(factor_parts)
     full_str = f"{score_label} · {parts_str}" if factor_parts else score_label
 
-    missing = breakdown.get("missing_to_raise") or []
+    missing = localized_items(breakdown, "missing_to_raise", lang)
     if missing and conf_val < 0.75:
         gap_label = "证据缺口：" if lang != "en" else "Evidence gaps: "
-        gap_items = "、".join(missing) if lang == "zh" else ", ".join(missing)
+        gap_items = ("、" if lang == "zh" else ", ").join(missing)
         gap_str = f"（{gap_label}{gap_items}）" if lang != "en" else f" ({gap_label}{gap_items})"
         full_str += gap_str
 
@@ -1195,7 +1296,7 @@ def render_error_matrix_table(evidence: Dict[str, Any], lang: str = "zh") -> Lis
                 )
 
             # Detail and source
-            detail = clean_prose(c.get("detail"), 160)
+            detail = clean_prose(source_quotation(c.get("detail"), lang), 240)
             source = c.get("source")
             desc_col = (
                 f"{detail} ({'来源' if not is_en else 'source'}: `{source}`)" if source else detail
@@ -1347,8 +1448,8 @@ def resolve_evidence_item(ref: str, evidence: Dict[str, Any], lang: str = "zh") 
                 )
             else:
                 desc = clean_prose(
-                    obs.get("matched_text") or obs.get("summary") or "numerical divergence",
-                    120,
+                    source_quotation(obs.get("matched_text") or obs.get("summary"), lang),
+                    180,
                 )
         else:
             desc = "Numerical divergence observed" if is_en else "检出数值计算偏离"
@@ -1369,7 +1470,11 @@ def resolve_evidence_item(ref: str, evidence: Dict[str, Any], lang: str = "zh") 
                     else f"未通过 {len(failed)} 项具名检查：{names}"
                 )
             else:
-                desc = clean_prose(vrep.get("summary") or "verification rejected", 120)
+                desc = clean_prose(
+                    source_quotation(vrep.get("summary"), lang)
+                    or ("Verification rejected" if is_en else "验证未通过"),
+                    180,
+                )
             return f"🛡️ **{title}** (`{primary}`): {desc}"
         vobs_list = evidence.get("verifier_observations") or []
         vobs = next(
@@ -1378,7 +1483,7 @@ def resolve_evidence_item(ref: str, evidence: Dict[str, Any], lang: str = "zh") 
         )
         if vobs:
             desc = clean_code_line(
-                vobs.get("matched_text") or vobs.get("summary") or "assertion failed", 120
+                source_quotation(vobs.get("matched_text") or vobs.get("summary"), lang), 180
             )
         else:
             desc = "Verifier recorded failure" if is_en else "验证器记录失败结论"
@@ -1556,4 +1661,179 @@ def render_deliverable_audit(evidence: Dict[str, Any], lang: str = "zh") -> List
             "",
         ]
     )
+    return lines
+
+
+def render_contract_review(
+    evidence: Dict[str, Any], lang: str = "zh", reviewed: bool = False
+) -> List[str]:
+    """Display reviewable contract/replay evidence without changing benchmark results."""
+    review = evidence.get("contract_review") or {}
+    items = review.get("review_items") or []
+    replay = review.get("execution_scope_findings") or []
+    coverage = review.get("requirement_coverage_findings") or []
+    if not items and not replay and not coverage:
+        return []
+    en = lang == "en"
+    labels = {
+        "semantic_rejection": ("语义误拒复核", "Semantic rejection review"),
+        "hidden_format_requirement": ("隐藏格式要求复核", "Hidden-format review"),
+        "definition_ambiguity": ("定义歧义复核", "Definition review"),
+    }
+
+    def pointer(record):
+        raw = str(record.get("path") or "unknown source")
+        path = Path(raw)
+        for key in ("task_dir", "trial_dir"):
+            if evidence.get(key):
+                try:
+                    raw = path.relative_to(Path(evidence[key])).as_posix()
+                    break
+                except ValueError:
+                    pass
+        return raw + (f":L{record['line_start']}" if record.get("line_start") else "")
+
+    lines = [
+        "### Verifier / Case contract review" if en else "### 验证器与公开契约复核",
+        "",
+        (
+            "Original contract observations supporting review of the recorded rejection; later checks may not have run."
+            if en
+            else "以下原契约观测用于审查已记录的拒绝；后续检查可能尚未执行。"
+        )
+        if reviewed
+        else (
+            "These findings identify review targets, not a changed score. Later checks may not have run."
+            if en
+            else "以下记录用于定位复核项，不改判通过；后续检查可能尚未执行。"
+        ),
+        "",
+    ]
+    for item in items[:8]:
+        title = labels.get(item.get("category"), ("契约复核", "Contract review"))[int(en)]
+        field = clean_prose(item.get("field"), 100).replace("`", "'")
+        lines += [f"- **{title}** · `{field}`: {localized_field(item, 'summary', lang)}"]
+        sources = item.get("verifier_source_evidence") or []
+        actual = item.get("actual_submitted_representation") or []
+        if sources:
+            lines.append(
+                ("  - Rule: " if en else "  - 评分规则：")
+                + ", ".join(f"`{pointer(x)}`" for x in sources[:3])
+            )
+        if actual:
+            lines.append(
+                ("  - Submission: " if en else "  - 提交定位：")
+                + ", ".join(f"`{pointer(x)}` `{x.get('pointer') or '$'}`" for x in actual[:2])
+            )
+        lines.append(
+            ("  - Uncertainty: " if en else "  - 尚待确认：")
+            + report_text(item.get("uncertainty"), lang)
+        )
+    for item in replay[:4]:
+        filename = str(item.get("filename") or "deliverable")
+        lines += [
+            "",
+            (
+                f"- **Replay-scope review**: `{filename}` exists in capture; verifier source also validates an isolated replay directory. The saved rejection alone does not identify the invocation."
+                if en
+                else f"- **重放范围复核**：`{filename}` 已在原始采集中存在，评分器源码还会检查隔离重放目录。仅凭拒绝消息不能混同两次检查。"
+            ),
+        ]
+        for entry in item.get("replay_entrypoints") or []:
+            lines.append(
+                ("  - Replay entrypoint: " if en else "  - 重放入口：") + f"`{pointer(entry)}`"
+            )
+        lines.append(
+            (
+                "  - Static write targets are incomplete evidence; dynamic writes and imports may be missed."
+                if en
+                else "  - 静态写出目标只是线索，动态写入和导入模块可能未被识别。"
+            )
+        )
+    for item in coverage[:4]:
+        lines += [
+            "",
+            "- **Per-sample requirement coverage**: the public contract requests coverage for each label; the saved rejection checks direct map keys. Direct-key mismatch alone does not prove that all underlying scientific checks are missing."
+            if en
+            else "- **逐样本要求覆盖核对**：公开要求覆盖各标签，已保存的拒绝检查比较对象的直接键。直接键不一致本身不能证明所有科学核验都缺失。",
+        ]
+        for actual in item.get("actual_submitted_representation") or []:
+            missing = ", ".join(str(x) for x in actual.get("missing_direct_labels") or [])
+            lines.append(
+                f"  - `{actual.get('pointer') or '$'}` · "
+                + ("Missing direct labels: " if en else "缺少的直接标签键：")
+                + (missing or "—")
+            )
+            if actual.get("nested_label_occurrences"):
+                lines.append(
+                    "    - The labels also occur in nested maps; inspect those records before judging completeness."
+                    if en
+                    else "    - 标签也出现在嵌套映射中，判断完整性时需一并查看。"
+                )
+            quotes = sorted(
+                actual.get("submitted_text_quotes") or [],
+                key=lambda q: (
+                    0
+                    if isinstance(q, dict)
+                    and re.search(
+                        r"(?:status|cross_check_type|limitations|completion)$",
+                        str(q.get("pointer", "")),
+                    )
+                    else 1
+                ),
+            )
+            for quote in quotes[:2]:
+                text = (
+                    (quote.get("quote") or quote.get("value") or quote.get("excerpt"))
+                    if isinstance(quote, dict)
+                    else quote
+                )
+                lines.append("    - " + source_quotation(clean_prose(text, 280), lang))
+    lines.extend(
+        [
+            "",
+            (
+                "Full public-contract, submission, and source excerpts: `data/evidence.json`."
+                if en
+                else "公开契约、提交内容和源码片段详见 `data/evidence.json`。"
+            ),
+            "",
+        ]
+    )
+    return lines
+
+
+def render_scientific_contract_review(evidence: Dict[str, Any], lang: str = "zh") -> List[str]:
+    findings = (evidence.get("scientific_contract_review") or {}).get("findings") or []
+    if not findings:
+        return []
+    en = lang == "en"
+    lines = ["### Scientific definition review" if en else "### 科学指标定义核对", ""]
+    for finding in findings[:4]:
+        lines.append(
+            "- The saved stopping code uses a maximum Cartesian component, while the failed check uses the maximum per-atom Euclidean norm. These are different mathematical quantities, not alternative wording."
+            if en
+            else "- 保存的停止条件代码使用最大笛卡尔分量，失败检查使用每原子欧氏范数的最大值。两者是不同的数学量，不能按语义等价放宽。"
+        )
+        observed = finding.get("observed_code") or {}
+        lines.append(
+            ("- Recorded definition: " if en else "- 定义位置：")
+            + f"`{observed.get('event_ref') or observed.get('source_ref') or '—'}`"
+        )
+        lines += [
+            "```python",
+            str(observed.get("assignment") or ""),
+            str(finding.get("stopping_condition") or ""),
+            "```",
+        ]
+        lines.append(
+            ("- Application binding: " if en else "- 执行关联：")
+            + str(finding.get("application_binding") or "unresolved")
+        )
+        lines.append(
+            "- This is a source-bound candidate; it does not establish a general capability deficit. See evidence.json for public requirements, execution, and verifier locations."
+            if en
+            else "- 这是有源码依据的候选原因，不等于模型普遍能力不足。公开要求、执行和评分器位置见证据数据。"
+        )
+    lines.append("")
     return lines

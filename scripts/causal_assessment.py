@@ -33,6 +33,239 @@ DECISION_KINDS = {
 EXECUTION_TYPES = {"tool_call", "file_write", "shell_error", "repeated_command"}
 
 
+# Canonical reviewed classifications; a reviewer cannot invent a category/code pair.
+REVIEWED_CODES = {
+    "AGENT_SCIENTIFIC_METHOD_SELECTION": ("agent", "scientific_method_selection"),
+    "AGENT_SCIENTIFIC_PARAMETER_SELECTION": ("agent", "scientific_parameter_selection"),
+    "AGENT_TASK_UNDERSTANDING": ("agent", "task_understanding"),
+    "AGENT_PLANNING": ("agent", "planning"),
+    "AGENT_TOOL_USE": ("agent", "tool_use"),
+    "AGENT_RESULT_VALIDATION": ("agent", "result_validation"),
+    "AGENT_SELF_CHECK_GAP": ("agent", "self_check_gap"),
+    "AGENT_PATH_OR_DEPENDENCY_DISCOVERY": ("agent", "path_or_dependency_discovery"),
+    "AGENT_ERROR_DIAGNOSIS": ("agent", "error_diagnosis"),
+    "AGENT_RECOVERY": ("agent", "recovery"),
+    "AGENT_PREMATURE_TERMINATION": ("agent", "premature_termination"),
+    "CASE_AMBIGUOUS_CONTRACT": ("case", "ambiguous_contract"),
+    "CASE_MISSING_ASSET": ("case", "missing_asset"),
+    "CASE_CORRUPT_ASSET": ("case", "corrupt_asset"),
+    "CASE_PROMPT_REF_MISMATCH": ("case", "prompt_ref_mismatch"),
+    "CASE_INSUFFICIENT_TIMEOUT": ("case", "insufficient_timeout"),
+    "INFRA_CONTAINER_BUILD": ("infra", "container_build"),
+    "INFRA_CONTAINER_RUNTIME": ("infra", "container_runtime"),
+    "INFRA_EXTERNAL_NETWORK": ("infra", "external_network"),
+    "INFRA_API_ERROR": ("infra", "api_error"),
+    "INFRA_API_RATE_LIMIT": ("infra", "api_rate_limit"),
+    "INFRA_OOM": ("infra", "oom"),
+    "INFRA_DISK": ("infra", "disk"),
+    "INFRA_AGENT_TIMEOUT": ("infra", "agent_timeout"),
+    "INFRA_RUNNER_LIFECYCLE": ("infra", "runner_lifecycle"),
+    "INFRA_VERIFIER_INTERPRETER_MISSING": ("infra", "verifier_interpreter_missing"),
+    "INFRA_AGENT_AUTOCOMPACT_THRASHING": ("infra", "autocompact_thrashing"),
+    "INFRA_AGENT_OUTPUT_TOKEN_LIMIT": ("infra", "output_token_limit"),
+    "VERIFIER_TOLERANCE_TOO_STRICT": ("verifier", "tolerance_too_strict"),
+    "VERIFIER_SCHEMA_MISMATCH": ("verifier", "schema_mismatch"),
+    "VERIFIER_REGEX_OR_PARSER_DEFECT": ("verifier", "regex_or_parser_defect"),
+    "VERIFIER_HIDDEN_CONTRACT": ("verifier", "hidden_contract"),
+    "VERIFIER_RECOMPUTE_DEFECT": ("verifier", "recompute_defect"),
+    "VERIFIER_TRUSTED_ASSET_HASH_MISMATCH": ("verifier", "trusted_asset_hash_mismatch"),
+    "VERIFIER_REFERENCE_LFS_POINTER": ("verifier", "reference_lfs_pointer"),
+}
+
+
+def proposed_attribution_errors(review: dict, analysis: dict) -> List[str]:
+    proposed = review.get("proposed_attribution")
+    if proposed is None:
+        return []
+    if not isinstance(proposed, dict):
+        return ["proposed_attribution must be structured"]
+    errors = []
+    if set(proposed) - {"category", "subtype", "code", "summary_en", "summary_zh"}:
+        errors.append(
+            "proposed_attribution has unsupported fields; scores and verdicts cannot be proposed"
+        )
+    if REVIEWED_CODES.get(proposed.get("code")) != (
+        proposed.get("category"),
+        proposed.get("subtype"),
+    ):
+        errors.append("proposed_attribution category/subtype/code conflict or unknown code")
+    if not all(
+        isinstance(proposed.get(k), str) and proposed[k].strip()
+        for k in ("summary_en", "summary_zh")
+    ):
+        errors.append("proposed_attribution requires authored summary_en and summary_zh")
+    kind = (review.get("decision") or {}).get("kind")
+    expected = {"verifier": "verifier", "case": "case", "infra": "infrastructure"}
+    category = proposed.get("category")
+    if category in expected and kind != expected[category]:
+        errors.append("proposed_attribution category conflicts with decision.kind")
+    if category == "agent" and kind not in ("scientific", "parameter", "execution", "delivery"):
+        errors.append("proposed agent attribution requires an agent execution decision")
+    if analysis.get("verdict") == "passed":
+        errors.append("cannot propose a failure cause for a passed trial")
+    return errors
+
+
+def nonagent_events(evidence: dict, kind: str) -> dict:
+    """Typed saved observations, never agent thoughts, anchor non-agent reviews."""
+    if kind == "verifier":
+        result = {
+            o.get("obs_id"): o
+            for o in evidence.get("verifier_observations") or []
+            if o.get("obs_id")
+        }
+        result.update(
+            {
+                f"verifier_report.failed_checks[{i}]": o
+                for i, o in enumerate(
+                    (evidence.get("verifier_report") or {}).get("failed_checks") or []
+                )
+            }
+        )
+        return result
+    if kind == "case":
+        result = {
+            o.get("contract_id"): o
+            for o in evidence.get("contract_observations") or []
+            if o.get("contract_id")
+        }
+        result.update(
+            {
+                o.get("review_id"): o
+                for o in (evidence.get("contract_review") or {}).get("review_items") or []
+                if o.get("review_id")
+            }
+        )
+        return result
+    if kind == "infrastructure":
+        return {
+            o.get("error_id"): o
+            for o in evidence.get("error_observations") or []
+            if o.get("error_id") and o.get("causal_candidate") and not o.get("recovered")
+        }
+    return {}
+
+
+def terminal_failure_refs(evidence: dict) -> set:
+    refs = {
+        o.get("obs_id")
+        for o in evidence.get("verifier_observations") or []
+        if o.get("type")
+        in (
+            "failed_check",
+            "verifier_fail_message",
+            "verifier_internal_crash",
+            "missing_file",
+            "missing_deliverable",
+        )
+    }
+    refs |= {
+        o.get("error_id")
+        for o in evidence.get("error_observations") or []
+        if o.get("causal_candidate") and not o.get("recovered")
+    }
+    refs |= {
+        o.get("sci_id")
+        for o in evidence.get("scientific_observations") or []
+        if not o.get("recovered")
+        and o.get("error_family") == "verifier_recompute_divergence"
+        and str(o.get("source_ref", "")).startswith("verifier")
+        and o.get("agent_artifact_ref")
+    }
+    report = evidence.get("verifier_report") or {}
+    refs |= {
+        f"verifier_report.failed_checks[{i}]"
+        for i, _ in enumerate(report.get("failed_checks") or [])
+    }
+    if report.get("verdict") == "fail":
+        paths = [report.get("primary_report")] + [
+            x.get("rel_path") if isinstance(x, dict) else x
+            for x in report.get("source_files") or []
+        ]
+        for artifact in evidence.get("artifacts") or []:
+            rel = str(artifact.get("rel_path") or "")
+            if artifact.get("exists") is True and any(
+                path and (rel == path or rel == "verifier/" + str(path)) for path in paths
+            ):
+                refs.update(
+                    r
+                    for r in (
+                        artifact.get("artifact_id"),
+                        rel,
+                        f"{artifact.get('scope', 'trial')}:{rel}",
+                    )
+                    if r
+                )
+    return refs - {None}
+
+
+def nonagent_binding_errors(evidence: dict, decision: dict) -> List[str]:
+    kind = decision.get("kind")
+    if kind not in ("verifier", "case", "infrastructure"):
+        return []
+    event = nonagent_events(evidence, kind).get(decision.get("event_ref"))
+    if event is None:
+        return ["non-agent decision event must resolve to a typed saved observation"]
+    binding = decision.get("execution_binding") or {}
+    errors = []
+    if not terminal_failure_refs(evidence).intersection(
+        (decision.get("outcome") or {}).get("evidence_refs") or []
+    ):
+        errors.append("non-agent decision requires cited terminal rejection evidence")
+    if decision.get("event_ref") not in binding.get("evidence_refs", []):
+        errors.append("non-agent event must be cited in execution_binding")
+    if not binding.get("effective_input_refs") or not binding.get("effective_output_refs"):
+        errors.append("non-agent event requires saved effective input and output bindings")
+    refs = set()
+    for key in ("execution_binding", "basis", "outcome"):
+        refs.update((decision.get(key) or {}).get("evidence_refs") or [])
+    artifacts = {
+        r: a
+        for a in evidence.get("artifacts") or []
+        for r in (
+            a.get("artifact_id"),
+            a.get("rel_path"),
+            f"{a.get('scope', 'trial')}:{a.get('rel_path')}",
+        )
+        if r
+    }
+    basis = set((decision.get("basis") or {}).get("evidence_refs") or [])
+    rules = {o.get("contract_id") for o in evidence.get("contract_observations") or []}
+    if not (
+        basis.intersection(rules)
+        or any(
+            artifacts.get(r, {}).get("scope") == "task" and artifacts[r].get("exists") is True
+            for r in basis
+        )
+    ):
+        errors.append(
+            "non-agent event requires an applicable saved source or contract rule in basis"
+        )
+    sources = event.get("source_refs") or [
+        event.get("source_ref") or event.get("source_file") or event.get("source")
+    ]
+    if kind == "verifier" and not any(sources):
+        report = evidence.get("verifier_report") or {}
+        sources = [report.get("primary_report")]
+
+    def matches(source, artifact):
+        source = str(source or "").split(":L", 1)[0]
+        rel = str(artifact.get("rel_path") or "")
+        return source in (
+            artifact.get("artifact_id"),
+            rel,
+            f"{artifact.get('scope', 'trial')}:{rel}",
+        ) or (source and rel.endswith("/" + source))
+
+    if not any(
+        a.get("exists") is True and any(matches(source, a) for source in sources)
+        for ref, a in artifacts.items()
+        if ref in refs
+    ):
+        errors.append("non-agent event is unbound to its cited saved source artifact")
+    return errors
+
+
 def digest(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(
@@ -151,6 +384,7 @@ def assess_static(evidence: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[st
         ],
         "existing_verification": existing_verification(evidence),
         "deliverable_audit": copy.deepcopy(evidence.get("deliverable_audit")),
+        "contract_review": copy.deepcopy(evidence.get("contract_review")),
         "review": None,
         "capability": {
             "status": "suspected"
@@ -183,7 +417,11 @@ def review_errors(
     if decision.get("kind") not in DECISION_KINDS:
         errors.append("invalid decision.kind")
     ref = decision.get("event_ref")
-    if ref and ref not in execution_refs(evidence):
+    if (
+        ref
+        and ref not in execution_refs(evidence)
+        and ref not in nonagent_events(evidence, decision.get("kind"))
+    ):
         errors.append("decision event must be actual execution, not reasoning or a final answer")
     for key in ("execution_binding", "basis", "outcome"):
         item = decision.get(key)
@@ -197,6 +435,7 @@ def review_errors(
             errors.append(f"decision.{key}: unresolved evidence reference")
         if refs and not str(item.get("statement") or "").strip():
             errors.append(f"decision.{key}: evidence requires a review statement")
+    errors.extend(nonagent_binding_errors(evidence, decision))
     binding = decision.get("execution_binding") or {}
     for key in ("effective_input_refs", "effective_output_refs"):
         refs = binding.get(key, [])
@@ -251,6 +490,8 @@ def review_errors(
 
 def promotion_ready(evidence: dict, review: dict, category: Optional[str] = None) -> bool:
     d = review["decision"]
+    if nonagent_binding_errors(evidence, d):
+        return False
     if category not in ("agent", "infra", "case", "verifier"):
         return False
     if category == "agent" and d.get("kind") not in (
@@ -366,41 +607,7 @@ def promotion_ready(evidence: dict, review: dict, category: Optional[str] = None
             return False
     # Saved outcomes must be terminal failures; recovered scientific warnings and
     # a merely inventoried result.json are insufficient for promotion.
-    outcome_refs = {
-        o.get("obs_id")
-        for o in evidence.get("verifier_observations") or []
-        if o.get("type")
-        in (
-            "failed_check",
-            "verifier_fail_message",
-            "verifier_internal_crash",
-            "missing_file",
-            "missing_deliverable",
-        )
-    }
-    outcome_refs |= {
-        o.get("sci_id")
-        for o in evidence.get("scientific_observations") or []
-        if not o.get("recovered")
-        and o.get("error_family") == "verifier_recompute_divergence"
-        and str(o.get("source_ref", "")).startswith("verifier")
-        and o.get("agent_artifact_ref")
-    }
-    outcome_refs |= {
-        o.get("error_id")
-        for o in evidence.get("error_observations") or []
-        if o.get("causal_candidate") and not o.get("recovered")
-    }
-    report_paths = {
-        "verifier/" + str(x.get("rel_path"))
-        for x in (evidence.get("verifier_report") or {}).get("source_files") or []
-    }
-    if (evidence.get("verifier_report") or {}).get("verdict") == "fail":
-        outcome_refs |= {
-            r
-            for r, a in artifacts.items()
-            if a.get("exists") is True and a.get("rel_path") in report_paths
-        }
+    outcome_refs = terminal_failure_refs(evidence)
     if not outcome_refs.intersection(d["outcome"]["evidence_refs"]):
         return False
     primary = primary_alternative(category, d.get("kind"))
@@ -434,6 +641,8 @@ def validate_assessment(
         "deliverable_audit"
     ) != evidence.get("deliverable_audit"):
         errors.append("saved verification or deliverable summary differs from evidence")
+    if a.get("contract_review") != evidence.get("contract_review"):
+        errors.append("contract review differs from saved evidence")
     cap = a.get("capability") or {}
     if (
         cap.get("status") not in ("not_assessed", "suspected")
@@ -455,6 +664,8 @@ def validate_assessment(
 
 
 def render_assessment(analysis: Dict[str, Any], lang: str = "zh") -> str:
+    from report_style import report_text, localized_field
+
     a = analysis.get("causal_assessment") or {}
     labels = {
         "not_applicable": ("通过试次，无失败归因", "Passed; no failure attribution"),
@@ -492,12 +703,19 @@ def render_assessment(analysis: Dict[str, Any], lang: str = "zh") -> str:
         )
     if a.get("review"):
         decision = a.get("decision") or {}
-        result += f"> **{'Reviewed decision' if en else '审查的具体决策'}**: {decision.get('description') or '—'}\n"
+        result += f"> **{'Reviewed decision' if en else '审查的具体决策'}**: {localized_field(decision, 'description', lang) or '—'}\n"
         result += "> [review.json](review.json)\n"
+    items = (a.get("contract_review") or {}).get("review_items") or []
+    if items:
+        result += (
+            "> **Contract review required**: representation/definition rejection; scientific failure is not established by this alone.\n"
+            if en
+            else "> **需复核评分契约**: 表示形式或定义上的拒绝，不能单独认定科学失败。\n"
+        )
     saved = a.get("existing_verification") or {}
-    result += f"> **{'Declared coverage' if en else '声明的验证覆盖'}**: {saved.get('declared_coverage') or ('unspecified' if en else '未声明')}\n"
+    result += f"> **{'Declared coverage' if en else '声明的验证覆盖'}**: {report_text(saved.get('declared_coverage'), lang) or ('unspecified' if en else '未声明')}\n"
     if saved.get("coverage_limits"):
-        result += f"> **{'Coverage limits' if en else '覆盖限制'}**: {'; '.join(saved['coverage_limits'])}\n"
+        result += f"> **{'Coverage limits' if en else '覆盖限制'}**: {'; '.join(report_text(x, lang) for x in saved['coverage_limits'])}\n"
     result += (
         "> **Scope**: existing evidence in this trial; saved recomputation supports an outcome, not causal proof or a confirmed reusable capability gap.\n"
         if en
