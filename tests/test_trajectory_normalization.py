@@ -135,7 +135,11 @@ class TestTrajectoryNormalization(unittest.TestCase):
                     },
                 ],
             },
-            {"role": "tool", "tool_call_id": "call_1", "content": "ERROR: SCF NOT CONVERGED\nExit code: 1"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "ERROR: SCF NOT CONVERGED\nExit code: 1",
+            },
             {"role": "function", "tool_call_id": "call_2", "content": "ecutwfc = 40.0"},
         ]
         with tempfile.TemporaryDirectory() as tmp:
@@ -145,8 +149,12 @@ class TestTrajectoryNormalization(unittest.TestCase):
             self.assertTrue(norm["exists"])
             user_events = [e for e in norm["events"] if e["event_type"] == "user_instruction"]
             self.assertEqual(len(user_events), 2)
-            self.assertEqual(user_events[0]["observation"], "You are a computational chemistry agent.")
-            self.assertEqual(user_events[1]["observation"], "Compute energy and write /app/results.json")
+            self.assertEqual(
+                user_events[0]["observation"], "You are a computational chemistry agent."
+            )
+            self.assertEqual(
+                user_events[1]["observation"], "Compute energy and write /app/results.json"
+            )
 
             shell_errs = [e for e in norm["events"] if e["event_type"] == "shell_error"]
             self.assertEqual(len(shell_errs), 1)
@@ -404,7 +412,11 @@ if x > self.threshold:
                 ],
             )
             self.assertEqual(norm_ok["missing_deliverables"], [])
-            for target in ("/app/final/charges.csv", "/app/final/meta.json", "/app/final/report.txt"):
+            for target in (
+                "/app/final/charges.csv",
+                "/app/final/meta.json",
+                "/app/final/report.txt",
+            ):
                 self.assertIn(target, norm_ok["written_files"])
             sig_types = {s["signal_type"] for s in norm_ok["behavioral_signals"]}
             self.assertNotIn("premature_completion", sig_types)

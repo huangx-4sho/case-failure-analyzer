@@ -47,15 +47,15 @@
      --task tasks/<task_name> \
      --output failure-analysis/<case_id>
    ```
-   `cfa.py inspect` 支持 `--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data`（默认自动脱敏，支持 `--raw` 与 `--no-redact`）；`cfa.py diff <target_a> [<target_b>] [--trials <t1> <t2>]` 用于对比两个任务或同一任务两个试次的裁决、主因、失败检查与因果锚点差异。
+   `cfa.py inspect` 支持 `--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data`（默认自动脱敏，支持 `--raw` 与 `--no-redact`）；`cfa.py diff <target_a> [<target_b>] [--trials <t1> <t2>]` 读取已有审计报告，对比两个任务或同一任务两个试次的裁决、主因、失败检查与因果锚点差异。自动选择的“最近两次”按 `trials/` 归档报告文件的修改时间排序；轻量归档缺少的证据不会自动补齐。
 2. **单 Trial 启动与基础设施状态门控 (`scripts/runtime_state.py` + `scripts/extract_runtime_errors.py`)**
    基于单 Trial 证据判定 `agent_started`、`verifier_started`、`execution_status`、`verification_status` 与 `verdict`。若 `reward >= 1.0` 则直接判定为 `passed`，绝不因 Job 级汇总统计 `stats.n_errored_trials > 0` 误判通过的 Trial。
 3. **重建统一执行时间线与因果锚点 (`scripts/normalize_trajectory.py` + `scripts/trace_causal_anchors.py`)**
-   将 `ATIF-v1.7`、`.jsonl` 及 OpenAI/Anthropic `tool_use`/`tool_result` 消息流跨步折叠标准化为时间线事件与行为信号（`behavioral_signals`），结合保留中段高显著性错误/指标行的截断策略与两阶段脚本输出目标图（`script_targets`）精准识别交付物写出；`trace_causal_anchors.py` 对关联失败产物的脚本执行/写入事件给予反向溯源加权，并提取关键科学参数的 `parameter_evolution` 演化轨迹。
+   将 `ATIF-v1.7`、`.jsonl` 及 OpenAI/Anthropic `tool_use`/`tool_result` 消息流跨步折叠标准化为时间线事件与行为信号（`behavioral_signals`），结合保留中段高显著性错误/指标行的截断策略与两阶段脚本输出目标图（`script_targets`）推断交付物写出路径（仍需核对已采集文件）；`trace_causal_anchors.py` 对关联失败产物的脚本执行/写入事件给予反向溯源加权，并提取关键科学参数的 `parameter_evolution` 演化轨迹。
 4. **审计三方契约、交付物完整性与评测器缺陷 (`scripts/audit_contract.py`)**
    比对 `Prompt <-> Verifier <-> Agent Output`，扫描 `artifacts/` 下的 JSON/CSV/TSV 交付物生成 `deliverable_diagnostics`（检测空表、`NaN`/`Inf` 数值与 `checked_keys` 缺失），并对 `tests/verify.py` 静态解析风险做因果绑定 (`failure_binding: direct | indirect | none`)，同时独立识别 Verifier 自身崩溃 (`verifier_internal_crash` / `VERIFIER_RECOMPUTE_DEFECT`)。
 5. **提取科学计算软件错误与交叉核对事件 (`scripts/extract_scientific_errors.py`)**
-   基于单一真值源 `references/error-families.json` 匹配 11 类科学计算与机器学习势套件的 60 类 `error_family`（支持 `.jsonl` 轨迹印证、无界具名指标交付物配对、`scale_or_sign_hint` 单位/量纲/符号识别以及 `stale_deliverable_sync` 过时交付同步检测），并结合 `references/software/<software>.md` 判别证据要求。
+   基于单一真值源 `references/error-families.json` 匹配 11 类科学计算与机器学习势套件的 60 类 `error_family`（支持 `.jsonl` 轨迹印证、不设数值偏差上限的具名指标配对，以及 `scale_or_sign_hint` 单位倍率/符号提示与 `stale_deliverable_sync` 待核实的未同步线索），并结合 `references/software/<software>.md` 判别证据要求。提示的触发条件、扫描限额和误读风险见[证据结构](evidence-schema.md#4-附加交叉核对交付物完整性与因果溯源扩展)。
 6. **定位首次不可恢复偏离点 (`first_unrecovered_deviation`)**
    记录 `{"status": "identified", "event_ref": "...", "summary": "..."}`；若因日志缺失无法定位，显式记录 `{"status": "not_identified", "event_ref": null, "summary": "..."}`。
 7. **评估竞争根因假设 (`scripts/generate_hypotheses.py` & `scripts/confidence.py`)**
@@ -78,3 +78,20 @@
 6. **证据不足或竞争假设无法区分时必须输出 `unknown`**。
 7. **仅针对可复用的 Agent 科学/工程能力缺口生成 `skill-prescription.md`**：严禁为绕过 Infra 故障或 Verifier 缺陷而生成领域 Skill。
 
+## 科学软件错误签名
+
+注册表包含 11 组软件、60 类错误家族。这里列出的是日志匹配规则和判别证据指南，不代表对所列软件进行了完整兼容性验证。
+
+| 套件 | 适用领域与软件 | 错误家族数 | 参考文档 |
+| :--- | :--- | :---: | :--- |
+| `cp2k` | 混合高斯/平面波 DFT 与从头算分子动力学 (`CP2K`) | 8 | [cp2k.md](../../references/software/cp2k.md) |
+| `quantum-espresso` | 平面波 DFT / DFPT (`pw.x`, `bands.x`, `dos.x`, `ph.x`) | 6 | [quantum-espresso.md](../../references/software/quantum-espresso.md) |
+| `vasp-abacus` | 固态平面波与局域基 DFT (`VASP`, `ABACUS`, `GPAW`, `Siesta`, `FHI-aims`) | 5 | [vasp-abacus.md](../../references/software/vasp-abacus.md) |
+| `orca-gaussian-pyscf` | 分子量子化学 (`ORCA`, `Gaussian`, `PySCF`, `Psi4`, `Q-Chem`, `NWChem`) | 5 | [orca-gaussian-pyscf.md](../../references/software/orca-gaussian-pyscf.md) |
+| `lammps` | 经典与反应力场分子动力学 (`LAMMPS`) | 8 | [lammps.md](../../references/software/lammps.md) |
+| `gromacs-amber-openmm` | 生物分子动力学 (`GROMACS`, `AMBER`, `OpenMM`, `NAMD`, `CHARMM`) | 4 | [gromacs-amber-openmm.md](../../references/software/gromacs-amber-openmm.md) |
+| `mlip` | 机器学习原子间势 (`MACE`, `NequIP`, `Allegro`, `DeePMD-kit`, `CHGNet`, `SevenNet`, `Orb`) | 5 | [mlip.md](../../references/software/mlip.md) |
+| `ase` | 原子模拟工作流与计算器 (`ASE`, `pymatgen`) | 5 | [ase.md](../../references/software/ase.md) |
+| `xtb` | 半经验量子化学与构象搜索 (`xTB`, `CREST`) | 5 | [xtb.md](../../references/software/xtb.md) |
+| `rdkit` | 化学信息学与构象生成 (`RDKit`) | 5 | [rdkit.md](../../references/software/rdkit.md) |
+| `generic-scientific` | 数值求解器与偏微分方程 (`SciPy`, `NumPy`, `JAX`, `PyTorch`, `FEniCS`, `OpenFOAM`) | 4 | [generic-scientific.md](../../references/software/generic-scientific.md) |

@@ -135,7 +135,9 @@ class TestContractAudit(unittest.TestCase):
             trial_unrelated = Path(tmp) / "trial_unrelated"
             (trial_unrelated / "artifacts").mkdir(parents=True)
             (trial_unrelated / "verifier").mkdir(parents=True)
-            (trial_unrelated / "artifacts" / "table.csv").write_text("col1,col2\n", encoding="utf-8")
+            (trial_unrelated / "artifacts" / "table.csv").write_text(
+                "col1,col2\n", encoding="utf-8"
+            )
             (trial_unrelated / "artifacts" / "results.json").write_text(
                 json.dumps({"energy": float("nan")}), encoding="utf-8"
             )
@@ -157,7 +159,9 @@ class TestContractAudit(unittest.TestCase):
             trial_confirmed = Path(tmp) / "trial_confirmed"
             (trial_confirmed / "artifacts").mkdir(parents=True)
             (trial_confirmed / "verifier").mkdir(parents=True)
-            (trial_confirmed / "artifacts" / "table.csv").write_text("col1,col2\n", encoding="utf-8")
+            (trial_confirmed / "artifacts" / "table.csv").write_text(
+                "col1,col2\n", encoding="utf-8"
+            )
             (trial_confirmed / "artifacts" / "results.json").write_text(
                 json.dumps({"energy": float("nan")}), encoding="utf-8"
             )

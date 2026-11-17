@@ -349,12 +349,19 @@ class ThreeStateBatchBoardTests(unittest.TestCase):
             self.assertIn(diag_word, md, lang)
 
 
-
 class RemoteDeliveryEvidenceTests(unittest.TestCase):
     def test_only_bind_confirmed_unfinished_remote_delivery(self):
-        scenarios = ("confirmed", "completed", "failed_poll", "manifest_exists",
-                     "missing_notification", "runtime_exception", "other_verifier_failure",
-                     "path_prefix_only", "malformed_trajectory")
+        scenarios = (
+            "confirmed",
+            "completed",
+            "failed_poll",
+            "manifest_exists",
+            "missing_notification",
+            "runtime_exception",
+            "other_verifier_failure",
+            "path_prefix_only",
+            "malformed_trajectory",
+        )
         for scenario in scenarios:
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -365,9 +372,9 @@ class RemoteDeliveryEvidenceTests(unittest.TestCase):
                 (root / "instruction.md").write_text(f"Required output: `{instruction}`.")
                 trajectory = root / "trajectory.json"
                 steps = [{"source": "agent", "extra": {"stop_reason": "end_turn"}}]
-                trajectory.write_text(json.dumps({
-                    "steps": [None] if scenario == "malformed_trajectory" else steps
-                }))
+                trajectory.write_text(
+                    json.dumps({"steps": [None] if scenario == "malformed_trajectory" else steps})
+                )
                 if scenario == "manifest_exists":
                     (output / "execution_manifest.json").write_text("{}")
                 evidence = {
@@ -376,19 +383,26 @@ class RemoteDeliveryEvidenceTests(unittest.TestCase):
                         "reward": 0.0,
                         "has_trial_exception": scenario == "runtime_exception",
                     },
-                    "verifier_report": {"failed_checks": [{"detail": "missing execution_manifest.json"}]},
+                    "verifier_report": {
+                        "failed_checks": [{"detail": "missing execution_manifest.json"}]
+                    },
                     "metadata": {"declared_deliverables": ["/app/final"]},
                     "timeline": [
-                        {"tool_name": "Bash", "observation": (
-                            "" if scenario == "missing_notification"
-                            else "You will be notified when it completes."
-                        )},
+                        {
+                            "tool_name": "Bash",
+                            "observation": (
+                                ""
+                                if scenario == "missing_notification"
+                                else "You will be notified when it completes."
+                            ),
+                        },
                         {
                             "event_id": "trajectory:step:2:tool:0",
                             "tool_name": "Bash",
                             "command": "python3 submit.py status --job production",
                             "observation": (
-                                "production => completed 0" if scenario == "completed"
+                                "production => completed 0"
+                                if scenario == "completed"
                                 else "production => running None"
                             ),
                             "exit_code": int(scenario == "failed_poll"),
@@ -398,10 +412,14 @@ class RemoteDeliveryEvidenceTests(unittest.TestCase):
                     "behavioral_signals": [],
                 }
                 if scenario == "other_verifier_failure":
-                    evidence["verifier_report"]["failed_checks"].append({"detail": "numeric mismatch"})
+                    evidence["verifier_report"]["failed_checks"].append(
+                        {"detail": "numeric mismatch"}
+                    )
                 _bind_unfinished_remote_delivery(evidence, trajectory, root, root)
                 self.assertEqual(bool(evidence["behavioral_signals"]), scenario == "confirmed")
-                self.assertEqual(evidence["missing_deliverables"], [required] if scenario == "confirmed" else [])
+                self.assertEqual(
+                    evidence["missing_deliverables"], [required] if scenario == "confirmed" else []
+                )
 
 
 if __name__ == "__main__":

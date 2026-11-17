@@ -219,9 +219,7 @@ _PY_OPEN_WRITE_RE = re.compile(
 _PY_PATH_OPEN_WRITE_RE = re.compile(
     r"""Path\s*\(\s*([^)]+?)\s*\)\s*\.\s*open\s*\(\s*(?:mode\s*=\s*)?(['"])[wa][^'"]*\2"""
 )
-_PY_PATH_WRITE_RE = re.compile(
-    r"""Path\s*\(\s*([^)]+?)\s*\)\s*\.\s*write_(?:text|bytes)\s*\("""
-)
+_PY_PATH_WRITE_RE = re.compile(r"""Path\s*\(\s*([^)]+?)\s*\)\s*\.\s*write_(?:text|bytes)\s*\(""")
 _PY_PAREN_PATH_WRITE_RE = re.compile(
     r"""\(\s*([A-Za-z_][A-Za-z0-9_]*\s*/\s*['"][^'"]+['"])\s*\)\s*\.\s*write_(?:text|bytes)\s*\("""
 )
@@ -332,9 +330,7 @@ def _command_executes_script(cmd: str, script_key: str) -> Tuple[bool, Optional[
     if not cmd or not script_key or script_key not in cmd:
         return False, None
 
-    token_re = re.compile(
-        r"(?:^|[\s'\"/=])" + re.escape(script_key) + r"(?:$|[\s'\";&|])"
-    )
+    token_re = re.compile(r"(?:^|[\s'\"/=])" + re.escape(script_key) + r"(?:$|[\s'\";&|])")
     active_cd: Optional[str] = None
     for sub in re.split(r"(?:&&|\|\||;|\n)", cmd):
         s = sub.strip()
@@ -490,18 +486,8 @@ def _parse_trajectory_payload(text: str) -> Dict[str, Any]:
 def _normalize_tool_call(tc: Dict[str, Any], fallback_idx: int) -> Dict[str, Any]:
     """Normalize OpenAI, Anthropic, or ATIF tool-call dicts into ATIF shape."""
     fn_block = tc.get("function") if isinstance(tc.get("function"), dict) else {}
-    call_id = (
-        tc.get("tool_call_id")
-        or tc.get("id")
-        or tc.get("call_id")
-        or f"call_{fallback_idx}"
-    )
-    fn_name = (
-        tc.get("function_name")
-        or fn_block.get("name")
-        or tc.get("name")
-        or "unknown"
-    )
+    call_id = tc.get("tool_call_id") or tc.get("id") or tc.get("call_id") or f"call_{fallback_idx}"
+    fn_name = tc.get("function_name") or fn_block.get("name") or tc.get("name") or "unknown"
     if "arguments" in tc:
         raw_args = tc.get("arguments")
     elif "input" in tc:
@@ -633,9 +619,7 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
 
         # OpenAI / legacy function tool result message -> attach to preceding assistant step
         if role in ("tool", "function"):
-            cid = str(
-                rec.get("tool_call_id") or rec.get("tool_use_id") or rec.get("call_id") or ""
-            )
+            cid = str(rec.get("tool_call_id") or rec.get("tool_use_id") or rec.get("call_id") or "")
             raw_res = rec.get("content") if "content" in rec else rec.get("output")
             _attach_tool_result(steps, cid, _extract_result_text(raw_res))
             continue
@@ -700,9 +684,7 @@ def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, An
             "tool_calls": extracted_calls,
         }
         thinking_val = (
-            "\n".join(thinking_parts)
-            or rec.get("thinking")
-            or rec.get("reasoning_content")
+            "\n".join(thinking_parts) or rec.get("thinking") or rec.get("reasoning_content")
         )
         if isinstance(thinking_val, str) and thinking_val.strip():
             step_dict["thinking"] = thinking_val.strip()
@@ -1104,16 +1086,11 @@ def normalize_trajectory(
                 code_payload = summarize_code_payload(args)
                 written_files.append(cmd_or_path)
                 raw_code = (
-                    args.get("content")
-                    or args.get("new_string")
-                    or args.get("newString")
-                    or ""
+                    args.get("content") or args.get("new_string") or args.get("newString") or ""
                 )
                 if not raw_code and isinstance(args.get("edits"), list):
                     raw_code = "\n".join(
-                        str(e.get("new_string", ""))
-                        for e in args["edits"]
-                        if isinstance(e, dict)
+                        str(e.get("new_string", "")) for e in args["edits"] if isinstance(e, dict)
                     )
                 if isinstance(raw_code, str) and raw_code.strip():
                     is_replace = fn_name.lower() == "write" and "content" in args

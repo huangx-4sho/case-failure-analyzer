@@ -600,7 +600,10 @@ class TestMultiFormatAndCrossCheckPrecision(unittest.TestCase):
                             {
                                 "id": "tc_1",
                                 "type": "function",
-                                "function": {"name": "Bash", "arguments": '{"command": "python run.py"}'},
+                                "function": {
+                                    "name": "Bash",
+                                    "arguments": '{"command": "python run.py"}',
+                                },
                             }
                         ],
                     },
@@ -694,7 +697,9 @@ class TestMultiFormatAndCrossCheckPrecision(unittest.TestCase):
         by_metric = {c["metric"]: c for c in comps}
         self.assertIn("total_energy_Ha", by_metric)
         self.assertIn("scale_or_sign_hint", by_metric["total_energy_Ha"])
-        self.assertEqual(by_metric["total_energy_Ha"]["scale_or_sign_hint"]["kind"], "unit_conversion")
+        self.assertEqual(
+            by_metric["total_energy_Ha"]["scale_or_sign_hint"]["kind"], "unit_conversion"
+        )
         self.assertIn("Hartree/eV", by_metric["total_energy_Ha"]["scale_or_sign_hint"]["label"])
         self.assertEqual(by_metric["dipole_z"]["scale_or_sign_hint"]["kind"], "sign_flip")
 
@@ -796,7 +801,9 @@ class TestMultiFormatAndCrossCheckPrecision(unittest.TestCase):
             ],
         }
         analysis = run_attribution_engine(evidence, {"candidate_hypotheses": []})
-        self.assertEqual(analysis["decision_trace"]["selected"]["gate_id"], "gate4_numerical_divergence")
+        self.assertEqual(
+            analysis["decision_trace"]["selected"]["gate_id"], "gate4_numerical_divergence"
+        )
         cf_codes = [cf["code"] for cf in analysis["contributing_factors"]]
         self.assertIn("AGENT_RESULT_VALIDATION", cf_codes)
         self.assertIn("AGENT_PLANNING", cf_codes)

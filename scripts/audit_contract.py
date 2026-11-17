@@ -1093,7 +1093,9 @@ def audit_contract(
                     {
                         "contract_id": f"contract:{cid}",
                         "item": f"results.json:values.{mk}",
-                        "prompt_requirement": "required" if in_prompt else "absent_or_different_key",
+                        "prompt_requirement": "required"
+                        if in_prompt
+                        else "absent_or_different_key",
                         "verifier_requirement": "required",
                         "agent_output_status": "missing_in_delivered_results_json",
                         "alignment": "agent_mismatch" if in_prompt else "verifier_schema_mismatch",

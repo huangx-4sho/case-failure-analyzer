@@ -368,8 +368,12 @@ def _attach_unscored_verifier_fault(
 def _bind_unfinished_remote_delivery(evidence, trajectory_path, trial_dir, task_dir):
     """Bind a missing required file to a normal exit with outstanding remote work."""
     runtime = evidence["runtime"]
-    if (not runtime.get("verifier_started") or runtime.get("reward") != 0
-            or runtime.get("has_trial_exception") or not all((trajectory_path, trial_dir, task_dir))):
+    if (
+        not runtime.get("verifier_started")
+        or runtime.get("reward") != 0
+        or runtime.get("has_trial_exception")
+        or not all((trajectory_path, trial_dir, task_dir))
+    ):
         return
     checks = (evidence.get("verifier_report") or {}).get("failed_checks") or []
     details = {str(check.get("detail") or "") for check in checks}
@@ -391,15 +395,21 @@ def _bind_unfinished_remote_delivery(evidence, trajectory_path, trial_dir, task_
         return
     final = steps[-1]
     extra = final.get("extra")
-    if (final.get("source") != "agent" or final.get("tool_calls")
-            or not isinstance(extra, dict) or extra.get("stop_reason") != "end_turn"):
+    if (
+        final.get("source") != "agent"
+        or final.get("tool_calls")
+        or not isinstance(extra, dict)
+        or extra.get("stop_reason") != "end_turn"
+    ):
         return
     for declared in evidence["metadata"]["declared_deliverables"]:
         required_path = declared.rstrip("/") + "/" + filename
         collected = trial_dir / "artifacts" / declared.lstrip("/")
-        if (re.search(re.escape(required_path) + r"(?![\w./-])", instruction)
-                and collected.is_dir()
-                and not (collected / filename).exists()):
+        if (
+            re.search(re.escape(required_path) + r"(?![\w./-])", instruction)
+            and collected.is_dir()
+            and not (collected / filename).exists()
+        ):
             break
     else:
         return
@@ -409,24 +419,31 @@ def _bind_unfinished_remote_delivery(evidence, trajectory_path, trial_dir, task_
     last = calls[-1]
     command = last.get("command") or ""
     observation = last.get("observation") or ""
-    if ("submit.py status --job" not in command or last.get("exit_code") != 0
-            or not re.search(r"(?mi)^[\w.-]+ => running(?:[ \t]|$)", observation)):
+    if (
+        "submit.py status --job" not in command
+        or last.get("exit_code") != 0
+        or not re.search(r"(?mi)^[\w.-]+ => running(?:[ \t]|$)", observation)
+    ):
         return
-    if not any("You will be notified when it completes" in (event.get("observation") or "")
-               for event in calls[:-1]):
+    if not any(
+        "You will be notified when it completes" in (event.get("observation") or "")
+        for event in calls[:-1]
+    ):
         return
     if required_path not in evidence["missing_deliverables"]:
         evidence["missing_deliverables"].append(required_path)
-    evidence["behavioral_signals"].append({
-        "signal_id": "sig:unfinished_remote_delivery",
-        "signal_type": "premature_completion",
-        "event_ref": last["event_id"],
-        "source_pointer": last.get("source_pointer"),
-        "missing_deliverables": [required_path],
-        "confirmed_unfinished_remote_delivery": True,
-        "description": f"Last scheduler check showed running jobs before a normal end_turn. "
-                       f"The verifier and collected artifacts confirm missing {required_path}.",
-    })
+    evidence["behavioral_signals"].append(
+        {
+            "signal_id": "sig:unfinished_remote_delivery",
+            "signal_type": "premature_completion",
+            "event_ref": last["event_id"],
+            "source_pointer": last.get("source_pointer"),
+            "missing_deliverables": [required_path],
+            "confirmed_unfinished_remote_delivery": True,
+            "description": f"Last scheduler check showed running jobs before a normal end_turn. "
+            f"The verifier and collected artifacts confirm missing {required_path}.",
+        }
+    )
 
 
 def collect_case_evidence(
@@ -635,8 +652,10 @@ def _enrich_with_verifier_report(
     if not (isinstance(prc, dict) and prc.get("code") == "AGENT_PREMATURE_TERMINATION" and failed):
         return result
 
-    if any(signal.get("confirmed_unfinished_remote_delivery")
-           for signal in evidence.get("behavioral_signals", [])):
+    if any(
+        signal.get("confirmed_unfinished_remote_delivery")
+        for signal in evidence.get("behavioral_signals", [])
+    ):
         return result
 
     replacement = (

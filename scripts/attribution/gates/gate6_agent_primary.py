@@ -274,10 +274,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     # A named verifier failure outranks generic completion heuristics. An
     # independently confirmed remote exit binds directly to the missing output.
     elif agent_mismatch_contracts or (
-        premature_sigs and verifier_started and (
-            not ctx.named_check_failure
-            or remote_exit
-        )
+        premature_sigs and verifier_started and (not ctx.named_check_failure or remote_exit)
     ):
         subcase_id = "5d"
         subtype = "task_understanding" if not premature_sigs else "premature_termination"

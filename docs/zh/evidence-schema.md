@@ -297,13 +297,15 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 
 以下字段均为 `evidence.json` / `summary.json` 中的附加可选扩展：
 
+以下是字段示意，不是真实运行记录；仅展示部分字段。
+
 ```json
 {
   "deliverable_diagnostics": {
     "scanned_files": ["artifacts/app/results.json", "artifacts/app/summary.csv"],
-    "empty_tables": [],
-    "non_finite_values": [
-      {"file": "artifacts/app/summary.csv", "column": "force_max", "value": "NaN", "row": 3}
+    "empty_deliverables": [],
+    "nan_or_inf_values": [
+      {"file": "artifacts/app/summary.csv", "key": "force_max", "value": "NaN", "row": 3}
     ],
     "missing_checked_keys": ["converged_energy"]
   },
@@ -316,8 +318,8 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
       "recomputed_value": -419.60,
       "scale_or_sign_hint": {
         "kind": "unit_conversion",
-        "factor": 27.211386,
-        "label": "Hartree <-> eV (27.211386)"
+        "factor": 0.036749,
+        "label": "Hartree/eV (÷27.211386)"
       },
       "stale_deliverable_sync": true,
       "recomputed_match_in_trajectory_ref": "trajectory:step:18"
@@ -340,8 +342,9 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 }
 ```
 
-- **多格式轨迹规整化（`.json` / `.jsonl` / `messages.json`）**：`resolve_trajectory_path` 与 `_convert_messages_to_steps` 支持将 OpenAI（`role: "tool"` / `"function"` 经由 `tool_call_id`）及 Anthropic（`tool_use` / `tool_result` 内容块）消息流跨步折叠至前序助手步骤的 `observation.results`；`truncate_with_head_tail` 会在截断块内保留最多 6 条中段高显著性错误/指标行；并在写入脚本后于无错 `Bash` 执行时将静态解析的 `script_targets` 绑定至 `written_files`。
-- **`scale_or_sign_hint`**：当 `detect_scale_or_sign_factor(delivered, recomputed)` 识别出常见物理单位换算系数（`27.211386` Hartree/eV、`627.5095` Hartree/kcal/mol、`23.06055` eV/kcal/mol、`96.4853` eV/kJ/mol、`4.184` kcal/kJ、`0.529177` Bohr/Angstrom）、十进制数量级（`10`、`100`、`1000`）或符号约定反转（`delivered ≈ -recomputed`）时，自动附加至对应的 `verifier_report.failed_checks[].artifact_comparison` 与 `verifier_recompute_divergence` 观测。
-- **`stale_deliverable_sync` 与 `recomputed_match_in_trajectory_ref`**：当轨迹执行步骤已打印出与验证器 `recomputed_value` 一致的数值及指标名，但采集到的交付物仍保留过时分歧值时，在 `verifier_recompute_divergence` 上标记过时同步提示。
-- **`deliverable_diagnostics`**：由 `inspect_delivered_artifacts(trial_dir)` 扫描 `artifacts/**/*.{json,csv,tsv}` 生成，记录空表/空 JSON、`NaN`/`Inf` 非有限数值以及交付物 `results.json` 中缺失的 `verifier_info["checked_keys"]`；仅当 `verify.log` 明确印证了架构/键/NaN/空表失败时才触发 `contract_observations`。
-- **`parameter_evolution`**：当关键科学参数（`cutoff`、`eta`、`alpha`、`tol`、`tolerance`、`ecutwfc`、`ecutrho`、`dt`、`timestep`、`kpoints`、`conv_thr`、`mixing_beta`、`nsteps`）在轨迹多步之间发生变化时，附加至 `causal_anchors.algorithm_or_param_definition`；同时 `deliverable_generation` 候选打分为直接写出或执行关联失败产物脚本的事件提供 `+15` 反向溯源加权。
+- **多格式轨迹**：`resolve_trajectory_path` 和 `_convert_messages_to_steps` 解析可识别的 ATIF、OpenAI 和 Anthropic JSON/JSONL 结构，按工具调用 ID 关联调用与结果。`truncate_with_head_tail` 可保留中部最多 6 条报错或指标行。`script_targets` 静态提取脚本输出路径，在匹配的 shell 调用未检测到错误时加入 `written_files`；这不证明文件已实际生成。
+- **具名指标配对**：`pair_verifier_evidence_with_artifacts` 按字段名精确、规范化或子串匹配配对数值，不因偏差过大而丢弃具名候选。无指标名时仍要求相对偏差小于 `0.05` 或绝对偏差小于 `0.05`。字段名相似仍需人工核对含义。
+- **`scale_or_sign_hint`**：根据两非零有限数值的比例匹配预设单位系数（`27.211386` Hartree/eV、`627.5095` Hartree/kcal/mol、`23.06055` eV/kcal/mol、`96.4853` eV/kJ/mol、`4.184` kcal/kJ、`0.529177` Bohr/Angstrom）或十进制倍率（`10`、`100`、`1000`），允许 1.5% 相对误差；反号匹配允许 2% 幅值误差。`factor` 表示交付值相对复算值的倍率，不是对交付值直接施加的修正系数。该函数不读取单位元数据，只给出待核实的提示。
+- **`stale_deliverable_sync` 与 `recomputed_match_in_trajectory_ref`**：在非 delta 分歧中，执行相关文本包含指标名及接近复算值的数值时可能触发。匹配数字至少有 4 位有效数字，误差不超过 `max(1e-9, abs(recomputed_value) * 5e-4)`。若某个匹配字段的交付值已经足够接近复算值，则抑制提示；但缺少交付文件时仍可能触发。搜索包含工具调用参数与观测，不保证该值来自成功计算，也未验证计算与落盘的先后顺序，不能据此直接认定结果未同步。
+- **`deliverable_diagnostics`**：扫描 `artifacts/` 下的 JSON/CSV/TSV，字段为 `scanned_files`、`empty_deliverables`、`nan_or_inf_values`、`results_json_files`、`results_json_keys` 和 `missing_checked_keys`。上限为 200 个文件、每文件 8,000,000 字节、每表 200,000 行、每 JSON 20,000 个节点。缺键检查比较所有已找到的 `results.json` 的键名并集；没有此文件时不产生缺键条目。无法解析或超限的内容可能被跳过，诊断为空不表示交付物完整。相关 `contract_observations` 还要求 `verify.log` 中有对应失败信息。
+- **`parameter_evolution`**：对识别到的科学参数（`cutoff`、`eta`、`alpha`、`tol`、`tolerance`、`ecutwfc`、`ecutrho`、`dt`、`timestep`、`kpoints`、`conv_thr`、`mixing_beta`、`nsteps`）赋值按名称汇总，首末值不同时记录 `initial`、`final`、`from_event` 和 `to_event`，并附加至 `causal_anchors.algorithm_or_param_definition`。不区分文件或计算作用域，不保留完整中间历史，也不证明参数在运行时生效。关联失败产物的生成候选另有 `+15` 排序加分；两者均为定位线索。

@@ -297,13 +297,15 @@ Harbor jobs (`jobs/<timestamp>/<trial>/` with `result.json`, `agent/trajectory.j
 
 All keys below are additive and optional in `evidence.json` / `summary.json`:
 
+The following is a partial field illustration, not a captured run.
+
 ```json
 {
   "deliverable_diagnostics": {
     "scanned_files": ["artifacts/app/results.json", "artifacts/app/summary.csv"],
-    "empty_tables": [],
-    "non_finite_values": [
-      {"file": "artifacts/app/summary.csv", "column": "force_max", "value": "NaN", "row": 3}
+    "empty_deliverables": [],
+    "nan_or_inf_values": [
+      {"file": "artifacts/app/summary.csv", "key": "force_max", "value": "NaN", "row": 3}
     ],
     "missing_checked_keys": ["converged_energy"]
   },
@@ -316,8 +318,8 @@ All keys below are additive and optional in `evidence.json` / `summary.json`:
       "recomputed_value": -419.60,
       "scale_or_sign_hint": {
         "kind": "unit_conversion",
-        "factor": 27.211386,
-        "label": "Hartree <-> eV (27.211386)"
+        "factor": 0.036749,
+        "label": "Hartree/eV (÷27.211386)"
       },
       "stale_deliverable_sync": true,
       "recomputed_match_in_trajectory_ref": "trajectory:step:18"
@@ -340,8 +342,9 @@ All keys below are additive and optional in `evidence.json` / `summary.json`:
 }
 ```
 
-- **Multi-format trajectory normalization (`.json` / `.jsonl` / `messages.json`)**: `resolve_trajectory_path` and `_convert_messages_to_steps` fold OpenAI (`role: "tool"` / `"function"` via `tool_call_id`) and Anthropic (`tool_use` / `tool_result` content blocks) streams into preceding assistant steps' `observation.results`, preserve up to 6 high-salience middle diagnostic/metric lines in `truncate_with_head_tail`, and track static script write targets (`script_targets`) bound upon error-free `Bash` execution.
-- **`scale_or_sign_hint`**: Attached to matching `verifier_report.failed_checks[].artifact_comparison` entries and `verifier_recompute_divergence` observations when `detect_scale_or_sign_factor(delivered, recomputed)` detects common physical unit conversions (`27.211386` Hartree/eV, `627.5095` Hartree/kcal/mol, `23.06055` eV/kcal/mol, `96.4853` eV/kJ/mol, `4.184` kcal/kJ, `0.529177` Bohr/Angstrom), decadic powers (`10`, `100`, `1000`), or sign convention flips (`delivered ≈ -recomputed`).
-- **`stale_deliverable_sync` & `recomputed_match_in_trajectory_ref`**: Emitted on `verifier_recompute_divergence` when an execution step in `timeline` prints the verifier's `recomputed_value` alongside the metric while the collected deliverable still holds a stale diverging value.
-- **`deliverable_diagnostics`**: Produced by `inspect_delivered_artifacts(trial_dir)` over `artifacts/**/*.{json,csv,tsv}` to flag empty tables/JSON objects, `NaN`/`Inf` numeric values, and `verifier_info["checked_keys"]` missing from delivered `results.json`; emits `contract_observations` only when `verify.log` corroborates a schema/key/NaN/empty failure.
-- **`parameter_evolution`**: Attached to `causal_anchors.algorithm_or_param_definition` when key scientific parameters (`cutoff`, `eta`, `alpha`, `tol`, `tolerance`, `ecutwfc`, `ecutrho`, `dt`, `timestep`, `kpoints`, `conv_thr`, `mixing_beta`, `nsteps`) change across timeline events, alongside a `+15` backward provenance bonus on `deliverable_generation` events that write or execute scripts producing implicated failed artifacts.
+- **Multi-format trajectories**: `resolve_trajectory_path` and `_convert_messages_to_steps` parse recognized ATIF, OpenAI, and Anthropic JSON/JSONL structures, linking calls and results by tool-call ID. `truncate_with_head_tail` can retain up to 6 diagnostic/metric lines from the middle. `script_targets` statically extracts output paths and adds them to `written_files` when a matching shell invocation has no detected error; it does not prove that the files were created.
+- **Named-metric pairing**: `pair_verifier_evidence_with_artifacts` uses exact, normalized, or substring field-name matches without a numerical-deviation ceiling for named candidates. Unnamed values still require relative deviation below `0.05` or absolute deviation below `0.05`. Similar field names still require semantic review.
+- **`scale_or_sign_hint`**: Matches ratios of two finite, nonzero numbers to preset unit factors (`27.211386` Hartree/eV, `627.5095` Hartree/kcal/mol, `23.06055` eV/kcal/mol, `96.4853` eV/kJ/mol, `4.184` kcal/kJ, `0.529177` Bohr/Angstrom) or powers of ten (`10`, `100`, `1000`) within 1.5% relative error; sign flips allow 2% magnitude error. `factor` expresses the delivered value relative to the recomputed value, not a correction to apply directly to the delivered value. The function does not read unit metadata; its output is a lead to verify.
+- **`stale_deliverable_sync` & `recomputed_match_in_trajectory_ref`**: For non-delta divergences, execution-related text containing the metric and a near-recomputed value can trigger the hint. Numeric tokens need at least 4 significant digits and must fall within `max(1e-9, abs(recomputed_value) * 5e-4)`. A matching artifact field already close to the recomputed value suppresses it, but missing artifacts do not. The search includes tool-call arguments and observations, so the value need not come from a successful calculation. It does not verify calculation/write ordering and cannot establish an unsaved result on its own.
+- **`deliverable_diagnostics`**: Scans JSON/CSV/TSV under `artifacts/`, returning `scanned_files`, `empty_deliverables`, `nan_or_inf_values`, `results_json_files`, `results_json_keys`, and `missing_checked_keys`. Limits are 200 files, 8,000,000 bytes per file, 200,000 rows per table, and 20,000 nodes per JSON file. Missing-key checks use the union of keys in discovered `results.json` files; no such file means no missing-key entries. Unparseable or oversized content may be skipped, so empty diagnostics do not establish completeness. Related `contract_observations` also require corresponding failure text in `verify.log`.
+- **`parameter_evolution`**: Groups recognized scientific parameter assignments (`cutoff`, `eta`, `alpha`, `tol`, `tolerance`, `ecutwfc`, `ecutrho`, `dt`, `timestep`, `kpoints`, `conv_thr`, `mixing_beta`, `nsteps`) by name and records `initial`, `final`, `from_event`, and `to_event` when the first and last values differ. It is attached to `causal_anchors.algorithm_or_param_definition`. It does not distinguish files or calculation scopes, retain all intermediate changes, or establish effective runtime values. Candidates associated with implicated artifacts separately receive a `+15` generation-ranking bonus; both features are localization aids.

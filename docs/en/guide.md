@@ -49,6 +49,7 @@ Require or automatically discover:
      --output failure-analysis/<case_id>
    ```
    `cfa.py inspect` supports `--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data` (with `--raw` and automatic redaction unless `--no-redact` is passed), and `cfa.py diff <target_a> [<target_b>] [--trials <t1> <t2>]` compares verdicts, root causes, failed checks, and causal anchors across two tasks or two trials of the same task.
+   `diff` reads existing audit reports. Automatic trial selection uses archived report-file modification times under `trials/`, not job start times; evidence omitted from lightweight archives is not recovered automatically.
 2. **Gate on Per-Trial Startup & Infrastructure State (`scripts/runtime_state.py` + `scripts/extract_runtime_errors.py`)**
    Determine from `evidence.json` (`runtime.agent_started`, `runtime.verifier_started`, `runtime.execution_status`, `runtime.verification_status`, `error_observations`) whether the trial passed (`reward >= 1.0`) or whether the container/agent failed prior to startup. Job-level `stats.n_errored_trials` is never used to mark an individual passing trial as failed.
 3. **Reconstruct the Unified Execution Timeline & Causal Anchors (`scripts/normalize_trajectory.py` + `scripts/trace_causal_anchors.py`)**
@@ -56,7 +57,7 @@ Require or automatically discover:
 4. **Audit the Three-Way Contract & Deliverable Integrity (`scripts/audit_contract.py`)**
    Inspect `contract_observations`, `deliverable_diagnostics` (empty tables, `NaN`/`Inf` values, missing `checked_keys` in `artifacts/`), and `verifier_observations` (`failure_binding: direct | indirect | none`, `verifier_internal_crash`) to distinguish genuine agent contract violations from causally bound verifier parser defects or internal verifier crashes.
 5. **Extract Scientific Software Error & Cross-Check Events (`scripts/extract_scientific_errors.py`)**
-   Review `scientific_observations` backed by `references/error-families.json` (plus `.jsonl` trajectory corroboration, unbounded metric-matched artifact pairing, `scale_or_sign_hint`, and `stale_deliverable_sync`) and consult `references/software/<software>.md` for discriminating evidence requirements.
+   Review `scientific_observations` backed by `references/error-families.json` (plus `.jsonl` trajectory corroboration, named-metric artifact pairing without a numerical-deviation ceiling, `scale_or_sign_hint`, and `stale_deliverable_sync`) and consult `references/software/<software>.md` for discriminating evidence requirements. Treat scale/sign and stale-delivery hints as leads, subject to the [evidence schema limits](evidence-schema.md#4-additive-cross-check-deliverable--provenance-extensions).
 6. **Identify the First Unrecovered Deviation (`first_unrecovered_deviation`)**
    Record `{"status": "identified", "event_ref": "...", "summary": "..."}` or `{"status": "not_identified", "event_ref": null, "summary": "..."}` when logs are incomplete.
 7. **Evaluate Competing Root-Cause Hypotheses (`scripts/generate_hypotheses.py` & `scripts/confidence.py`)**
@@ -78,3 +79,21 @@ Require or automatically discover:
 5. **A static verifier hazard must be causally bound (`failure_binding == "direct"`).**
 6. **Use `unknown` when evidence cannot distinguish competing hypotheses.**
 7. **Generate `skill-prescription.md` ONLY for reusable, generalizable agent capability gaps.**
+
+## Scientific software error signatures
+
+The registry contains 11 software groups and 60 error families. These are log-matching rules and evidence guides, not a claim of full compatibility testing for each application.
+
+| Group | Domain and software | Families | Reference |
+| :--- | :--- | :---: | :--- |
+| `cp2k` | Mixed Gaussian/plane-wave DFT & AIMD (`CP2K`) | 8 | [cp2k.md](../../references/software/cp2k.md) |
+| `quantum-espresso` | Plane-wave DFT / DFPT (`pw.x`, `bands.x`, `dos.x`, `ph.x`) | 6 | [quantum-espresso.md](../../references/software/quantum-espresso.md) |
+| `vasp-abacus` | Solid-state DFT (`VASP`, `ABACUS`, `GPAW`, `Siesta`, `FHI-aims`) | 5 | [vasp-abacus.md](../../references/software/vasp-abacus.md) |
+| `orca-gaussian-pyscf` | Molecular quantum chemistry (`ORCA`, `Gaussian`, `PySCF`, `Psi4`, `Q-Chem`, `NWChem`) | 5 | [orca-gaussian-pyscf.md](../../references/software/orca-gaussian-pyscf.md) |
+| `lammps` | Classical & reactive molecular dynamics (`LAMMPS`) | 8 | [lammps.md](../../references/software/lammps.md) |
+| `gromacs-amber-openmm` | Biomolecular MD (`GROMACS`, `AMBER`, `OpenMM`, `NAMD`, `CHARMM`) | 4 | [gromacs-amber-openmm.md](../../references/software/gromacs-amber-openmm.md) |
+| `mlip` | ML interatomic potentials (`MACE`, `NequIP`, `Allegro`, `DeePMD-kit`, `CHGNet`, `SevenNet`, `Orb`) | 5 | [mlip.md](../../references/software/mlip.md) |
+| `ase` | Atomistic simulation workflows & calculators (`ASE`, `pymatgen`) | 5 | [ase.md](../../references/software/ase.md) |
+| `xtb` | Semiempirical quantum chemistry (`xTB`, `CREST`) | 5 | [xtb.md](../../references/software/xtb.md) |
+| `rdkit` | Cheminformatics & conformer generation (`RDKit`) | 5 | [rdkit.md](../../references/software/rdkit.md) |
+| `generic-scientific` | Numerical solvers & PDEs (`SciPy`, `NumPy`, `JAX`, `PyTorch`, `FEniCS`, `OpenFOAM`) | 4 | [generic-scientific.md](../../references/software/generic-scientific.md) |

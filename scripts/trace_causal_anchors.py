@@ -195,9 +195,7 @@ _PARAM_SPACE_RE = re.compile(
     rf"""^\s*({_PARAM_ALT})\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][+-]?\d+)?)\b""",
     re.IGNORECASE,
 )
-_QE_KPOINTS_RE = re.compile(
-    r"""\bK_POINTS\b[^\n]*\n\s*(\d+\s+\d+\s+\d+(?:\s+\d+\s+\d+\s+\d+)?)"""
-)
+_QE_KPOINTS_RE = re.compile(r"""\bK_POINTS\b[^\n]*\n\s*(\d+\s+\d+\s+\d+(?:\s+\d+\s+\d+\s+\d+)?)""")
 
 
 def _normalize_artifact_ref_path(raw_ref: str) -> str:
@@ -269,7 +267,11 @@ def _extract_failed_artifact_targets(evidence: Dict[str, Any]) -> List[str]:
             head = item.split(":", 1)[0].strip()
             if "." in head:
                 _add(head)
-        if len(targets) == before_len and alignment not in (None, "consistent", "implicit_consistent"):
+        if len(targets) == before_len and alignment not in (
+            None,
+            "consistent",
+            "implicit_consistent",
+        ):
             details = str(c.get("details") or "")
             for m in re.finditer(r"`([^`\s]+\.[A-Za-z0-9]{1,8})`", details):
                 _add(m.group(1))
@@ -738,7 +740,9 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
         if cmd.startswith(("rm ", "rm -", "rmdir ")):
             continue
 
-        is_write_ev = tool_low in ("write", "edit", "multiedit", "replace") or ev_type == "file_write"
+        is_write_ev = (
+            tool_low in ("write", "edit", "multiedit", "replace") or ev_type == "file_write"
+        )
         is_read_ev = tool_low in ("read", "view", "cat") or ev_type == "file_read"
         is_exec = False
         base_score = 10

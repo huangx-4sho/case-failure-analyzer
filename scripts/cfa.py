@@ -479,9 +479,7 @@ def _format_artifacts_summary(
                 }
             )
             for h in check_hints:
-                scale_or_sign_hints.append(
-                    {"source": f"check:{check_name}", "hint": h}
-                )
+                scale_or_sign_hints.append({"source": f"check:{check_name}", "hint": h})
             if stale_val:
                 stale_deliverable_syncs.append(
                     {
@@ -554,9 +552,7 @@ def _format_artifacts_summary(
     lines.append("## Declared & Missing Deliverables")
     lines.append("")
     if declared_deliverables:
-        lines.append(
-            f"- **Declared**: {', '.join(f'`{d}`' for d in declared_deliverables)}"
-        )
+        lines.append(f"- **Declared**: {', '.join(f'`{d}`' for d in declared_deliverables)}")
     if missing_deliverables:
         lines.append(
             f"- **Missing Deliverables**: {', '.join(f'`{d}`' for d in missing_deliverables)}"
@@ -564,9 +560,7 @@ def _format_artifacts_summary(
     else:
         lines.append("- **Missing Deliverables**: *(none)*")
     if missing_artifacts:
-        lines.append(
-            f"- **Missing Artifacts**: {', '.join(f'`{a}`' for a in missing_artifacts)}"
-        )
+        lines.append(f"- **Missing Artifacts**: {', '.join(f'`{a}`' for a in missing_artifacts)}")
     lines.append("")
 
     lines.append(f"## Discovered Artifacts ({len(artifacts)})")
@@ -601,9 +595,7 @@ def _format_artifacts_summary(
             item = co.get("item", "—")
             status = co.get("agent_output_status", "—")
             details = co.get("details", "")
-            lines.append(
-                f"- **`{cid}`** (`{align}` · item=`{item}`, status=`{status}`): {details}"
-            )
+            lines.append(f"- **`{cid}`** (`{align}` · item=`{item}`, status=`{status}`): {details}")
         lines.append("")
 
     lines.append("## Per-Check Artifact Comparisons & Anomalies")
@@ -625,13 +617,15 @@ def _format_artifacts_summary(
             for h in rec.get("scale_or_sign_hints") or []:
                 lines.append(f"- **Scale/Sign Hint**: `{_format_hint_label(h)}`")
             if rec.get("stale_deliverable_sync"):
-                lines.append(
-                    f"- **Stale Deliverable Sync**: `{rec['stale_deliverable_sync']}`"
-                )
+                lines.append(f"- **Stale Deliverable Sync**: `{rec['stale_deliverable_sync']}`")
             lines.append("")
 
-        obs_hints = [h for h in scale_or_sign_hints if not str(h.get("source", "")).startswith("check:")]
-        obs_stale = [s for s in stale_deliverable_syncs if not str(s.get("source", "")).startswith("check:")]
+        obs_hints = [
+            h for h in scale_or_sign_hints if not str(h.get("source", "")).startswith("check:")
+        ]
+        obs_stale = [
+            s for s in stale_deliverable_syncs if not str(s.get("source", "")).startswith("check:")
+        ]
         if obs_hints:
             lines.append("### Scale / Sign Hints")
             lines.append("")
@@ -853,8 +847,7 @@ def _format_step_timeline(
             cmd_preview = row["commands"][0][:80]
             summary_parts.append(f"cmd=`{cmd_preview}`")
         lines.append(
-            f"- **Step `{row['step_id']}`** (`{row['event_prefix']}`): "
-            + " · ".join(summary_parts)
+            f"- **Step `{row['step_id']}`** (`{row['event_prefix']}`): " + " · ".join(summary_parts)
         )
     lines.append("")
 
@@ -1155,6 +1148,7 @@ def _is_audited_report_dir(path: Path) -> bool:
 
 def _load_report_bundle(report_dir: Path, basename_hint: Optional[str] = None) -> Dict[str, Any]:
     """Load analysis, evidence, and summary JSON dicts from a report directory."""
+
     def _load_kind(kind: str) -> Dict[str, Any]:
         cands = [report_dir / "data" / f"{kind}.json"]
         if basename_hint:
@@ -1257,7 +1251,9 @@ def _resolve_base_report_dir(
         return rdir, norm_id or target
 
     cand_path = Path(target)
-    if cand_path.is_dir() and ((cand_path / "trials").is_dir() or _is_audited_report_dir(cand_path)):
+    if cand_path.is_dir() and (
+        (cand_path / "trials").is_dir() or _is_audited_report_dir(cand_path)
+    ):
         resolved = cand_path.resolve()
         return resolved, resolved.name
 
@@ -1476,10 +1472,14 @@ def _diff_parameter_evolution(
     evo_a: List[Dict[str, Any]], evo_b: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     by_param_a = {
-        str(item.get("param")): item for item in evo_a if isinstance(item, dict) and item.get("param")
+        str(item.get("param")): item
+        for item in evo_a
+        if isinstance(item, dict) and item.get("param")
     }
     by_param_b = {
-        str(item.get("param")): item for item in evo_b if isinstance(item, dict) and item.get("param")
+        str(item.get("param")): item
+        for item in evo_b
+        if isinstance(item, dict) and item.get("param")
     }
     all_params = list(dict.fromkeys([*by_param_a.keys(), *by_param_b.keys()]))
     rows: List[Dict[str, Any]] = []
@@ -1673,7 +1673,9 @@ def _render_diff_markdown(diff_data: Dict[str, Any]) -> str:
         lines.append("*(none)*")
     else:
         for s in shared:
-            lines.append(f"- **`{s['name']}`** (layers: `{s.get('layer_a') or '—'}` vs `{s.get('layer_b') or '—'}`)")
+            lines.append(
+                f"- **`{s['name']}`** (layers: `{s.get('layer_a') or '—'}` vs `{s.get('layer_b') or '—'}`)"
+            )
             if s.get("detail_a") == s.get("detail_b"):
                 lines.append(f"  - Detail: {s.get('detail_a') or '—'}")
             else:
@@ -1856,9 +1858,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     diff_parser = subparsers.add_parser(
         "diff", help="Compare two audited tasks or trials side-by-side"
     )
-    diff_parser.add_argument(
-        "target_a", help="First task ID, trial ref, or report directory"
-    )
+    diff_parser.add_argument("target_a", help="First task ID, trial ref, or report directory")
     diff_parser.add_argument(
         "target_b",
         nargs="?",
@@ -1872,15 +1872,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         help="Compare two trial subdirectories under <report_dir>/trials/",
     )
-    diff_parser.add_argument(
-        "--jobs-root", type=Path, default=None, help="Benchmark checkout root"
-    )
+    diff_parser.add_argument("--jobs-root", type=Path, default=None, help="Benchmark checkout root")
     diff_parser.add_argument(
         "--report-dir", type=Path, default=None, help="Report directory override"
     )
-    diff_parser.add_argument(
-        "--raw", action="store_true", help="Output structured JSON diff"
-    )
+    diff_parser.add_argument("--raw", action="store_true", help="Output structured JSON diff")
     diff_parser.add_argument(
         "--no-redact", action="store_true", help="Disable automatic sensitive token masking"
     )

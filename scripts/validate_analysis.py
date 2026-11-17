@@ -379,8 +379,7 @@ def validate_all(
             and verifier_report.get("failed_checks")
             and prc.get("code") == "AGENT_PREMATURE_TERMINATION"
             and not any(
-                s.get("confirmed_unfinished_remote_delivery")
-                and s.get("signal_id") in ev_refs
+                s.get("confirmed_unfinished_remote_delivery") and s.get("signal_id") in ev_refs
                 for s in evidence.get("behavioral_signals", [])
             )
         ):

@@ -1443,7 +1443,9 @@ def _build_divergence_observation(
     )
     scale_hint: Optional[Dict[str, Any]] = None
     if not is_delta and hit.get("check_kind") != "count_mismatch":
-        scale_hint = detect_scale_or_sign_factor(hit.get("reported_value"), hit.get("recomputed_value"))
+        scale_hint = detect_scale_or_sign_factor(
+            hit.get("reported_value"), hit.get("recomputed_value")
+        )
     stale_sync_ref = _detect_stale_deliverable_sync(
         hit.get("metric"),
         hit.get("reported_value"),

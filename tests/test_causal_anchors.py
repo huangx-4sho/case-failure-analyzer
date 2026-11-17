@@ -456,7 +456,7 @@ class TestCausalAnchors(unittest.TestCase):
                     "command": "/app/code/solve.py",
                     "code_payload": (
                         "    cutoff = 10.0\n"  # Numerically equal -> should NOT report evolution
-                        "    eta = 0.02\n"     # Changed 0.05 -> 0.02
+                        "    eta = 0.02\n"  # Changed 0.05 -> 0.02
                         "    conv_thr = 1.0d-8\n"
                     ),
                 },
