@@ -93,9 +93,9 @@ CFA links trajectory tool calls to their results, then compares them with delive
 Numerical comparisons and causal anchors provide the following leads, subject to review:
 
 - Named-metric pairing no longer rejects a match solely because its numerical deviation is large, but still depends on field-name matching. Unnamed metrics retain numerical-proximity thresholds.
-- `scale_or_sign_hint` suggests common unit factors, powers of ten, or a sign flip from numerical ratios. It does not read physical-unit metadata or independently establish a unit error.
-- `stale_deliverable_sync` means execution-related text contains a number close to the recomputed value. It can fire without a collected deliverable; check the files, outputs, and execution order before concluding that a result was left unsaved.
-- Script output paths and `parameter_evolution` are extracted statically. Parameter changes compare the first and last values by name and may span files. Anchor scores rank candidates; they do not establish causation on their own.
+- `scale_or_sign_hint` suggests common unit factors, powers of ten, or a sign flip from numerical ratios, and sets `unit_token_corroborated` when expected unit tokens appear in the metric name or verifier text. It does not parse full unit metadata or prove a unit error on its own.
+- `stale_deliverable_sync` requires an on-disk deliverable matching `reported_value` (and differing from `recomputed_value`) while an error-free execution `observation` printed `recomputed_value`; it still does not prove file-write ordering and remains a lead to verify.
+- Script output paths are extracted statically, while `parameter_evolution` is scoped per target script/file (recording `"file"`, `initial`, and `final`); anchor scores rank candidates rather than proving causation on their own.
 - `deliverable_diagnostics` checks JSON/CSV/TSV for empty data and non-finite values within scan limits. Missing-key checks apply only to discovered `results.json` files, so this is not complete deliverable validation.
 
 See the [evidence schema](docs/en/evidence-schema.md) for fields, thresholds, and scan limits.

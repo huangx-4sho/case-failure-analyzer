@@ -20,7 +20,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
-from normalize_trajectory import _parse_trajectory_payload
+from normalize_trajectory import _parse_trajectory_payload, extract_exit_code_and_error
 from runtime_state import resolve_trajectory_path
 
 
@@ -525,26 +525,41 @@ def _collect_artifact_numbers(trial_dir: Path) -> List[Tuple[str, float, str]]:
     return records
 
 
-_UNIT_CONVERSION_FACTORS: Tuple[Tuple[float, str], ...] = (
-    (27.211386, "Hartree/eV"),
-    (627.5095, "Hartree/kcal/mol"),
-    (23.06055, "eV/kcal/mol"),
-    (96.4853, "eV/kJ/mol"),
-    (4.184, "kcal/kJ"),
-    (0.529177, "Bohr/Angstrom"),
+_UNIT_CONVERSION_FACTORS: Tuple[Tuple[float, str, Tuple[str, ...]], ...] = (
+    (27.211386, "Hartree/eV", ("hartree", "ha", "eh", "ev")),
+    (627.5095, "Hartree/kcal/mol", ("hartree", "ha", "eh", "kcal")),
+    (23.06055, "eV/kcal/mol", ("ev", "kcal")),
+    (96.4853, "eV/kJ/mol", ("ev", "kj")),
+    (4.184, "kcal/kJ", ("kcal", "kj")),
+    (0.529177, "Bohr/Angstrom", ("bohr", "ang", "angstrom")),
 )
 _DECADIC_FACTORS: Tuple[float, ...] = (10.0, 100.0, 1000.0)
+
+
+def _has_unit_token_corroboration(
+    unit_tokens: Tuple[str, ...],
+    metric: Optional[str],
+    context_text: str,
+) -> bool:
+    """True when any expected unit token appears in `metric` or `context_text`."""
+    haystack = f"{metric or ''} {context_text or ''}".lower()
+    if not haystack.strip():
+        return False
+    tokens = {tok for tok in re.split(r"[^a-z0-9]+", haystack) if tok}
+    return any(u in tokens for u in unit_tokens)
 
 
 def detect_scale_or_sign_factor(
     delivered: Optional[float],
     recomputed: Optional[float],
+    metric: Optional[str] = None,
+    context_text: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Detect common physical unit conversions, decadic scaling, or sign convention flips.
 
-    Returns ``{"kind": ..., "factor": ..., "label": ...}`` when ``delivered`` and
-    ``recomputed`` are non-zero and match within 1.5% relative error for unit/decadic
-    factors (in either direction) or within 2% magnitude error for a sign flip.
+    Returns ``{"kind": ..., "factor": ..., "label": ..., "unit_token_corroborated": ...}``
+    when ``delivered`` and ``recomputed`` are non-zero and match within 1.5% relative error
+    for unit/decadic factors (in either direction) or within 2% magnitude error for a sign flip.
     """
     if delivered is None or recomputed is None:
         return None
@@ -566,6 +581,7 @@ def detect_scale_or_sign_factor(
                 "kind": "sign_flip",
                 "factor": -1.0,
                 "label": "sign convention flip (delivered ≈ -recomputed)",
+                "unit_token_corroborated": False,
             }
         return None
 
@@ -574,13 +590,15 @@ def detect_scale_or_sign_factor(
     r_over_d = r / d
     best_match: Optional[Tuple[float, Dict[str, Any]]] = None
 
-    for factor, name in _UNIT_CONVERSION_FACTORS:
+    for factor, name, unit_tokens in _UNIT_CONVERSION_FACTORS:
+        corroborated = _has_unit_token_corroboration(unit_tokens, metric, context_text)
         err_fwd = abs(d_over_r - factor) / factor
         if err_fwd <= 0.015:
             cand = {
                 "kind": "unit_conversion",
                 "factor": factor,
                 "label": f"{name} (×{factor})",
+                "unit_token_corroborated": corroborated,
             }
             if best_match is None or err_fwd < best_match[0]:
                 best_match = (err_fwd, cand)
@@ -590,6 +608,7 @@ def detect_scale_or_sign_factor(
                 "kind": "unit_conversion",
                 "factor": round(1.0 / factor, 6),
                 "label": f"{name} (÷{factor})",
+                "unit_token_corroborated": corroborated,
             }
             if best_match is None or err_rev < best_match[0]:
                 best_match = (err_rev, cand)
@@ -604,6 +623,7 @@ def detect_scale_or_sign_factor(
                 "kind": "decadic_scale",
                 "factor": factor,
                 "label": f"decadic scale (×{int(factor)})",
+                "unit_token_corroborated": False,
             }
             if best_match is None or err_fwd < best_match[0]:
                 best_match = (err_fwd, cand)
@@ -613,6 +633,7 @@ def detect_scale_or_sign_factor(
                 "kind": "decadic_scale",
                 "factor": round(1.0 / factor, 6),
                 "label": f"decadic scale (÷{int(factor)})",
+                "unit_token_corroborated": False,
             }
             if best_match is None or err_rev < best_match[0]:
                 best_match = (err_rev, cand)
@@ -735,7 +756,12 @@ def pair_verifier_evidence_with_artifacts(verifier_report: Dict[str, Any], trial
                     "abs_diff": abs(delivered_val - rec_val),
                     "artifact_ref": art_ref,
                 }
-                hint = detect_scale_or_sign_factor(delivered_val, rec_val)
+                hint = detect_scale_or_sign_factor(
+                    delivered_val,
+                    rec_val,
+                    metric=cand_key,
+                    context_text=f"{fc.get('detail') or ''} {metric_hint or ''}",
+                )
                 if hint is not None:
                     comp["scale_or_sign_hint"] = hint
                 comparisons.append(comp)
@@ -1329,18 +1355,62 @@ _NUMERIC_TOKEN_RE = re.compile(
 )
 
 
+def _extract_observation_text(step_text: str) -> str:
+    """Extract only execution observation output from a serialized step (never tool_calls/command)."""
+    if not step_text:
+        return ""
+    try:
+        payload = json.loads(step_text)
+    except (TypeError, ValueError):
+        return step_text
+    if not isinstance(payload, dict):
+        return step_text
+    if "observation" not in payload:
+        return ""
+    obs = payload.get("observation")
+    if obs is None:
+        return ""
+    if isinstance(obs, str):
+        stripped = obs.strip()
+        if stripped.startswith("{") and '"results"' in stripped:
+            try:
+                obs_obj = json.loads(stripped)
+                if isinstance(obs_obj, dict) and isinstance(obs_obj.get("results"), list):
+                    parts = [
+                        str(r.get("content") or "")
+                        for r in obs_obj["results"]
+                        if isinstance(r, dict) and r.get("content")
+                    ]
+                    return "\n".join(parts)
+            except ValueError:
+                pass
+        return obs
+    if isinstance(obs, dict) and isinstance(obs.get("results"), list):
+        parts = [
+            str(r.get("content") or "")
+            for r in obs.get("results")
+            if isinstance(r, dict) and r.get("content")
+        ]
+        return "\n".join(parts)
+    return json.dumps(obs, ensure_ascii=False, default=str)
+
+
 def _step_contains_recomputed_value(
     step_text: str,
     metric: Optional[str],
     rec_val: float,
     rep_val: Optional[float],
 ) -> bool:
-    """True when `step_text` contains `metric` and `rec_val` (>=4 sig figs), distinct from `rep_val`."""
-    if not step_text:
+    """True when error-free execution observation text contains `metric` and `rec_val` (>=4 sig figs)."""
+    obs_text = _extract_observation_text(step_text)
+    if not obs_text.strip():
         return False
-    if metric is not None and metric not in step_text and metric.lower() not in step_text.lower():
+    _, has_err = extract_exit_code_and_error(obs_text)
+    if has_err:
         return False
-    normalized = step_text.replace("\u2212", "-")
+    if metric is not None and metric not in obs_text and metric.lower() not in obs_text.lower():
+        return False
+    normalized = obs_text.replace("\u2212", "-")
     for match in _NUMERIC_TOKEN_RE.finditer(normalized):
         tok = match.group(0)
         mantissa = tok.lstrip("+-").split("e", 1)[0].split("E", 1)[0].replace(".", "")
@@ -1372,9 +1442,10 @@ def _detect_stale_deliverable_sync(
     is_delta_divergence: bool = False,
     artifact_numbers: Optional[List[Tuple[str, float, str]]] = None,
 ) -> Optional[str]:
-    """Return `trajectory:step:<id>` when trajectory computed `recomputed_value` while delivered artifact is stale."""
+    """Return `trajectory:step:<id>` when an on-disk deliverable holds `reported_value` while an error-free observation printed `recomputed_value`."""
     if (
-        is_delta_divergence
+        trial_dir is None
+        or is_delta_divergence
         or recomputed_value is None
         or isinstance(recomputed_value, bool)
         or not trajectory_steps
@@ -1398,21 +1469,24 @@ def _detect_stale_deliverable_sync(
     if rep_val is not None and rep_val == rec_val:
         return None
 
-    # If delivered artifacts already hold `recomputed_value`, deliverable is not stale.
-    if trial_dir is not None:
-        if artifact_numbers is None:
-            artifact_numbers = _collect_artifact_numbers(trial_dir)
-        matching_art_vals = [
-            val
-            for key, val, _ in artifact_numbers
-            if metric is None
-            or _metric_key_matches(metric, key)
-            or _normalized_metric_stem(metric) == _normalized_metric_stem(key)
-        ]
-        if matching_art_vals:
-            for art_val in matching_art_vals:
-                if abs(art_val - rec_val) <= max(1e-9, abs(rec_val) * 1e-6):
-                    return None
+    if artifact_numbers is None:
+        artifact_numbers = _collect_artifact_numbers(trial_dir)
+    matching_art_vals = [
+        val
+        for key, val, _ in artifact_numbers
+        if metric is None
+        or _metric_key_matches(metric, key)
+        or _normalized_metric_stem(metric) == _normalized_metric_stem(key)
+    ]
+    if not matching_art_vals:
+        return None
+    for art_val in matching_art_vals:
+        if abs(art_val - rec_val) <= max(1e-9, abs(rec_val) * 1e-6):
+            return None
+    if rep_val is not None and not any(
+        abs(art_val - rep_val) <= max(1e-9, abs(rep_val) * 1e-4) for art_val in matching_art_vals
+    ):
+        return None
 
     for idx, (step_id, step_text) in enumerate(trajectory_steps):
         if _step_contains_recomputed_value(step_text, metric, rec_val, rep_val):
@@ -1444,7 +1518,10 @@ def _build_divergence_observation(
     scale_hint: Optional[Dict[str, Any]] = None
     if not is_delta and hit.get("check_kind") != "count_mismatch":
         scale_hint = detect_scale_or_sign_factor(
-            hit.get("reported_value"), hit.get("recomputed_value")
+            hit.get("reported_value"),
+            hit.get("recomputed_value"),
+            metric=hit.get("metric"),
+            context_text=matched_text,
         )
     stale_sync_ref = _detect_stale_deliverable_sync(
         hit.get("metric"),

@@ -660,6 +660,19 @@ class TestMultiFormatAndCrossCheckPrecision(unittest.TestCase):
         self.assertEqual(sign["kind"], "sign_flip")
         self.assertEqual(sign["factor"], -1.0)
 
+        # Unit-token corroboration flag
+        corr_yes = detect_scale_or_sign_factor(
+            -10.0, -272.11386, metric="total_energy_Ha", context_text="energy in eV"
+        )
+        self.assertIsNotNone(corr_yes)
+        assert corr_yes is not None
+        self.assertTrue(corr_yes["unit_token_corroborated"])
+
+        corr_no = detect_scale_or_sign_factor(-10.0, -272.11386, metric="value_x", context_text="")
+        self.assertIsNotNone(corr_no)
+        assert corr_no is not None
+        self.assertFalse(corr_no["unit_token_corroborated"])
+
         # Non-matching, zero, None
         self.assertIsNone(detect_scale_or_sign_factor(0.0, -10.0))
         self.assertIsNone(detect_scale_or_sign_factor(None, -10.0))
@@ -738,6 +751,45 @@ class TestMultiFormatAndCrossCheckPrecision(unittest.TestCase):
                 trial_dir=trial_dir,
             )
         self.assertNotIn("stale_deliverable_sync", obs_fresh[0])
+
+        # Guard: missing delivered artifact on disk must NOT trigger stale_deliverable_sync
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp)
+            (trial_dir / "artifacts").mkdir()
+            obs_no_art = extract_verifier_divergences(
+                _one_line(line),
+                trajectory_steps=steps,
+                trial_dir=trial_dir,
+            )
+        self.assertNotIn("stale_deliverable_sync", obs_no_art[0])
+
+        # Guard: recomputed_value appearing only inside tool_calls code or errored observation must NOT trigger
+        code_only_steps = _steps(
+            {
+                "step_id": 6,
+                "tool_calls": [
+                    {"name": "Write", "arguments": {"content": "final_energy = -12.3456"}}
+                ],
+                "observation": "File written successfully.",
+            },
+            {
+                "step_id": 7,
+                "tool_calls": [{"name": "Bash", "arguments": {"command": "python run.py"}}],
+                "observation": "Exit code: 1\nERROR: final_energy = -12.3456 aborted",
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp)
+            (trial_dir / "artifacts").mkdir()
+            (trial_dir / "artifacts" / "results.json").write_text(
+                json.dumps({"final_energy": -11.0}), encoding="utf-8"
+            )
+            obs_code_only = extract_verifier_divergences(
+                _one_line(line),
+                trajectory_steps=code_only_steps,
+                trial_dir=trial_dir,
+            )
+        self.assertNotIn("stale_deliverable_sync", obs_code_only[0])
 
         # Guard: P2_LINE (-0.02125869 vs -0.02125870) must not confuse reported with recomputed
         p2_steps = _steps(

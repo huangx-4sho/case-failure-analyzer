@@ -601,6 +601,12 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                 cf_subtype = (
                     "task_understanding" if hint_kind == "sign_flip" else "result_validation"
                 )
+                unit_corroborated = bool(hint.get("unit_token_corroborated"))
+                corrob_note = (
+                    "with unit-token match"
+                    if hint_kind == "unit_conversion" and unit_corroborated
+                    else "from numeric ratio alone"
+                )
                 contributing_factors.append(
                     attach_confidence_metadata(
                         {
@@ -608,9 +614,9 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                             "subtype": cf_subtype,
                             "code": cf_code,
                             "summary": (
-                                f"Artifact comparison for `{metric_name}` (check `{fc.get('name') or 'check'}`) "
-                                f"indicates a {hint_kind.replace('_', ' ')} ({hint_label}, factor={hint_factor}; "
-                                f"delivered={item.get('delivered')}, recomputed={item.get('recomputed')})."
+                                f"Candidate {hint_kind.replace('_', ' ')} lead ({corrob_note}) for `{metric_name}` "
+                                f"(check `{fc.get('name') or 'check'}`): {hint_label}, ratio factor={hint_factor}; "
+                                f"delivered={item.get('delivered')}, recomputed={item.get('recomputed')}."
                             ),
                         },
                         direct_causal_evidence=len(ev_refs),

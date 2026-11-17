@@ -479,6 +479,7 @@ class TestCausalAnchors(unittest.TestCase):
 
         by_param = {item["param"]: item for item in evo}
         self.assertIn("cutoff", by_param)
+        self.assertEqual(by_param["cutoff"]["file"], "/app/code/solve.py")
         self.assertEqual(by_param["cutoff"]["initial"], "10")
         self.assertEqual(by_param["cutoff"]["final"], "14.0")
         self.assertEqual(by_param["cutoff"]["from_event"], "trajectory:step:1:tool:0")
@@ -503,6 +504,40 @@ class TestCausalAnchors(unittest.TestCase):
         md_en = "\n".join(render_causal_anchors_markdown(anchors, lang="en"))
         self.assertIn("Parameter evolution", md_en)
         self.assertIn("`cutoff`: `10` -> `14.0`", md_en)
+
+    def test_parameter_evolution_does_not_conflate_distinct_files(self) -> None:
+        evidence = {
+            "timeline": [
+                {
+                    "event_id": "trajectory:step:1:tool:0",
+                    "event_type": "file_write",
+                    "tool_name": "Write",
+                    "command": "/app/code/solve.py",
+                    "code_payload": "def solve():\n    cutoff = 20\n    eta = 0.05\n    return cutoff\n",
+                },
+                {
+                    "event_id": "trajectory:step:2:tool:0",
+                    "event_type": "file_write",
+                    "tool_name": "Write",
+                    "command": "/app/code/helper.py",
+                    "code_payload": "def helper():\n    cutoff = 99\n    eta = 0.99\n    return cutoff\n",
+                },
+                {
+                    "event_id": "trajectory:step:3:tool:0",
+                    "event_type": "file_write",
+                    "tool_name": "Edit",
+                    "command": "/app/code/helper.py",
+                    "code_payload": "    cutoff = 120\n",
+                },
+            ]
+        }
+        anchors = trace_causal_anchors(evidence)
+        algo = anchors.get("algorithm_or_param_definition")
+        self.assertIsNotNone(algo)
+        assert algo is not None
+        self.assertEqual(algo["target_path"], "/app/code/solve.py")
+        # solve.py never changed cutoff/eta across steps; helper.py's cutoff evolution must not leak into solve.py
+        self.assertNotIn("parameter_evolution", algo)
 
 
 if __name__ == "__main__":

@@ -376,27 +376,33 @@ def _recompute_divergence_agent_attribution(
         hint_kind = str(scale_hint.get("kind") or "unit_conversion")
         hint_label = str(scale_hint.get("label") or "")
         hint_factor = scale_hint.get("factor")
+        unit_corroborated = bool(scale_hint.get("unit_token_corroborated"))
         if hint_kind == "sign_flip":
             cf_code = "AGENT_TASK_UNDERSTANDING"
             cf_subtype = "task_understanding"
             cf_summary = (
-                f"Delivered '{metric}' exhibits a sign convention flip ({hint_label}, "
-                f"factor={hint_factor}) relative to the verifier's recomputed value."
+                f"Candidate sign-flip lead: delivered '{metric}' matches a sign inversion "
+                f"({hint_label}, ratio factor={hint_factor}) relative to the verifier's recomputed value."
             )
             hint_action = (
-                f"Verify the sign convention required for '{metric}' ({hint_label}); "
-                "the delivered value appears sign-inverted relative to the verifier's recomputed value."
+                f"Check the required sign convention for '{metric}' ({hint_label}); "
+                "the delivered value is approximately the negation of the verifier's recomputed value."
             )
         else:
             cf_code = "AGENT_RESULT_VALIDATION"
             cf_subtype = "result_validation"
+            corrob_note = (
+                "with matching unit tokens in metric/verifier text"
+                if unit_corroborated
+                else "from numeric ratio alone (no unit metadata checked)"
+            )
             cf_summary = (
-                f"Delivered '{metric}' differs by a {hint_kind.replace('_', ' ')} factor "
-                f"({hint_label}, factor={hint_factor}) relative to the verifier's recomputed value."
+                f"Candidate {hint_kind.replace('_', ' ')} lead ({corrob_note}): delivered '{metric}' "
+                f"ratio matches {hint_label} (factor={hint_factor}) relative to the verifier's recomputed value."
             )
             hint_action = (
-                f"Verify unit conversion / scaling for '{metric}' ({hint_label}, factor={hint_factor}) "
-                "before writing the final deliverable."
+                f"Check units and scaling for '{metric}' against the ratio lead "
+                f"({hint_label}, factor={hint_factor}, {corrob_note}) before writing the final deliverable."
             )
         contributing_factors.append(
             attach_confidence_metadata(
@@ -422,9 +428,9 @@ def _recompute_divergence_agent_attribution(
                     "subtype": "planning",
                     "code": "AGENT_PLANNING",
                     "summary": (
-                        f"Stale deliverable sync: execution trajectory{ref_clause} already produced "
-                        f"'{metric}' matching the verifier's recomputed value ({recomputed}), "
-                        f"while the delivered artifact retained a stale value ({reported})."
+                        f"Execution output{ref_clause} printed a value matching the verifier's "
+                        f"recomputed '{metric}' ({recomputed}), while the collected artifact on disk "
+                        f"retained {reported}; check whether the final output file was overwritten or left unsynced."
                     ),
                 },
                 direct_causal_evidence=1,
@@ -435,9 +441,8 @@ def _recompute_divergence_agent_attribution(
             {
                 "owner": "Agent",
                 "action": (
-                    f"Re-sync and overwrite the delivered artifact for '{metric}' from the "
-                    f"updated calculation output{ref_clause} so the latest recomputed value "
-                    f"({recomputed}) is persisted."
+                    f"Verify execution and file-write ordering for '{metric}' around{ref_clause or ' the run'}, "
+                    f"and ensure the delivered artifact on disk is overwritten with the intended value ({recomputed})."
                 ),
             }
         )

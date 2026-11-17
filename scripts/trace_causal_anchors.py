@@ -16,6 +16,7 @@ Pairs each anchor with the agent's verbatim thought / reasoning at that step and
 
 from __future__ import annotations
 
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -371,15 +372,66 @@ def _extract_param_assignments(text: str) -> Dict[str, str]:
     return found
 
 
-def _extract_parameter_evolution(timeline: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Track repeated assignments to key scientific parameters across trajectory steps."""
-    history: Dict[str, List[Tuple[str, str]]] = {}
+_EXEC_SCRIPT_TOKEN_RE = re.compile(
+    r"""(?:^|\s)(['"]?)([^\s'"`;&|<>]+\.(?:py|sh|in|inp|lmp))\1(?:\s|$)"""
+)
+
+
+def _normalize_script_key(raw_path: str) -> str:
+    cleaned = (raw_path or "").strip().strip("'\"")
+    if not cleaned:
+        return ""
+    norm = posixpath.normpath(cleaned)
+    return "" if norm in (".", "") else norm
+
+
+def _resolve_scoped_file_key(
+    raw_path: str,
+    known_files: Set[str],
+) -> str:
+    """Normalize a file path and resolve a bare filename only when it uniquely matches a tracked path."""
+    norm = _normalize_script_key(raw_path)
+    if not norm:
+        return ""
+    if norm in known_files or "/" in norm:
+        return norm
+    matches = [k for k in known_files if posixpath.basename(k) == norm]
+    if len(matches) == 1:
+        return matches[0]
+    return norm
+
+
+def _extract_executed_script_key(cmd: str, known_files: Set[str]) -> str:
+    """Return the script target executed by a shell command, or '' if none can be bound."""
+    for known in sorted(known_files, key=len, reverse=True):
+        matched, _ = _command_executes_script(cmd, known)
+        if matched:
+            return known
+    m = _EXEC_SCRIPT_TOKEN_RE.search(cmd or "")
+    if m:
+        return _resolve_scoped_file_key(m.group(2), known_files)
+    return ""
+
+
+def _extract_parameter_evolution(
+    timeline: List[Dict[str, Any]],
+    target_path: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Track repeated assignments to key scientific parameters scoped per target file."""
+    history: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+    known_files: Set[str] = set()
+
     for e in timeline:
         event_id = str(e.get("event_id") or "")
         tool_low = (e.get("tool_name") or "").strip().lower()
         ev_type = e.get("event_type") or ""
+        cmd = str(e.get("command") or "").strip()
 
+        file_key = ""
+        text = ""
         if tool_low in ("write", "edit", "multiedit", "replace") or ev_type == "file_write":
+            raw_target = cmd.split()[0] if cmd else ""
+            file_key = _resolve_scoped_file_key(raw_target, known_files)
             text = str(e.get("code_payload") or "")
             if not text:
                 text = str(e.get("observation") or "")
@@ -388,18 +440,31 @@ def _extract_parameter_evolution(timeline: List[Dict[str, Any]]) -> List[Dict[st
             "shell",
             "exec",
         ):
-            text = str(e.get("command") or "")
+            hd_path = heredoc_written_path(cmd)
+            if hd_path:
+                file_key = _resolve_scoped_file_key(hd_path, known_files)
+                text = _extract_heredoc_body(cmd)
+            else:
+                file_key = _extract_executed_script_key(cmd, known_files)
+                text = cmd
         else:
             continue
+
+        if not file_key:
+            continue
+        known_files.add(file_key)
 
         assigns = _extract_param_assignments(text)
         for param, val in assigns.items():
             if not val:
                 continue
-            history.setdefault(param, []).append((val, event_id))
+            history.setdefault((file_key, param), []).append((val, event_id))
 
+    scoped_target = _resolve_scoped_file_key(target_path or "", known_files) if target_path else ""
     evolution: List[Dict[str, str]] = []
-    for param, entries in history.items():
+    for (file_key, param), entries in history.items():
+        if scoped_target and file_key != scoped_target:
+            continue
         if len(entries) < 2:
             continue
         initial_val, from_ev = entries[0]
@@ -410,6 +475,7 @@ def _extract_parameter_evolution(timeline: List[Dict[str, Any]]) -> List[Dict[st
             evolution.append(
                 {
                     "param": param,
+                    "file": file_key,
                     "initial": initial_val,
                     "final": final_val,
                     "from_event": from_ev,
@@ -654,7 +720,6 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
     failed_names, id_tokens = _extract_failed_check_targets(evidence)
     failed_artifact_targets = _extract_failed_artifact_targets(evidence)
     script_targets = _build_timeline_script_targets(timeline)
-    param_evolution = _extract_parameter_evolution(timeline)
 
     # 1. Trace algorithm_or_param_definition
     algo_anchor: Optional[Dict[str, Any]] = None
@@ -704,18 +769,20 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
         thought = _find_thought_for_step(timeline, step_prefix)
         code_snip = best_algo_ev.get("code_payload") or best_algo_ev.get("command") or ""
         tradeoff_detected = _detect_parameter_tradeoff(thought or "", code_snip)
+        target_path = (
+            best_algo_ev.get("command", "").split()[0] if best_algo_ev.get("command") else ""
+        )
         algo_anchor = {
             "event_id": best_algo_ev.get("event_id"),
             "step_id": step_prefix,
             "tool_name": best_algo_ev.get("tool_name", "Tool"),
-            "target_path": best_algo_ev.get("command", "").split()[0]
-            if best_algo_ev.get("command")
-            else "",
+            "target_path": target_path,
             "thought": _clean_thought_snippet(thought or "", max_lines=4, max_chars=250),
             "code_snippet": _clean_code_snippet(code_snip, max_lines=6, max_chars=350),
             "matched_failed_checks": best_matched,
             "parameter_tradeoff_detected": tradeoff_detected,
         }
+        param_evolution = _extract_parameter_evolution(timeline, target_path=target_path or None)
         if param_evolution:
             algo_anchor["parameter_evolution"] = param_evolution
 
@@ -892,7 +959,8 @@ def render_causal_anchors_markdown(anchors: Dict[str, Any], lang: str = "zh") ->
             )
             pe_items = [
                 f"`{item['param']}`: `{item['initial']}` -> `{item['final']}` "
-                f"(`{item['from_event']}` -> `{item['to_event']}`)"
+                f"(`{item['from_event']}` -> `{item['to_event']}`"
+                + (f", `{item['file']}`)" if item.get("file") else ")")
                 for item in algo["parameter_evolution"]
                 if isinstance(item, dict)
             ]

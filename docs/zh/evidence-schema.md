@@ -319,7 +319,8 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
       "scale_or_sign_hint": {
         "kind": "unit_conversion",
         "factor": 0.036749,
-        "label": "Hartree/eV (÷27.211386)"
+        "label": "Hartree/eV (÷27.211386)",
+        "unit_token_corroborated": true
       },
       "stale_deliverable_sync": true,
       "recomputed_match_in_trajectory_ref": "trajectory:step:18"
@@ -331,6 +332,7 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
       "parameter_evolution": [
         {
           "param": "ecutwfc",
+          "file": "/app/code/solve.py",
           "initial": "30",
           "final": "80",
           "from_event": "trajectory:step:4",
@@ -344,7 +346,7 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 
 - **多格式轨迹**：`resolve_trajectory_path` 和 `_convert_messages_to_steps` 解析可识别的 ATIF、OpenAI 和 Anthropic JSON/JSONL 结构，按工具调用 ID 关联调用与结果。`truncate_with_head_tail` 可保留中部最多 6 条报错或指标行。`script_targets` 静态提取脚本输出路径，在匹配的 shell 调用未检测到错误时加入 `written_files`；这不证明文件已实际生成。
 - **具名指标配对**：`pair_verifier_evidence_with_artifacts` 按字段名精确、规范化或子串匹配配对数值，不因偏差过大而丢弃具名候选。无指标名时仍要求相对偏差小于 `0.05` 或绝对偏差小于 `0.05`。字段名相似仍需人工核对含义。
-- **`scale_or_sign_hint`**：根据两非零有限数值的比例匹配预设单位系数（`27.211386` Hartree/eV、`627.5095` Hartree/kcal/mol、`23.06055` eV/kcal/mol、`96.4853` eV/kJ/mol、`4.184` kcal/kJ、`0.529177` Bohr/Angstrom）或十进制倍率（`10`、`100`、`1000`），允许 1.5% 相对误差；反号匹配允许 2% 幅值误差。`factor` 表示交付值相对复算值的倍率，不是对交付值直接施加的修正系数。该函数不读取单位元数据，只给出待核实的提示。
-- **`stale_deliverable_sync` 与 `recomputed_match_in_trajectory_ref`**：在非 delta 分歧中，执行相关文本包含指标名及接近复算值的数值时可能触发。匹配数字至少有 4 位有效数字，误差不超过 `max(1e-9, abs(recomputed_value) * 5e-4)`。若某个匹配字段的交付值已经足够接近复算值，则抑制提示；但缺少交付文件时仍可能触发。搜索包含工具调用参数与观测，不保证该值来自成功计算，也未验证计算与落盘的先后顺序，不能据此直接认定结果未同步。
+- **`scale_or_sign_hint`**：根据两非零有限数值的比例匹配预设单位系数（`27.211386` Hartree/eV、`627.5095` Hartree/kcal/mol、`23.06055` eV/kcal/mol、`96.4853` eV/kJ/mol、`4.184` kcal/kJ、`0.529177` Bohr/Angstrom）或十进制倍率（`10`、`100`、`1000`），允许 1.5% 相对误差；反号匹配允许 2% 幅值误差。`unit_token_corroborated` 标记 `metric` 或验证器文本中是否出现了预期单位词；`factor` 表示交付值相对复算值的倍率，不是对交付值直接施加的修正系数，仍为待核实的提示。
+- **`stale_deliverable_sync` 与 `recomputed_match_in_trajectory_ref`**：在非 delta 分歧中，仅当 `trial_dir` 磁盘上存在匹配 `metric` 与 `reported_value`（且尚未匹配 `recomputed_value`）的交付文件，并且某步无报错的执行 `observation`（不包含 `tool_calls` 输入代码）包含 `metric` 与接近复算值的数值（至少 4 位有效数字，误差不超过 `max(1e-9, abs(recomputed_value) * 5e-4)`）时触发。它仍未验证计算与落盘时间戳先后，仅作待核实线索。
 - **`deliverable_diagnostics`**：扫描 `artifacts/` 下的 JSON/CSV/TSV，字段为 `scanned_files`、`empty_deliverables`、`nan_or_inf_values`、`results_json_files`、`results_json_keys` 和 `missing_checked_keys`。上限为 200 个文件、每文件 8,000,000 字节、每表 200,000 行、每 JSON 20,000 个节点。缺键检查比较所有已找到的 `results.json` 的键名并集；没有此文件时不产生缺键条目。无法解析或超限的内容可能被跳过，诊断为空不表示交付物完整。相关 `contract_observations` 还要求 `verify.log` 中有对应失败信息。
-- **`parameter_evolution`**：对识别到的科学参数（`cutoff`、`eta`、`alpha`、`tol`、`tolerance`、`ecutwfc`、`ecutrho`、`dt`、`timestep`、`kpoints`、`conv_thr`、`mixing_beta`、`nsteps`）赋值按名称汇总，首末值不同时记录 `initial`、`final`、`from_event` 和 `to_event`，并附加至 `causal_anchors.algorithm_or_param_definition`。不区分文件或计算作用域，不保留完整中间历史，也不证明参数在运行时生效。关联失败产物的生成候选另有 `+15` 排序加分；两者均为定位线索。
+- **`parameter_evolution`**：按目标脚本文件（`file`）作用域聚合识别到的科学参数赋值（`cutoff`、`eta`、`alpha`、`tol`、`tolerance`、`ecutwfc`、`ecutrho`、`dt`、`timestep`、`kpoints`、`conv_thr`、`mixing_beta`、`nsteps`），覆盖写/改文件、heredoc 及指向该脚本的命令；当首末值不同时记录 `file`、`initial`、`final`、`from_event` 和 `to_event`，并按 `algo_anchor.target_path` 过滤后附加至 `causal_anchors.algorithm_or_param_definition`。它不保留完整中间历史，也不证明参数在运行时生效。关联失败产物的生成候选另有 `+15` 排序加分；两者均为定位线索。
