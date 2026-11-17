@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="340" viewBox="0 0 1000 340" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">How to read the reports</title>
+<desc id="desc">In task-ID mode, start with the summary, read the full report, then inspect machine-readable evidence.</desc>
+<defs><symbol id="files" viewBox="0 0 120 120">
+ <path d="M40 9h42l22 22v70H40z" fill="#e3e9ed"/><path d="M82 9v24h22" fill="#b9c9d2"/>
+ <path d="M26 20h42l22 22v70H26z" fill="#fff"/><path d="M68 20v24h22" fill="#dbe7ed"/>
+ <path d="M13 34h39l22 22v59H13z" fill="#fdfbf4"/><path d="M52 34v24h22" fill="#e7cf91"/>
+ <path d="M25 74h34M25 86h34M25 98h23" fill="none"/>
+</symbol><symbol id="match" viewBox="0 0 120 120">
+ <rect x="8" y="13" width="66" height="88" rx="8" fill="#fff"/>
+ <path d="M21 30h38M21 47h27M21 64h22M21 81h17" fill="none"/>
+ <circle cx="79" cy="66" r="27" fill="#c7dfed"/><path d="M98 86l16 21" fill="none" stroke-width="9"/>
+ <path d="m65 66 10 10 18-21" fill="none" stroke="#44765d" stroke-width="5"/>
+</symbol><symbol id="report" viewBox="0 0 120 120">
+ <path d="M20 8h58l22 22v81H20z" fill="#fff"/><path d="M78 8v24h22" fill="#d9c7e5"/>
+ <path d="M36 47h47M36 63h31M36 79h24M36 95h20" fill="none"/>
+ <circle cx="86" cy="85" r="24" fill="#bcdcc9"/>
+ <path d="m74 85 9 9 16-19" fill="none" stroke="#396f53" stroke-width="5"/>
+</symbol><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M1 1 9 5 1 9z" fill="#62676b"/></marker></defs>
+<rect width="1000" height="340" fill="#fff"/>
+<g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" fill="#30343b"><rect x="8" y="12" width="312" height="272" rx="22" fill="#f7f3e7" stroke="#b8aa83" stroke-width="2" stroke-dasharray="7 6"/><text x="164" y="50" font-size="23" font-weight="650" text-anchor="middle">Start with the verdict</text><use href="#report" x="127" y="66" width="74" height="74" stroke="#30343b" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/><text x="164" y="169" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" font-weight="600" text-anchor="middle">summary.md</text><text x="164" y="231" font-size="18" text-anchor="middle">Primary cause and alternatives</text><text x="164" y="257" font-size="18" text-anchor="middle">Key execution anchors</text><path d="M323 148h16" stroke="#62676b" stroke-width="2.8" marker-end="url(#arrow)"/><rect x="344" y="12" width="312" height="272" rx="22" fill="#f2eaf7" stroke="#b398c5" stroke-width="2" stroke-dasharray="7 6"/><text x="500" y="50" font-size="23" font-weight="650" text-anchor="middle">Read the full report</text><use href="#files" x="463" y="66" width="74" height="74" stroke="#30343b" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/><text x="500" y="169" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" font-weight="600" text-anchor="middle">task208.md</text><text x="500" y="231" font-size="18" text-anchor="middle">Evidence chain and hypotheses</text><text x="500" y="257" font-size="18" text-anchor="middle">Recommended actions</text><path d="M659 148h16" stroke="#62676b" stroke-width="2.8" marker-end="url(#arrow)"/><rect x="680" y="12" width="312" height="272" rx="22" fill="#eaf3fa" stroke="#8caac3" stroke-width="2" stroke-dasharray="7 6"/><text x="836" y="50" font-size="23" font-weight="650" text-anchor="middle">Inspect the evidence</text><use href="#match" x="799" y="66" width="74" height="74" stroke="#30343b" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/><text x="836" y="169" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" font-weight="600" text-anchor="middle">data/evidence.json</text><text x="836" y="194" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" font-weight="600" text-anchor="middle">data/analysis.json</text><text x="836" y="231" font-size="18" text-anchor="middle">Source locations and observations</text><text x="836" y="257" font-size="18" text-anchor="middle">Attribution and decision trace</text><text x="500" y="322" font-size="18" text-anchor="middle" fill="#646b73">Across tasks: INDEX.md    ·    Skill prescriptions appear only when eligible</text></g></svg>

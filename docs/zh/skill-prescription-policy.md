@@ -1,10 +1,16 @@
-# 领域技能处方生成策略 (`Skill Prescription Generation Policy`)
+# 技能处方策略
 
-**[English](../en/skill-prescription-policy.md) | [简体中文](skill-prescription-policy.md)**
+**[English](../en/skill-prescription-policy.md) | [简体中文](skill-prescription-policy.md)** · [项目首页](../../README.zh.md) · [使用指南](guide.md)
+
+<a id="领域技能处方生成策略-skill-prescription-generation-policy"></a>
+
+**本页：** [五项准入条件](#1-五项准入条件) · [修复建议的责任分流](#2-修复建议的责任分流) · [技能处方结构](#3-技能处方结构)
 
 `case-failure-analyzer` 会按条件生成 `skill-prescription.md`（并填充 `analysis.json["skill_prescription"]`）。为防止将脆弱的临时绕过手段或单题补丁污染到 Agent 的通用技能库中，必须严格执行以下准入策略。
 
-## 1. 五项准入门槛 (`Eligibility Gate`)
+<a id="1-五项准入门槛-eligibility-gate"></a>
+
+## 1. 五项准入条件
 
 **仅当以下 5 项条件全部满足时**，才允许生成 `skill-prescription.md`：
 
@@ -14,9 +20,9 @@
 4. **可操作协议 (`Actionable Protocol`)**：指导方案可以表达为确定性的决策树、执行前核查清单（Pre-flight Checklist）或诊断协议。
 5. **严禁封装评测器缺陷 (`No Verifier Bug Encapsulation`)**：处方绝不能教导 Agent 去迎合错误的评测器正则表达式或伪造数据。
 
----
+<a id="2-非准入情况的修复分流表-routing-table-for-non-eligible-cases"></a>
 
-## 2. 非准入情况的修复分流表 (`Routing Table for Non-Eligible Cases`)
+## 2. 修复建议的责任分流
 
 当上述 5 项准入条件中任意一项不满足时，`skill_prescription` 必须为 `null`，且修复建议按如下规则分流至 `recommended_actions`：
 
@@ -28,9 +34,9 @@
 | `unknown` | 输出补充取证核查清单 | **否** |
 | `agent`（具备可复用科学/工程能力缺口） | 生成领域 Skill 处方 + Agent 策略改进建议 | **是** |
 
----
+<a id="3-技能处方结构-prescription-schema"></a>
 
-## 3. 技能处方结构 (`Prescription Schema`)
+## 3. 技能处方结构
 
 当满足准入条件时，`analysis.json` 中的 `skill_prescription` 字段与 `skill-prescription.md` 必须包含以下结构：
 

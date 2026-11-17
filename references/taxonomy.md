@@ -1,8 +1,8 @@
 # Failure Taxonomy (`failure-analysis-v1`)
 
-This document defines the standardized, peer-level classification hierarchy for `case-failure-analyzer`. Every `analysis.json` assigns a `failure_stage`, a `detection_stage`, and a `primary_root_cause` (`category`, `subtype`, `code`).
+**On this page:** [Execution & Detection Stages](#1-execution--detection-stages) · [Root-cause categories](#2-four-peer-root-cause-categories) · [Harbor runner codes](#3-harbor-runner-stage-codes-post-agent--pre-verifier)
 
----
+This document defines the standardized, peer-level classification hierarchy for `case-failure-analyzer`. Every `analysis.json` assigns a `failure_stage`, a `detection_stage`, and a `primary_root_cause` (`category`, `subtype`, `code`).
 
 ## 1. Execution & Detection Stages
 
@@ -15,124 +15,132 @@ This document defines the standardized, peer-level classification hierarchy for 
 | `verifier_execution` | Execution of `tests/test.sh` and `tests/verify.py` |
 | `runner` | Host benchmark runner (`harbor`) orchestration and lifecycle management |
 
----
+<a id="2-four-peer-level-root-cause-categories-统一同层级四大根因分类体系"></a>
 
-## 2. Four Peer-Level Root Cause Categories (统一同层级四大根因分类体系)
+## 2. Four peer root-cause categories
 
 Failure attribution is structured into four mutually exclusive, peer-level systemic categories, each representing an independent source of failure in scientific benchmark evaluations.
 
+<details>
+<summary>Expand the subtype map</summary>
+
 ```mermaid
 flowchart TD
-    Root["Benchmark Failure Attribution\n基准评测系统级因果归因"]
+    Root["Failure attribution"]
     
-    Root --> C1["1. 智能体决策与执行失误\n(agent)"]
-    Root --> C2["2. 基准题目与规格设计缺陷\n(case)"]
-    Root --> C3["3. 运行环境与依赖设施缺陷\n(infra)"]
-    Root --> C4["4. 评测验证与规则判定缺陷\n(verifier)"]
+    Root --> C1["Agent"]
+    Root --> C2["Task"]
+    Root --> C3["Infrastructure"]
+    Root --> C4["Verifier"]
 
-    C1 --> C11["科学方法选型 (scientific_method_selection)"]
-    C1 --> C12["科学参数设定 (scientific_parameter_selection)"]
-    C1 --> C13["任务与契约理解 (task_understanding)"]
-    C1 --> C14["工作流规划 (planning)"]
-    C1 --> C15["代码与工具调用 (tool_use)"]
-    C1 --> C16["结果校验归一化 (result_validation)"]
-    C1 --> C17["自检覆盖不足 (self_check_gap)"]
+    C1 --> C11["scientific_method_selection"]
+    C1 --> C12["scientific_parameter_selection"]
+    C1 --> C13["task_understanding"]
+    C1 --> C14["planning"]
+    C1 --> C15["tool_use"]
+    C1 --> C16["result_validation"]
+    C1 --> C17["self_check_gap"]
 
-    C2 --> C21["题干约定缺失/歧义 (ambiguous_contract)"]
-    C2 --> C22["初始资产缺失/损坏 (missing/corrupt_asset)"]
-    C2 --> C23["参考真值矛盾 (prompt_ref_mismatch)"]
-    C2 --> C24["算力与耗时预算不足 (insufficient_timeout)"]
+    C2 --> C21["ambiguous_contract"]
+    C2 --> C22["missing/corrupt_asset"]
+    C2 --> C23["prompt_ref_mismatch"]
+    C2 --> C24["insufficient_timeout"]
 
-    C3 --> C31["容器镜像与运行时崩溃 (container_build/runtime)"]
-    C3 --> C32["外部网络通信异常 (external_network)"]
-    C3 --> C33["LLM API 网关与限流 (api_error/api_rate_limit)"]
-    C3 --> C34["资源耗尽与生命周期中断 (oom/disk/runner_lifecycle)"]
+    C3 --> C31["container_build/runtime"]
+    C3 --> C32["external_network"]
+    C3 --> C33["api_error/api_rate_limit"]
+    C3 --> C34["oom/disk/runner_lifecycle"]
 
-    C4 --> C41["验证器超紧容差碰撞 (tolerance_too_strict)"]
-    C4 --> C42["验证器强类型不兼容 (schema_mismatch)"]
-    C4 --> C43["正则与文本解析缺陷 (regex_or_parser_defect)"]
-    C4 --> C44["隐藏未声明私有契约 (hidden_contract)"]
-    C4 --> C45["验证器自身脚本崩溃 (recompute_defect)"]
+    C4 --> C41["tolerance_too_strict"]
+    C4 --> C42["schema_mismatch"]
+    C4 --> C43["regex_or_parser_defect"]
+    C4 --> C44["hidden_contract"]
+    C4 --> C45["recompute_defect"]
 ```
 
----
+</details>
 
-### 2.1 智能体决策与执行失误 (`agent`)
-**责任主体**：被评测的大模型智能体。当题目规格、运行环境与验证器均正常时，智能体发生未自愈的科学决策、工程规划或代码编写错误。
+<a id="21-智能体决策与执行失误-agent"></a>
 
-| Code | Subtype | 中文子类名称 | 详细说明与典型表现 |
-|---|---|---|---|
-| `AGENT_SCIENTIFIC_METHOD_SELECTION` | `scientific_method_selection` | 科学方法与理论模型选型失误 | 理论模型、泛函基组、力场、系综或自洽场求解器选型错误（如未识别自由基为开壳层，未开启自旋极化 LSD/UKS） |
-| `AGENT_SCIENTIFIC_PARAMETER_SELECTION` | `scientific_parameter_selection` | 科学参数与收敛截断配置失误 | 积分时间步长超出稳定性上限（如 LJ 流体步长 > 0.006）、微分步长过大、k点网格移位偏差、截断能未收敛 |
-| `AGENT_TASK_UNDERSTANDING` | `task_understanding` | 任务契约与物理量定义理解偏差 | 对题干物理量概念或数学范数理解偏差（如混淆受力分量极值 L_inf 与原子合力向量模长 L2）、拟合区间对齐错误 |
-| `AGENT_PLANNING` | `planning` | 工作流编排与上下文状态保持失误 | 多阶段计算次序错乱、未冻结前序构型资产（误触发弛豫）、未正确关联前序输出目录（`outdir`/`prefix`） |
-| `AGENT_TOOL_USE` | `tool_use` | 工具调用与脚本生成缺陷 | 自动化生成输入文件或解析脚本时出现语法错误、遗漏关键晶胞参数（如 `celldm(1)`）或写错文件 |
-| `AGENT_RESULT_VALIDATION` | `result_validation` | 结果后处理与数据核验失误 | 量纲单位转换除错、每原子归一化因子除错、衍生量未核验物理自洽性即写入 `results.json` |
-| `AGENT_SELF_CHECK_GAP` | `self_check_gap` | 自检覆盖不足 | 智能体执行自检脚本并输出通过，但自检准则未覆盖验证器具名判定项或独立复算（如 `verify_outputs.py` 只校验内部一致性，未复算 `spin_selection` / `energy_parameters`） |
-| `AGENT_PATH_OR_DEPENDENCY_DISCOVERY` | `path_or_dependency_discovery` | 环境依赖与资产寻址失败 | 未能在容器已知路径中定位已预装的二进制、赝势文件、力场参数文件或 Checkpoint |
-| `AGENT_ERROR_DIAGNOSIS` | `error_diagnosis` | 物理报错诊断失误 | 仿真软件已给出明确报错诊断，智能体误判物理诱因并进行无效修改 |
-| `AGENT_RECOVERY` | `recovery` | 自愈恢复策略失效 | 面对错误盲目重复执行完全相同的失败命令，或陷入重试死循环 |
-| `AGENT_PREMATURE_TERMINATION` | `premature_termination` | 任务过早终止 | 在关键模拟未收敛或产物未交付前主动停止规划 |
+### 2.1 Agent decisions and execution (`agent`)
 
----
+The evaluated agent makes an unrecovered scientific, planning, or coding error while the task specification, environment, and verifier are functioning correctly.
 
-### 2.2 基准题目与规格设计缺陷 (`case`)
-**责任主体**：基准出题人与指令规范。评测题目的 prompt 说明、先验假设、初始资产或参考真值本身存在不完备、歧义或物理冲突。
+| Code and subtype | Meaning and examples |
+| --- | --- |
+| `AGENT_SCIENTIFIC_METHOD_SELECTION`<br>`scientific_method_selection` | **Scientific method and model selection.** Wrong theoretical model, functional/basis, force field, ensemble, or SCF solver; for example, treating a radical as closed-shell without LSD/UKS spin polarization. |
+| `AGENT_SCIENTIFIC_PARAMETER_SELECTION`<br>`scientific_parameter_selection` | **Scientific parameters and convergence settings.** An unstable integration time step (e.g. an LJ-fluid step > 0.006), excessive finite-difference step, shifted k-point grid, or unconverged energy cutoff. |
+| `AGENT_TASK_UNDERSTANDING`<br>`task_understanding` | **Task contract and physical quantity interpretation.** Misreading a physical quantity or mathematical norm, such as force-component L_inf versus per-atom vector L2, or misaligning a fitting interval. |
+| `AGENT_PLANNING`<br>`planning` | **Workflow sequencing and state management.** Incorrect order of calculation stages, failure to freeze an earlier geometry (triggering unintended relaxation), or incorrect links to prior outputs (`outdir`/`prefix`). |
+| `AGENT_TOOL_USE`<br>`tool_use` | **Tool calls and generated scripts.** Syntax errors in generated inputs or parsers, missing cell parameters such as `celldm(1)`, or writing the wrong file. |
+| `AGENT_RESULT_VALIDATION`<br>`result_validation` | **Post-processing and result validation.** Incorrect unit conversion or per-atom normalization, or writing derived quantities to `results.json` without checking physical consistency. |
+| `AGENT_SELF_CHECK_GAP`<br>`self_check_gap` | **Incomplete self-check coverage.** A self-check passes but omits named verifier criteria or independent recomputation; for example, `verify_outputs.py` checks internal consistency without recomputing `spin_selection` / `energy_parameters`. |
+| `AGENT_PATH_OR_DEPENDENCY_DISCOVERY`<br>`path_or_dependency_discovery` | **Path and dependency discovery.** Failure to locate preinstalled binaries, pseudopotentials, force-field parameters, or checkpoints in known container paths. |
+| `AGENT_ERROR_DIAGNOSIS`<br>`error_diagnosis` | **Scientific error diagnosis.** The simulator provides an explicit diagnostic, but the agent misidentifies its physical cause and makes ineffective changes. |
+| `AGENT_RECOVERY`<br>`recovery` | **Recovery strategy.** Repeating the same failed command without changes, or entering an unproductive retry loop. |
+| `AGENT_PREMATURE_TERMINATION`<br>`premature_termination` | **Premature termination.** Stopping planning before a required simulation has converged or the required artifacts have been delivered. |
 
-| Code | Subtype | 中文子类名称 | 详细说明与典型表现 |
-|---|---|---|---|
-| `CASE_AMBIGUOUS_CONTRACT` | `ambiguous_contract` | 题干约定缺失或语义歧义 | 题干未指明双向符号约定（如漂移率正负号定义）、未指明生产相采样步数、未在 Fixed Conditions 中固化仿真微调参数（如 neighbor_modify 导致重启发散）、算法严格/宽松定义分歧（如 RDKit 可旋转键数计算） |
-| `CASE_MISSING_ASSET` | `missing_asset` | 初始资产文件缺失 | 题干引用的输入结构、赝势或参数文件在容器中实际不存在 |
-| `CASE_CORRUPT_ASSET` | `corrupt_asset` | 初始物料数据损坏 | 提供的输入结构存在非物理重叠或格式损坏，且非题目故意考察的排障点 |
-| `CASE_PROMPT_REF_MISMATCH` | `prompt_ref_mismatch` | 参考真值与题干要求矛盾 | `refs.json` 中标定的真值采用的计算方法或参数与题干要求的条件不一致 |
-| `CASE_INSUFFICIENT_TIMEOUT` | `insufficient_timeout` | 超时预算或算力配额不合理 | 任务所需科学计算量在标准 CPU 配额下理论无法在限时内完成 |
+<a id="22-基准题目与规格设计缺陷-case"></a>
 
----
+### 2.2 Task design (`case`)
 
-### 2.3 运行环境与依赖设施缺陷 (`infra`)
-**责任主体**：底层运行平台与执行基础设施。与题目逻辑及判分代码独立，属于软硬件支撑层。
+The task author or specification supplies incomplete, ambiguous, or physically conflicting instructions, assumptions, input assets, or reference values.
 
-| Code | Subtype | 中文子类名称 | 详细说明与典型表现 |
-|---|---|---|---|
-| `INFRA_CONTAINER_BUILD` | `container_build` | 容器镜像构建失败 | Docker 镜像拉取或 `Dockerfile` 构建命令执行失败 |
-| `INFRA_CONTAINER_RUNTIME` | `container_runtime` | 容器运行时异常 | 容器意外崩溃、后台守护进程挂死或挂载失效 |
-| `INFRA_EXTERNAL_NETWORK` | `external_network` | 外部网络通信异常 | 构建或初始化阶段 `apt`、`pip`、外部模型拉取因网络阻断失败 |
-| `INFRA_API_ERROR` | `api_error` | LLM API 网关异常 | LLM Gateway 代理返回 HTTP 5xx/502/504 或连接重置 |
-| `INFRA_API_RATE_LIMIT` | `api_rate_limit` | API 配额限流 | 触发大模型 API 请求频次限制 (HTTP 429) |
-| `INFRA_OOM` | `oom` | 内存溢出 | 容器或计算进程触发 OOM Killer (`SIGKILL` / exit 137) |
-| `INFRA_DISK` | `disk` | 磁盘空间耗尽 | 容器存储配额耗尽 (`No space left on device`) |
-| `INFRA_AGENT_TIMEOUT` | `agent_timeout` | 智能体执行超时 | 智能体推理与工具交互超出总时限门禁 |
-| `INFRA_RUNNER_LIFECYCLE` | `runner_lifecycle` | 评测宿主调度异常 | 评测框架调度死锁、强制取消或 Runner 宿主崩溃 |
+| Code and subtype | Meaning and examples |
+| --- | --- |
+| `CASE_AMBIGUOUS_CONTRACT`<br>`ambiguous_contract` | **Missing or ambiguous task conventions.** Unspecified bidirectional sign conventions (e.g. drift-rate sign), production sampling steps, or simulation adjustments under Fixed Conditions (e.g. neighbor_modify causing restart divergence); conflicting strict/loose algorithm definitions such as RDKit rotatable-bond counts. |
+| `CASE_MISSING_ASSET`<br>`missing_asset` | **Missing input assets.** An input structure, pseudopotential, or parameter file referenced by the task is absent from the container. |
+| `CASE_CORRUPT_ASSET`<br>`corrupt_asset` | **Corrupt input assets.** A supplied input structure has unphysical overlaps or malformed data, outside the task's intended troubleshooting scope. |
+| `CASE_PROMPT_REF_MISMATCH`<br>`prompt_ref_mismatch` | **Reference and task mismatch.** The reference values in `refs.json` use methods or conditions inconsistent with the task specification. |
+| `CASE_INSUFFICIENT_TIMEOUT`<br>`insufficient_timeout` | **Insufficient time or compute budget.** The required scientific computation cannot theoretically finish within the time limit under the standard CPU allocation. |
 
----
+<a id="23-运行环境与依赖设施缺陷-infra"></a>
 
-### 2.4 评测验证与规则判定缺陷 (`verifier`)
-**责任主体**：评测验证脚本（`verify.py`、`test.sh`）与考核规则。Agent 的计算或产物在物理/化学目标上完全正确，但被判分脚本错误拒绝。
+### 2.3 Runtime infrastructure (`infra`)
 
-| Code | Subtype | 中文子类名称 | 详细说明与典型表现 |
-|---|---|---|---|
-| `VERIFIER_TOLERANCE_TOO_STRICT` | `tolerance_too_strict` | 验证器容差过于苛刻 | 能量/受力容差远小于数值/物理平台噪声或化学有效精度（如微电子伏级 1 µeV 超紧容差碰撞），导致物理正确但判定为 0 |
-| `VERIFIER_SCHEMA_MISMATCH` | `schema_mismatch` | 验证器强类型比较不兼容 | 验证器执行脆弱的强类型断言比对（如硬编码 `isinstance(..., int)` 拒绝字符串整数 `"100"`，`"12"`），未做宽容类型转换 |
-| `VERIFIER_REGEX_OR_PARSER_DEFECT` | `regex_or_parser_defect` | 验证器文本解析与正则缺陷 | 验证器正则未过滤 LAMMPS run 0 打印的重复表头、无法解析科学记数法（如 Fortran `D+03`）或多行输出 |
-| `VERIFIER_HIDDEN_CONTRACT` | `hidden_contract` | 验证器隐藏未公开私有契约 | 验证器校验了题干从未声明的内部中间文件、特定列顺序或非标私有字段 |
-| `VERIFIER_RECOMPUTE_DEFECT` | `recompute_defect` | 验证器自身重算崩溃 | 验证器独立重算脚本因自身临时目录配置缺失、路径未转义或缺失环境依赖而抛出异常崩溃 |
+The failure belongs to the underlying runtime platform or execution infrastructure, independently of task logic and scoring code.
 
----
+| Code and subtype | Meaning and examples |
+| --- | --- |
+| `INFRA_CONTAINER_BUILD`<br>`container_build` | **Container image build.** Docker image pull or `Dockerfile` build command failure. |
+| `INFRA_CONTAINER_RUNTIME`<br>`container_runtime` | **Container runtime.** Unexpected container crash, hung background daemon, or failed mount. |
+| `INFRA_EXTERNAL_NETWORK`<br>`external_network` | **External network.** Network restrictions prevent `apt`, `pip`, or external model downloads during build or initialization. |
+| `INFRA_API_ERROR`<br>`api_error` | **LLM API gateway.** The LLM gateway returns HTTP 5xx/502/504 or resets the connection. |
+| `INFRA_API_RATE_LIMIT`<br>`api_rate_limit` | **API rate limit.** The model API request rate exceeds quota (HTTP 429). |
+| `INFRA_OOM`<br>`oom` | **Out of memory.** The container or calculation process triggers the OOM killer (`SIGKILL` / exit 137). |
+| `INFRA_DISK`<br>`disk` | **Disk exhaustion.** The container exhausts its storage allocation (`No space left on device`). |
+| `INFRA_AGENT_TIMEOUT`<br>`agent_timeout` | **Agent timeout.** Agent reasoning and tool interactions exceed the total time budget. |
+| `INFRA_RUNNER_LIFECYCLE`<br>`runner_lifecycle` | **Runner lifecycle.** Benchmark scheduler deadlock, forced cancellation, or runner-host crash. |
 
-### 2.5 辅助类别：未知与证据缺失 (`unknown`)
-仅当运行产物严重缺失，无法建立确定性因果链时使用。
+<a id="24-评测验证与规则判定缺陷-verifier"></a>
 
-| Code | Subtype | 中文说明 |
+### 2.4 Verifier rules and scoring (`verifier`)
+
+The verification scripts (`verify.py`, `test.sh`) or scoring rules incorrectly reject calculations or artifacts that satisfy the physical or chemical objective.
+
+| Code and subtype | Meaning and examples |
+| --- | --- |
+| `VERIFIER_TOLERANCE_TOO_STRICT`<br>`tolerance_too_strict` | **Overly strict tolerance.** Energy/force tolerances are far below numerical or physical noise or chemically meaningful precision, such as a 1 µeV tolerance rejecting a physically correct result with score 0. |
+| `VERIFIER_SCHEMA_MISMATCH`<br>`schema_mismatch` | **Incompatible type checks.** Brittle type assertions, such as `isinstance(..., int)`, reject string integers `"100"` or `"12"` without conversion. |
+| `VERIFIER_REGEX_OR_PARSER_DEFECT`<br>`regex_or_parser_defect` | **Text parsing and regular expressions.** The parser fails to filter repeated LAMMPS run 0 headers or to handle scientific notation such as Fortran `D+03` or multiline output. |
+| `VERIFIER_HIDDEN_CONTRACT`<br>`hidden_contract` | **Undisclosed private contract.** The verifier checks intermediate files, column order, or private fields never declared in the task. |
+| `VERIFIER_RECOMPUTE_DEFECT`<br>`recompute_defect` | **Verifier recomputation crash.** Independent recomputation crashes because of missing temporary-directory configuration, unescaped paths, or missing environment dependencies. |
+
+<a id="25-辅助类别未知与证据缺失-unknown"></a>
+
+### 2.5 Insufficient evidence (`unknown`)
+
+Use when severe gaps in run artifacts prevent establishing a causal chain.
+
+| Code | Subtype | Meaning |
 |---|---|---|
-| `UNKNOWN_INSUFFICIENT_EVIDENCE` | `insufficient_evidence` | 关键日志缺失、无执行轨迹，或竞争假设证据置信度无法区分 |
-
----
+| `UNKNOWN_INSUFFICIENT_EVIDENCE` | `insufficient_evidence` | Missing key logs or execution traces, or evidence scores that cannot distinguish competing hypotheses |
 
 ## 3. Harbor Runner-Stage Codes (Post-Agent / Pre-Verifier)
 
 Harbor collects the declared deliverables (`task.toml` → `artifacts`) with `docker cp` after agent execution and before verification. Failures in this window are `failure_stage: "runner"`, `detection_stage: "runner"`, verdict `errored` when the verifier never started. They are **not** `environment_build` / `container_build` failures and **not** agent "premature termination" verdicts.
 
-| Code | Subtype | 中文说明 / Meaning |
+| Code | Subtype | Meaning |
 |---|---|---|
 | `INFRA_ARTIFACT_COLLECTION_CRASH` | `artifact_collection_crash` | `RuntimeError: Engine cp failed ('<container>:/app/final' ...): Could not find the file /app/final in container ...` — declared path missing, runner aborts the whole trial |
 | `INFRA_RUNNER_INTERRUPTED` | `runner_interrupted` | Runner log ends at `Collecting main service artifacts` with no verifier output or completion record (silent interruption) |

@@ -1,71 +1,91 @@
-# Report Schema (`report.md`)
+# Report schema (`report.md`)
 
-Every generated `report.md` MUST include the following **4 core sections** in exact order with start-of-line headings (`## <N>. <Title>`) and non-empty body text so human reviewers and automated validators (`scripts/validate_analysis.py`) can audit the report consistently.
+**On this page:** [Failure report](#required-sections--visual-structure) · [Passed trials](#lightweight-view-for-passed-trials) · [Batch summary](#batch-summary-job_summarymd--job_summaryjson) · [Task-ID reports](#task-id-quick-answer---task-id-task208)
 
-Following user and reviewer experience principles, reports adhere to the **Compact Attribute Table & Clean Focal Summary (紧凑属性表与聚焦高亮)** standard:
-- **层级显式化**：在归因结论中，**首先以 Markdown 属性表明确评测结论、主因归属**（顶层大类 `agent` / `case` / `infra` / `verifier` ➔ 二级子类 `subtype` (`CODE`)）、阶段与置信度。
-- **直击痛点**：紧接着以高亮引用卡片呈现【失败表现 (Failure manifestation)】与【归因判断 (Attribution)】：前者说明评测在哪里失败，后者说明失败由什么机制导致。
-- **门控降噪**：隐藏正常启动下的 `agent_started=True, verifier_started=True` 底层门控标记，仅在发生启动前失败或容器异常中断时才在表下附带 Warning 门控警示。
-- **路径去噪与分级收敛**：精简证据文件索引，使用统一基准目录相对路径锚点；当日志全部缺失时合并为单行概括；对缺失产物分级过滤，仅展示核心输入与计算产物，收敛内部临时/中间文件。
-- **自然文本表述**：消除 Python 列表原生 `repr` 语法泄露，将支持/反驳证据转换为自然文本。
-- **诊断透明化**：证据采集发生降级（`diagnostics` 中 `severity` 为 `warning` 或 `error`）时，报告必须在第 1 节给出醒目警示，并在第 2 节逐条列出降级诊断；不得让降级结果看起来与“证据干净”完全一致。
-
-Every invocation of `scripts/render_report.py` / `scripts/analyze_case.py` generates:
-- `report.md`: Compact Chinese-English bilingual report with parallel bilingual labels (4 core sections, no duplicated Part II English copy).
-- `report.zh.md`: Clean standalone Chinese edition (4 core sections).
-- `report.en.md`: Clean standalone English edition (4 core sections).
-
----
+Failure reports use four core sections in the order below. Each report heading starts at the beginning of a line as `## <N>. <Title>` and has a non-empty body, so reviewers and `scripts/validate_analysis.py` can check it. Passed trials use the separate two-section view described below.
 
 ## Required Sections & Visual Structure
 
-### 1. `## 1. 归因结论` (or `## 1. Root Cause Verdict`)
-以紧凑 Markdown 属性表（`项目 (Field) | 结论 (Finding)`）配合高亮引用呈现：
-- **评测结论 (Verdict)**：`failed` / `passed` / `errored`（包含执行状态、验证状态、reward）
-- **主因 (Primary cause)**：【大类】➔ 【二级子类】(`CODE`)
-- **阶段 (Stages)**：发生阶段 ➔ 检出阶段
-- **置信度 (Confidence)**：数值、判定方式与证据强度
-- **运行门控警示 (Gate Warning)**：仅在未正常启动或容器异常中断时附带警示块，正常启动时不展示冗余门控状态。
-- **证据完整性警示 (Evidence Integrity Warning)**：仅当 `diagnostics` 中存在 `warning` / `error` 记录时出现，说明证据已降级及受影响结论，并指向第 2 节的明细。
-- **高亮结论卡片**：
-  - **失败表现 (Failure manifestation)**：验证器具名失败检查或数值偏差等直接失败现象。
-  - **归因判断 (Attribution)**：大类 · 子类层面的因果机制（模型盲区、契约歧义、判分缺陷或环境故障）。
+Present the verdict, primary category → subtype (`CODE`), stages, and confidence in a compact Markdown property table. Follow it with the failure manifestation and attribution mechanism. These are different claims: one describes where verification failed; the other explains the proposed cause.
 
-### 2. `## 2. 失败证据链` (or `## 2. Failure Evidence Chain`)
-- **关键失败报错摘要**：提炼最核心的 1~3 行验证器错误日志。
-- **首次不可恢复偏离点 (`first_unrecovered_deviation`)**：记录偏离事件 ref、时间戳与发生动作。
-- **核心证据引用代号 (`evidence_refs`)**。
-- **证据降级诊断 (Evidence Degradation Diagnostics)**：仅当存在 `warning` / `error` 诊断时出现，逐条列出 `code`、`stage`、`severity`、`message`、`impact` 与 `source_ref`；这些记录同样写入 `evidence.json` 并在 `job_summary.json` 中聚合计数。
-- **证据链来源文件索引 (Evidence File Pointers)**：
-  - **相对上下文锚点**：统一标明 `case`、`trial` 与 `task` 相对标识，消除长绝对路径折行与泄露噪音。
-  - **核心日志与产物**：交互轨迹（`agent/trajectory.json`）、评测日志（`verifier/verify.log`）、任务规范（`instruction.md`）、计算产物（`results.json`）。全缺时单行合并概括。
-  - **全量证据矩阵索引**：指引至 `evidence.json` 与 `analysis.json`。
+Use relative evidence paths and natural-language evidence summaries instead of raw Python list representations. If all logs are missing, summarize that once. Show core missing inputs and computational outputs, suppressing incidental temporary files. Omit normal `agent_started=True, verifier_started=True` flags; show a gate warning only for startup failures or abnormal container interruptions.
 
-### 3. `## 3. 假设检验与排除` (or `## 3. Hypothesis Audit`)
-- **竞争假设仲裁**：美化为自然文本的候选假设支持证据与排除假设反驳理由，杜绝 Python 列表语法泄露。
-- **伴随因素与异常信号**：次要伴随影响与行为信号条数统计（详细条目索引至 `evidence.json`）。
+Evidence degradation must remain visible: when `diagnostics` includes `warning` or `error`, Section 1 warns about the affected conclusions and Section 2 lists the diagnostics.
 
-### 4. `## 4. 改进建议` (or `## 4. Recommended Actions`)
-- **针对性整改行动 (Action Items)**：按责任主体（Case/Infra/Verifier/Agent）给出明确对策。
-- **领域 Skill 处方**：针对智能体能力盲区推荐的领域协议技能。
-- **核心缺失产物清单**：仅展示关键核心输入与计算产物，收敛内部临时/中间文件。
+Path-mode report editions, selected by the requested language and format:
 
----
+| File | Edition |
+| --- | --- |
+| `report.md` | Compact Chinese-English report with parallel labels, without a duplicated English Part II |
+| `report.zh.md` | Standalone Chinese report |
+| `report.en.md` | Standalone English report |
 
-## Lightweight View for Passed Trials (通过案例精简版)
+<a id="1--1-归因结论-or--1-root-cause-verdict"></a>
 
-当评测判定为通过 (`verdict == "passed"`) 时，报告自动切换为轻量精简视图（严格预算控制在 30 行以内），仅保留通过裁定与验证证据，彻底移除失败根因、竞争失败假设、缺失产物清单与修复行动等无关噪音：
+### 1. Root cause verdict
 
-### 1. `## 1. 通过结论` (or `## 1. Verdict & Pass Summary`)
-- **通过属性表**：评测结论（`passed` · reward）、阶段（执行与验证均通过）、置信度（`1.00` · 规则判定）。
-- **通过依据**：无降级时标注评测规则全部通过，未检测到未恢复异常或规格违规。若存在 `warning` / `error` 证据降级诊断，则本节改述为“判定通过但证据采集降级”，并在通过依据之后输出证据完整性警示；逐条诊断仍放在第 2 节，不得继续声称“无任何偏离”。
+Report heading: `## 1. 归因结论` or `## 1. Root Cause Verdict`.
 
-### 2. `## 2. 验证证据` (or `## 2. Verification Evidence`)
-- **任务与试次**：`task`, `trial`, `case` 相对标识，不输出任何机器绝对路径。
-- **已验证产物记录**：仅展示实际存在的验证产物文件，不列出失败产物缺失项。
-- **全量验证矩阵索引**：指引至 `evidence.json` 与 `analysis.json`（若使用 `--format markdown` 则展示对应说明）。
+| Item | Required content |
+| --- | --- |
+| Verdict | `failed`, `passed`, or `errored`, including execution status, verification status, and reward |
+| Primary cause | Category → subtype (`CODE`) |
+| Stages | Failure stage → detection stage |
+| Confidence | Score, assessment method, and evidence strength |
+| Gate warning | Only for startup failure or abnormal container interruption |
+| Evidence integrity warning | Only for `warning` / `error` diagnostics; state the impact and refer to Section 2 |
+| Failure manifestation | Named verifier failure or numerical deviation |
+| Attribution | The causal mechanism at category/subtype level: agent capability gap, ambiguous contract, scoring defect, or environment fault |
 
----
+<a id="2--2-失败证据链-or--2-failure-evidence-chain"></a>
+
+### 2. Failure evidence chain
+
+Report heading: `## 2. 失败证据链` or `## 2. Failure Evidence Chain`.
+
+- Summarize the most relevant 1–3 verifier error lines.
+- Record the event reference, timestamp, and action for `first_unrecovered_deviation`, along with the core `evidence_refs`.
+- When degradation diagnostics exist, list `code`, `stage`, `severity`, `message`, `impact`, and `source_ref`. These records also appear in `evidence.json` and are counted in `job_summary.json`.
+- Identify `case`, `trial`, and `task` relatively, avoiding long machine-specific absolute paths. Index core evidence: `agent/trajectory.json`, `verifier/verify.log`, `instruction.md`, and `results.json`. Summarize all-missing logs on one line.
+- Link the complete evidence and analysis in `evidence.json` and `analysis.json`.
+
+<a id="3--3-假设检验与排除-or--3-hypothesis-audit"></a>
+
+### 3. Hypothesis audit
+
+Report heading: `## 3. 假设检验与排除` or `## 3. Hypothesis Audit`.
+
+Present supporting evidence for candidate hypotheses and reasons for excluding alternatives in natural language, without Python list syntax. Include contributing factors and behavioral-signal counts; refer to `evidence.json` for individual records.
+
+<a id="4--4-改进建议-or--4-recommended-actions"></a>
+
+### 4. Recommended actions
+
+Report heading: `## 4. 改进建议` or `## 4. Recommended Actions`.
+
+Give actions for the responsible category: case, infrastructure, verifier, or agent. Include domain skill prescriptions for eligible agent capability gaps and list core missing inputs and computational outputs, omitting incidental temporary files.
+
+<a id="lightweight-view-for-passed-trials-通过案例精简版"></a>
+
+## Lightweight View for Passed Trials
+
+When `verdict == "passed"`, use a lightweight view with a budget of fewer than 30 lines. Keep the pass verdict and verification evidence; omit failure causes, competing failure hypotheses, missing-artifact lists, and remediation actions.
+
+<a id="1--1-通过结论-or--1-verdict--pass-summary"></a>
+
+### 1. Verdict and pass summary
+
+Report heading: `## 1. 通过结论` or `## 1. Verdict & Pass Summary`.
+
+Show `passed` and reward, execution/verification stages, and rule-based confidence `1.00`. With no degradation, state that verification passed and no unrecovered anomaly or contract violation was detected. With `warning` / `error` diagnostics, state that verification passed but evidence collection degraded, add the integrity warning, and list details in Section 2; do not claim there were no deviations.
+
+<a id="2--2-验证证据-or--2-verification-evidence"></a>
+
+### 2. Verification evidence
+
+Report heading: `## 2. 验证证据` or `## 2. Verification Evidence`.
+
+Show relative `task`, `trial`, and `case` identifiers, with no machine-specific absolute paths. List only verification artifacts that exist, omitting missing-failure-artifact lists. Link `evidence.json` and `analysis.json`, or explain their absence when `--format markdown` was requested.
 
 ## Batch Summary (`job_summary.md` / `job_summary.json`)
 
@@ -87,11 +107,9 @@ Multi-trial jobs additionally emit `job_summary.md` (bilingual), `job_summary.zh
 
 When `evidence.verifier_report` is present, Section 2 includes the normalized verifier-report block: `schema_family`, `primary_report`, named `failed_checks` with layer/name/detail, `core_failures`, `failure_origin`, and `summary`. If `diagnosability == "low"`, the block explicitly says the verifier message is too terse to localize a failing check and lists `diagnosability_reasons`, instead of silently presenting an empty check list as complete evidence.
 
----
-
 ## Task-ID Quick Answer (`--task-id task208`)
 
-Invoking the skill with a task reference (e.g. `/case failure analyzer task208`) uses task-ID mode. `scripts/task_ref.py` resolves the reference to the newest matching trial, its job directory, and the task definition directory containing `task.toml`. `--jobs-root` (or `$CFA_JOBS_ROOT`, then the current directory and its parent) bounds the search; numeric matching is exact, so `task208` never resolves to `task2080`.
+Invoking the skill with a task reference (e.g. `$case-failure-analyzer task208`) uses task-ID mode. `scripts/task_ref.py` resolves the reference to the newest matching trial, its job directory, and the task definition directory containing `task.toml`. `--jobs-root` (or `$CFA_JOBS_ROOT`, then the current directory and its parent) bounds the search; numeric matching is exact, so `task208` never resolves to `task2080`.
 
 **Output landing**: reports land in `<bench_root>/failure-report/<task_id>/`, next to the benchmark's case folders. `bench_root` is derived from the resolved trial (`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`; flat `<bench>/jobs/...` → `<bench>`). The bench-level folder holds one global board and one subfolder per analyzed task:
 
@@ -132,6 +150,7 @@ Path mode (`--job` + `--output`) keeps the legacy unprefixed names (`report.md`,
 ### Global Index Board (`INDEX.md`)
 
 The bench-level global board aggregates root-cause attributions across all analyzed tasks:
+
 - **Three-state Trial Statistics**: Header callout tracks `总用例 / Total`, `通过 / Passed`, `已评分失败 / Failed`, `未评分或异常 / Errored & Unscored`, and **可评分通过率 / Scored Pass Rate** (`passed / (passed + failed)`).
 - **Normalized Category Distribution**: Proportions in Section 1 are computed against non-passed cases (`non_passed = sum(cat_counts)`), guaranteeing that the 5 failure categories (`agent`, `verifier`, `case`, `infra`, `unknown`) always sum to `100.0%`.
 - **Natural Numeric Ordering**: Case manifests are sorted naturally (`task98` before `task194` before `task207`), avoiding lexicographical misordering.
@@ -141,6 +160,7 @@ The bench-level global board aggregates root-cause attributions across all analy
 ### At-a-Glance Error Matrix & Resolved Evidence Inspection
 
 `scripts/cfa.py inspect` provides focused, read-only inspection with automatic credential and user-home redaction:
+
 - **At-a-Glance Error Matrix** (`cfa inspect <task_id> --section errors`): Terminal-friendly Markdown summary of verdict, primary root cause, verifier diagnosability, and every named failed check (`[<layer>] <name>`, `failure_kind`, `detail`, plus artifact comparison or recompute divergence deltas). Add `--raw` for unformatted JSON.
 - **Confidence Breakdown Receipt** (`cfa inspect <task_id> --section confidence`): Pretty-prints heuristic confidence, evidence strength, dynamic `points / denominator` scale, signed `+`/`-` evidence factors, and `missing_to_raise` items needed to elevate confidence, alongside competing hypotheses scores. Add `--raw` for structured JSON.
 - **Resolved Evidence Summary** (`cfa inspect <task_id> --section evidence`): Concise human-readable digest of runtime execution state, failed checks count, causal anchors, scientific observations, behavioral signals count, and core evidence refs without dumping raw JSON. Add `--raw` to dump the original `evidence.json`.
@@ -155,4 +175,3 @@ The card **is** the direct answer; the CLI prints it to stdout followed by `REPO
 3. **Subcategory under the winning category** (`## 2. 主因大类下的小分类`) — `subtype` → `code` → confidence → basis, plus contributing/candidate subcategories, named failing checks, `evidence_refs`, and `recommended_actions`.
 
 When the primary category is `unknown`, the card says plainly that evidence cannot isolate a cause and shows what is missing; it never invents a subcategory. The card is bilingual-labelled and follows `--lang` (Chinese by default, English with `--lang en`).
-

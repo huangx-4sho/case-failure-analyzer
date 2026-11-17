@@ -1,5 +1,7 @@
 # Skill Prescription Generation Policy
 
+**On this page:** [Eligibility](#1-eligibility-gate-all-conditions-required) · [Remediation routing](#2-routing-table-for-non-eligible-cases) · [Prescription fields](#3-prescription-schema)
+
 `case-failure-analyzer` optionally generates `skill-prescription.md` (and populates `analysis.json["skill_prescription"]`). To prevent polluting the agent's skill library with brittle workarounds or single-case patches, strict eligibility criteria apply.
 
 ## 1. Eligibility Gate (All Conditions Required)
@@ -12,8 +14,6 @@ Generate a `skill-prescription.md` **ONLY IF ALL 5 CONDITIONS HOLD**:
 4. **Actionable Protocol**: The guidance can be expressed as a deterministic decision tree, pre-flight checklist, or diagnostic protocol.
 5. **No Verifier Bug Encapsulation**: The prescription does NOT teach the agent to hack around a broken verifier regex or fabricate data.
 
----
-
 ## 2. Routing Table for Non-Eligible Cases
 
 When any of the 5 eligibility conditions is false, `skill_prescription` MUST be `null`, and remediation is routed as follows:
@@ -25,8 +25,6 @@ When any of the 5 eligibility conditions is false, `skill_prescription` MUST be 
 | `verifier` | `tests/verify.py` parser/regex/tolerance patch + regression test | **No** |
 | `unknown` | Evidence collection checklist | **No** |
 | `agent` (reusable scientific/workflow gap) | Domain Skill prescription + Agent policy guidance | **Yes** |
-
----
 
 ## 3. Prescription Schema
 

@@ -1,10 +1,25 @@
-# 证据与归因 JSON 模式规范 (`failure-analysis-v1`)
+# 证据与归因字段（`failure-analysis-v1`）
 
-**[English](../en/evidence-schema.md) | [简体中文](evidence-schema.md)**
+**[English](../en/evidence-schema.md) | [简体中文](evidence-schema.md)** · [项目首页](../../README.zh.md) · [使用指南](guide.md)
+
+<a id="证据与归因-json-模式规范-failure-analysis-v1"></a>
+
+**本页：** [证据字段](#1-evidencejson-客观证据模式) · [归因字段](#2-analysisjson-因果归因模式) · [Harbor 扩展](#3-harbor-协议扩展) · [核对与溯源](#4-数值核对与溯源扩展)
+
+本文说明证据、归因及扩展字段。示例可按需展开；标识、字段名和枚举值保持代码中的写法。
+
+| 数据 | 用途 |
+| --- | --- |
+| `evidence.json` | 运行状态、轨迹、检查结果和证据位置 |
+| `analysis.json` | 主根因、候选假设、行动建议和判定记录 |
+| 可选扩展字段 | Harbor 采集信息、数值核对与溯源线索 |
 
 ## 1. `evidence.json` 客观证据模式
 
 `evidence.json` 仅存储由确定性脚本（`discover_artifacts.py`、`runtime_state.py`、`normalize_trajectory.py`、`extract_runtime_errors.py`、`audit_contract.py`、`extract_scientific_errors.py`）提取的客观事实与观测，绝不包含任何主观根因裁决标签。
+
+<details>
+<summary>展开 evidence.json 字段示例</summary>
 
 ```json
 {
@@ -154,6 +169,8 @@
 }
 ```
 
+</details>
+
 **证据完整性字段：**
 
 - `trial_dir` / `task_dir` 为采集阶段解析出的绝对输入路径；报告只渲染相对锚点，绝不暴露这些绝对路径。
@@ -161,11 +178,12 @@
 - `diagnostics` 为结构化恢复记录列表（`diagnostics-v1`）。`severity="warning"` 表示证据已降级，结论可能建立在比表面更弱的基础上；`severity="error"` 表示必需输入无法读取。`warning` / `error` 记录会在 `report.md` 第 1 节警示，并在第 2 节逐条列出；汇总行与 `job_summary.json` 会聚合其计数。
 - `verifier_check_stats` 为**可选字段**，仅当存在 verifier 日志时出现。对于 fail-fast 验证器，`total_checks` 是下界（其通过的检查不打印标记）。只有 `single_failure` 可视为检查定位（localization）；`counterfactual_candidate`（恰好一个失败检查）只是*候选*，无法区分“唯一失败的检查”与“唯一运行过的检查”，门控必须将其与指标级证据独立绑定后，才能给予反事实置信度。
 
----
-
 ## 2. `analysis.json` 因果归因模式
 
 `analysis.json` 存储结构化因果归因结论，必须通过 `scripts/validate_analysis.py` 校验。
+
+<details>
+<summary>展开 analysis.json 字段示例</summary>
 
 ```json
 {
@@ -249,13 +267,18 @@
 }
 ```
 
+</details>
+
 `decision_trace` 为附加审计字段：记录每个被评估的门控、其未命中的原因以及最终选中的门控。`checks` 仅保存标量（不含日志文本），且不记录任何时间相关值，因此 `analysis.json` 保持字节级确定性。仅当门控选中已文档化的子情形时才出现 `subcase_id`。
 
----
+<a id="3-harbor-协议扩展附加式可选键harbor-protocol-extensions"></a>
 
-## 3. Harbor 协议扩展（附加式、可选键）(`Harbor Protocol Extensions`)
+## 3. Harbor 协议扩展
 
 Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/trajectory.json`、`verifier/`、`artifacts/` 以及同级的 `task.toml`）会额外产出若干观测键。这些键全部为**可选**：非 Harbor 输入仍保持旧有结构，校验器也不强制要求它们。
+
+<details>
+<summary>展开 Harbor 扩展示例</summary>
 
 ```json
 {
@@ -286,18 +309,23 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 }
 ```
 
+</details>
+
 - **`metadata.task_toml.artifacts`** 是权威的已声明交付物集合，`metadata.declared_deliverables` 将其镜像为扁平列表。`normalize_trajectory(..., expected_deliverables=[...])` 用它来判定 `sig:premature_completion` 是否真实成立：仅当某个*已声明*路径在轨迹中缺失时该信号才触发，绝不会因为硬编码的 `results.json` 未写出而触发。当 `task.toml` 不可用时该列表为空，回退到旧有的 `results.json` 启发式。
 - **`missing_deliverables`** 是从未产出的已声明路径的对账（reconciled）列表。轨迹匹配本身是启发式的，因此 `collect_case_evidence.py` 会交叉核对 `<trial>/artifacts/app/<已声明路径>`（Harbor 的 `docker cp` 输出，无法凭空想象），并剔除任何实际已被采集到的路径。`premature_completion` 信号会携带 `declared_deliverables` / `missing_deliverables` 两个数组；当所有已声明路径都已被采集时，该信号会被整体移除。
 - **`verifier_report`** 将五类 Harbor 验证器 JSON 家族（分层式 `core/verify.json`、带 `ACADEMIC_INTEGRITY_VETO` 的 `scientific/verify.json`、`raw-verifier.json` 的 `criteria[]`、`science.json` 的 `checks[]`、以及带 `failure_origin` 的 `verify.json` 信封）归一化为统一形态：带 `layer`、`name`、`detail`、`core`、`source` 的具名 `failed_checks`；`core_failures`；`failure_origin`；`scorable`；`reward`；以及 `diagnosability` 标记。`diagnosability == "low"` 表示验证器只给出一条简短、泛化的消息，既无具名检查也无数值偏差——报告会显式点明这一点，而不会假装证据是完整的。存在报告时，`build_check_stats_from_report()` 也会填充 `verifier_check_stats`，使检查定位与置信度评分同样适用于 Harbor 报告。
 - **`error_observations`** 可携带 Harbor 运行阶段条目，附带 `stage: "runner"`、`runner_phase: "post_agent_execution"`、`scoring_reached` 与 `missing_deliverable` 等字段。相关码：`INFRA_ARTIFACT_COLLECTION_CRASH`（`Engine cp failed ... Could not find the file /app/...`）、`INFRA_RUNNER_INTERRUPTED`（日志止于 `Collecting main service artifacts`），以及作为因果项的 `INFRA_AGENT_TIMEOUT`。这些在时间上位于 Agent 执行*之后*、验证*之前*，因此绝不可被归入 `environment_build` / `container_build` 阶段。无害的 `Cannot estimate Claude cost ... litellm.BadRequestError: LLM Provider NOT provided` 行是遥测信息，在成功 Trial 中同样存在，故刻意不设为其错误规则。
 
----
+<a id="4-附加交叉核对交付物完整性与因果溯源扩展"></a>
 
-## 4. 附加交叉核对、交付物完整性与因果溯源扩展
+## 4. 数值核对与溯源扩展
 
 以下字段均为 `evidence.json` / `summary.json` 中的附加可选扩展：
 
 以下是字段示意，不是真实运行记录；仅展示部分字段。
+
+<details>
+<summary>展开数值核对与溯源示例</summary>
 
 ```json
 {
@@ -343,6 +371,8 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
   }
 }
 ```
+
+</details>
 
 - **多格式轨迹**：`resolve_trajectory_path` 和 `_convert_messages_to_steps` 解析可识别的 ATIF、OpenAI 和 Anthropic JSON/JSONL 结构，按工具调用 ID 关联调用与结果。`truncate_with_head_tail` 可保留中部最多 6 条报错或指标行。`script_targets` 静态提取脚本输出路径，在匹配的 shell 调用未检测到错误时加入 `written_files`；这不证明文件已实际生成。
 - **具名指标配对**：`pair_verifier_evidence_with_artifacts` 按字段名精确、规范化或子串匹配配对数值，不因偏差过大而丢弃具名候选。无指标名时仍要求相对偏差小于 `0.05` 或绝对偏差小于 `0.05`。字段名相似仍需人工核对含义。

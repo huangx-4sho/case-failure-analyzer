@@ -15,7 +15,7 @@ Diagnose why scientific-computing benchmark cases (`jobs/<job_name>` + `tasks/<t
 
 ## Task-ID Quick Answer (Recommended)
 
-When invoked with a **task number** — e.g. `/case failure analyzer task208`, `task 220`, or a full trial name `task 208__jaekojA` — do NOT make the user open a file. Run one command and **answer in the conversation with the verdict card it prints to stdout**.
+When invoked with a **task number** — e.g. `$case-failure-analyzer task208`, `task 220`, or a full trial name `task 208__jaekojA` — do NOT make the user open a file. Run one command and **answer in the conversation with the verdict card it prints to stdout**.
 
 ```bash
 python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
