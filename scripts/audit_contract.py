@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import ast
+import csv
 import json
+import math
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from diagnostics import WARNING, make_diagnostic
 
@@ -490,6 +492,174 @@ def is_causally_bound_numerical_failure(verify_log_text: str) -> bool:
     return False
 
 
+_NON_FINITE_TOKENS = frozenset(
+    {"nan", "+nan", "-nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"}
+)
+_MAX_DELIVERABLE_AUDIT_FILES = 200
+_MAX_DELIVERABLE_AUDIT_BYTES = 8_000_000
+_MAX_DELIVERABLE_AUDIT_ROWS = 200_000
+_MAX_DELIVERABLE_AUDIT_JSON_NODES = 20_000
+
+
+def _is_non_finite_str(val: str) -> bool:
+    s = val.strip()
+    if not s:
+        return False
+    if s.lower() in _NON_FINITE_TOKENS:
+        return True
+    try:
+        parsed = float(s)
+        return not math.isfinite(parsed)
+    except ValueError:
+        return False
+
+
+def inspect_delivered_artifacts(
+    trial_dir: Optional[Path],
+    checked_keys: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Scan `<trial>/artifacts` for JSON/CSV/TSV integrity issues.
+
+    Detects empty tables/JSON objects, NaN/Inf numeric values, and cross-checks
+    `checked_keys` (when provided) against keys in `<trial>/artifacts/**/results.json`.
+    """
+    result: Dict[str, Any] = {
+        "scanned_files": [],
+        "empty_deliverables": [],
+        "nan_or_inf_values": [],
+        "results_json_files": [],
+        "results_json_keys": [],
+        "missing_checked_keys": [],
+    }
+    if trial_dir is None:
+        return result
+    artifacts_root = trial_dir / "artifacts"
+    if not artifacts_root.is_dir():
+        return result
+
+    all_results_keys: Set[str] = set()
+    scanned = 0
+
+    for path in sorted(artifacts_root.rglob("*")):
+        if scanned >= _MAX_DELIVERABLE_AUDIT_FILES:
+            break
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in (".json", ".csv", ".tsv"):
+            continue
+        try:
+            if path.stat().st_size > _MAX_DELIVERABLE_AUDIT_BYTES:
+                continue
+        except OSError:
+            continue
+        scanned += 1
+        try:
+            rel_path = path.relative_to(trial_dir).as_posix()
+        except ValueError:
+            rel_path = path.name
+        result["scanned_files"].append(rel_path)
+
+        if suffix == ".json":
+            try:
+                data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, ValueError):
+                continue
+
+            if isinstance(data, (dict, list)) and len(data) == 0:
+                result["empty_deliverables"].append(
+                    {
+                        "file": rel_path,
+                        "kind": "empty_json",
+                        "detail": "JSON deliverable is empty",
+                    }
+                )
+
+            is_results_json = path.name == "results.json" and isinstance(data, dict)
+            if is_results_json:
+                result["results_json_files"].append(rel_path)
+
+            stack: List[Tuple[Any, str]] = [(data, "$")]
+            visited = 0
+            while stack:
+                node, json_path = stack.pop()
+                visited += 1
+                if visited > _MAX_DELIVERABLE_AUDIT_JSON_NODES:
+                    break
+                if isinstance(node, dict):
+                    for k, v in node.items():
+                        key_str = str(k)
+                        if is_results_json:
+                            all_results_keys.add(key_str)
+                        stack.append((v, f"{json_path}.{key_str}"))
+                elif isinstance(node, list):
+                    for idx, v in enumerate(node):
+                        stack.append((v, f"{json_path}[{idx}]"))
+                elif isinstance(node, float) and not math.isfinite(node):
+                    result["nan_or_inf_values"].append(
+                        {"file": rel_path, "key": json_path, "value": str(node)}
+                    )
+                elif isinstance(node, str) and node.strip().lower() in _NON_FINITE_TOKENS:
+                    result["nan_or_inf_values"].append(
+                        {"file": rel_path, "key": json_path, "value": node.strip()}
+                    )
+
+        else:
+            delimiter = "," if suffix == ".csv" else "\t"
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            lines = text.splitlines()
+            if not lines:
+                result["empty_deliverables"].append(
+                    {
+                        "file": rel_path,
+                        "kind": "empty_table",
+                        "detail": "CSV/TSV file has 0 data rows",
+                    }
+                )
+                continue
+            try:
+                reader = csv.DictReader(lines, delimiter=delimiter)
+                row_count = 0
+                for row_idx, row in enumerate(reader):
+                    if row_idx >= _MAX_DELIVERABLE_AUDIT_ROWS:
+                        break
+                    row_count += 1
+                    for col_name, val_str in row.items():
+                        if val_str is None:
+                            continue
+                        val_text = str(val_str).strip()
+                        if _is_non_finite_str(val_text):
+                            result["nan_or_inf_values"].append(
+                                {
+                                    "file": rel_path,
+                                    "key": str(col_name).strip() if col_name else "unknown_column",
+                                    "row": row_idx + 1,
+                                    "value": val_text,
+                                }
+                            )
+                if row_count == 0:
+                    result["empty_deliverables"].append(
+                        {
+                            "file": rel_path,
+                            "kind": "empty_table",
+                            "detail": "CSV/TSV table has 0 data rows",
+                        }
+                    )
+            except csv.Error:
+                continue
+
+    result["results_json_keys"] = sorted(all_results_keys)
+    if checked_keys and result["results_json_files"]:
+        for ck in checked_keys:
+            if ck not in all_results_keys and ck not in result["missing_checked_keys"]:
+                result["missing_checked_keys"].append(ck)
+
+    return result
+
+
 def audit_contract(
     task_dir: Optional[Path],
     trial_dir: Optional[Path],
@@ -507,6 +677,10 @@ def audit_contract(
     )
     verify_py_path = resolve_verifier_script_path(task_dir)
     verifier_info = inspect_verifier_code(verify_py_path)
+    deliverable_diagnostics = inspect_delivered_artifacts(
+        trial_dir,
+        checked_keys=verifier_info.get("checked_keys"),
+    )
     diagnostics: List[Dict[str, Any]] = list(verifier_info.get("diagnostics") or [])
 
     verify_log_text = ""
@@ -845,9 +1019,97 @@ def audit_contract(
             }
         )
 
+    # 5. Deliverable content integrity observations (only when verify_log_text confirms the failure)
+    if verify_log_text:
+        if deliverable_diagnostics["empty_deliverables"] and re.search(
+            r"\b(?:empty|no rows|0 rows|zero rows|no data|EmptyDataError)\b",
+            verify_log_text,
+            re.IGNORECASE,
+        ):
+            for ed in deliverable_diagnostics["empty_deliverables"]:
+                contract_observations.append(
+                    {
+                        "contract_id": f"contract:{cid}",
+                        "item": f"deliverable:{ed['file']}",
+                        "prompt_requirement": "non_empty_deliverable",
+                        "verifier_requirement": "non_empty_deliverable",
+                        "agent_output_status": "empty_deliverable",
+                        "alignment": "agent_mismatch",
+                        "details": (
+                            f"Delivered file `{ed['file']}` is empty ({ed['detail']}), "
+                            "confirmed by verifier log."
+                        ),
+                        "source_refs": [f"art:{ed['file']}", "verifier/verify.log"],
+                    }
+                )
+                cid += 1
+
+        if deliverable_diagnostics["nan_or_inf_values"] and re.search(
+            r"\b(?:nan|inf|infinity|non-finite|not finite)\b",
+            verify_log_text,
+            re.IGNORECASE,
+        ):
+            seen_non_finite: Set[Tuple[str, str]] = set()
+            for item in deliverable_diagnostics["nan_or_inf_values"]:
+                pair = (item["file"], item["key"])
+                if pair in seen_non_finite:
+                    continue
+                seen_non_finite.add(pair)
+                contract_observations.append(
+                    {
+                        "contract_id": f"contract:{cid}",
+                        "item": f"deliverable:{item['file']}:{item['key']}",
+                        "prompt_requirement": "finite_numeric_values",
+                        "verifier_requirement": "finite_numeric_values",
+                        "agent_output_status": "non_finite_value",
+                        "alignment": "agent_mismatch",
+                        "details": (
+                            f"Delivered file `{item['file']}` contains non-finite value "
+                            f"`{item['value']}` at `{item['key']}`, confirmed by verifier log."
+                        ),
+                        "source_refs": [f"art:{item['file']}", "verifier/verify.log"],
+                    }
+                )
+                cid += 1
+
+        if deliverable_diagnostics["missing_checked_keys"] and re.search(
+            r"(?:KeyError|missing (?:required )?(?:key|field|column)|schema mismatch)",
+            verify_log_text,
+            re.IGNORECASE,
+        ):
+            already_flagged = {
+                c.get("item")
+                for c in contract_observations
+                if c.get("alignment") in ("agent_mismatch", "verifier_schema_mismatch")
+            }
+            prompt_keys = set(prompt_info["json_keys"])
+            for mk in deliverable_diagnostics["missing_checked_keys"]:
+                if f"results.json:values.{mk}" in already_flagged:
+                    continue
+                if mk not in verify_log_text and "results.json" not in verify_log_text:
+                    continue
+                in_prompt = (not prompt_keys) or (mk in prompt_keys)
+                contract_observations.append(
+                    {
+                        "contract_id": f"contract:{cid}",
+                        "item": f"results.json:values.{mk}",
+                        "prompt_requirement": "required" if in_prompt else "absent_or_different_key",
+                        "verifier_requirement": "required",
+                        "agent_output_status": "missing_in_delivered_results_json",
+                        "alignment": "agent_mismatch" if in_prompt else "verifier_schema_mismatch",
+                        "details": (
+                            f"Verifier-checked key `{mk}` is absent from delivered `results.json` "
+                            "and confirmed by verifier schema/key failure."
+                        ),
+                        "source_refs": ["task:tests/verify.py", "verifier/verify.log"],
+                    }
+                )
+                cid += 1
+
     return {
         "prompt_contract": prompt_info,
         "verifier_contract": verifier_info,
+        "deliverable_diagnostics": deliverable_diagnostics,
         "contract_observations": contract_observations,
         "verifier_observations": verifier_observations,
         "diagnostics": diagnostics,

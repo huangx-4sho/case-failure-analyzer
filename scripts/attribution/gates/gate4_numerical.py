@@ -342,6 +342,12 @@ def _recompute_divergence_agent_attribution(
         )
 
     contributing_factors = []
+    recommended_actions = [
+        {
+            "owner": "Agent",
+            "action": action,
+        }
+    ]
     causal_anchors = ctx.evidence.get("causal_anchors") or {}
     algo_anchor = causal_anchors.get("algorithm_or_param_definition")
     if isinstance(algo_anchor, dict):
@@ -364,6 +370,77 @@ def _recompute_divergence_agent_attribution(
                 cross_source_corroboration=1,
             )
             contributing_factors.append(cf)
+
+    scale_hint = chosen.get("scale_or_sign_hint")
+    if isinstance(scale_hint, dict) and scale_hint:
+        hint_kind = str(scale_hint.get("kind") or "unit_conversion")
+        hint_label = str(scale_hint.get("label") or "")
+        hint_factor = scale_hint.get("factor")
+        if hint_kind == "sign_flip":
+            cf_code = "AGENT_TASK_UNDERSTANDING"
+            cf_subtype = "task_understanding"
+            cf_summary = (
+                f"Delivered '{metric}' exhibits a sign convention flip ({hint_label}, "
+                f"factor={hint_factor}) relative to the verifier's recomputed value."
+            )
+            hint_action = (
+                f"Verify the sign convention required for '{metric}' ({hint_label}); "
+                "the delivered value appears sign-inverted relative to the verifier's recomputed value."
+            )
+        else:
+            cf_code = "AGENT_RESULT_VALIDATION"
+            cf_subtype = "result_validation"
+            cf_summary = (
+                f"Delivered '{metric}' differs by a {hint_kind.replace('_', ' ')} factor "
+                f"({hint_label}, factor={hint_factor}) relative to the verifier's recomputed value."
+            )
+            hint_action = (
+                f"Verify unit conversion / scaling for '{metric}' ({hint_label}, factor={hint_factor}) "
+                "before writing the final deliverable."
+            )
+        contributing_factors.append(
+            attach_confidence_metadata(
+                {
+                    "category": "agent",
+                    "subtype": cf_subtype,
+                    "code": cf_code,
+                    "summary": cf_summary,
+                },
+                direct_causal_evidence=1,
+                cross_source_corroboration=1,
+            )
+        )
+        recommended_actions.append({"owner": "Agent", "action": hint_action})
+
+    if chosen.get("stale_deliverable_sync"):
+        sync_ref = chosen.get("recomputed_match_in_trajectory_ref")
+        ref_clause = f" at `{sync_ref}`" if sync_ref else ""
+        contributing_factors.append(
+            attach_confidence_metadata(
+                {
+                    "category": "agent",
+                    "subtype": "planning",
+                    "code": "AGENT_PLANNING",
+                    "summary": (
+                        f"Stale deliverable sync: execution trajectory{ref_clause} already produced "
+                        f"'{metric}' matching the verifier's recomputed value ({recomputed}), "
+                        f"while the delivered artifact retained a stale value ({reported})."
+                    ),
+                },
+                direct_causal_evidence=1,
+                cross_source_corroboration=1,
+            )
+        )
+        recommended_actions.append(
+            {
+                "owner": "Agent",
+                "action": (
+                    f"Re-sync and overwrite the delivered artifact for '{metric}' from the "
+                    f"updated calculation output{ref_clause} so the latest recomputed value "
+                    f"({recomputed}) is persisted."
+                ),
+            }
+        )
 
     return {
         "schema_version": "failure-analysis-v1",
@@ -393,12 +470,7 @@ def _recompute_divergence_agent_attribution(
                 "reason": h2_exclusion_reason,
             }
         ],
-        "recommended_actions": [
-            {
-                "owner": "Agent",
-                "action": action,
-            }
-        ],
+        "recommended_actions": recommended_actions,
         "skill_prescription": None,
     }
 

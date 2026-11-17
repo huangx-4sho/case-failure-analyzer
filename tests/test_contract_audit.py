@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -12,7 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from audit_contract import audit_contract
+from audit_contract import audit_contract, inspect_delivered_artifacts
 
 
 class TestContractAudit(unittest.TestCase):
@@ -80,6 +81,95 @@ class TestContractAudit(unittest.TestCase):
             )
             res = audit_contract(task_dir=task_dir, trial_dir=None)
             self.assertEqual(res["diagnostics"], [])
+
+    def test_inspect_delivered_artifacts_detects_empty_nan_inf_and_missing_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "trial"
+            outputs = trial_dir / "artifacts" / "app" / "outputs"
+            outputs.mkdir(parents=True)
+            (outputs / "empty_list.json").write_text("[]", encoding="utf-8")
+            (outputs / "empty_table.csv").write_text("site,charge_e\n", encoding="utf-8")
+            (outputs / "energies.tsv").write_text(
+                "step\tenergy\n1\tNaN\n2\t-Infinity\n",
+                encoding="utf-8",
+            )
+            (outputs / "results.json").write_text(
+                json.dumps({"values": {"energy": -10.5, "force": float("nan")}}),
+                encoding="utf-8",
+            )
+
+            diag = inspect_delivered_artifacts(trial_dir, checked_keys=["energy", "band_gap"])
+
+        self.assertEqual(len(diag["scanned_files"]), 4)
+        empty_files = {item["file"]: item["kind"] for item in diag["empty_deliverables"]}
+        self.assertEqual(
+            empty_files,
+            {
+                "artifacts/app/outputs/empty_list.json": "empty_json",
+                "artifacts/app/outputs/empty_table.csv": "empty_table",
+            },
+        )
+        non_finite_files = {item["file"] for item in diag["nan_or_inf_values"]}
+        self.assertIn("artifacts/app/outputs/energies.tsv", non_finite_files)
+        self.assertIn("artifacts/app/outputs/results.json", non_finite_files)
+        self.assertIn("energy", diag["results_json_keys"])
+        self.assertEqual(diag["missing_checked_keys"], ["band_gap"])
+
+    def test_audit_contract_emits_deliverable_observations_only_when_log_confirms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "tasks" / "sample"
+            (task_dir / "tests").mkdir(parents=True)
+            (task_dir / "instruction.md").write_text(
+                'Write `results.json`:\n```json\n{"values": {"energy": -10.0, "band_gap": 1.1}}\n```',
+                encoding="utf-8",
+            )
+            (task_dir / "tests" / "verify.py").write_text(
+                "import json\n"
+                "data = json.load(open('results.json'))\n"
+                "val = data['energy']\n"
+                "gap = data['band_gap']\n",
+                encoding="utf-8",
+            )
+
+            # 1. Passing / unrelated verify.log must NOT emit empty/NaN contract observations
+            trial_unrelated = Path(tmp) / "trial_unrelated"
+            (trial_unrelated / "artifacts").mkdir(parents=True)
+            (trial_unrelated / "verifier").mkdir(parents=True)
+            (trial_unrelated / "artifacts" / "table.csv").write_text("col1,col2\n", encoding="utf-8")
+            (trial_unrelated / "artifacts" / "results.json").write_text(
+                json.dumps({"energy": float("nan")}), encoding="utf-8"
+            )
+            (trial_unrelated / "verifier" / "verify.log").write_text(
+                "PASS: all checks passed", encoding="utf-8"
+            )
+            res_unrelated = audit_contract(task_dir=task_dir, trial_dir=trial_unrelated)
+            self.assertIn("deliverable_diagnostics", res_unrelated)
+            self.assertEqual(
+                [
+                    c
+                    for c in res_unrelated["contract_observations"]
+                    if c["alignment"] == "agent_mismatch"
+                ],
+                [],
+            )
+
+            # 2. Confirmed empty + NaN + schema mismatch in verify.log DOES emit agent_mismatch observations
+            trial_confirmed = Path(tmp) / "trial_confirmed"
+            (trial_confirmed / "artifacts").mkdir(parents=True)
+            (trial_confirmed / "verifier").mkdir(parents=True)
+            (trial_confirmed / "artifacts" / "table.csv").write_text("col1,col2\n", encoding="utf-8")
+            (trial_confirmed / "artifacts" / "results.json").write_text(
+                json.dumps({"energy": float("nan")}), encoding="utf-8"
+            )
+            (trial_confirmed / "verifier" / "verify.log").write_text(
+                "FAIL: table.csv is empty (0 rows); NaN detected in energy; schema mismatch in results.json",
+                encoding="utf-8",
+            )
+            res_confirmed = audit_contract(task_dir=task_dir, trial_dir=trial_confirmed)
+            statuses = {c["agent_output_status"] for c in res_confirmed["contract_observations"]}
+            self.assertIn("empty_deliverable", statuses)
+            self.assertIn("non_finite_value", statuses)
+            self.assertIn("missing_in_delivered_results_json", statuses)
 
 
 if __name__ == "__main__":

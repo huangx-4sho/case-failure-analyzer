@@ -509,6 +509,8 @@ def collect_case_evidence(
     # `failure_origin` become visible to gates, reports and the batch board.
     if verifier_report is not None:
         evidence["verifier_report"] = verifier_report
+    if contract_res.get("deliverable_diagnostics") is not None:
+        evidence["deliverable_diagnostics"] = contract_res["deliverable_diagnostics"]
 
     # Additive top-level key: verifier check statistics for the confidence
     # upgrade (`check_localization` measurement). When there is no verify.log,

@@ -571,6 +571,75 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                 f"producing inaccurate physical/numerical values: {failure_excerpt}"
             )
             skill_prescription = None
+
+        cf_cross = 1 if (sci_obs or signals or ctx.agent_timeline_events) else 0
+        seen_scale_cfs = set()
+        trace_checks: List[str] = []
+        for fc in report_failed_checks:
+            art_cmp = fc.get("artifact_comparison")
+            cmp_items = (
+                art_cmp
+                if isinstance(art_cmp, list)
+                else ([art_cmp] if isinstance(art_cmp, dict) else [])
+            )
+            for item in cmp_items:
+                if not isinstance(item, dict):
+                    continue
+                hint = item.get("scale_or_sign_hint")
+                if not isinstance(hint, dict) or not hint:
+                    continue
+                metric_name = str(item.get("metric") or fc.get("name") or "metric")
+                hint_kind = str(hint.get("kind") or "unit_conversion")
+                hint_label = str(hint.get("label") or "")
+                hint_factor = hint.get("factor")
+                dedup_key = (metric_name, hint_kind, hint_label)
+                if dedup_key in seen_scale_cfs:
+                    continue
+                seen_scale_cfs.add(dedup_key)
+                cf_code = (
+                    "AGENT_TASK_UNDERSTANDING"
+                    if hint_kind == "sign_flip"
+                    else "AGENT_RESULT_VALIDATION"
+                )
+                cf_subtype = (
+                    "task_understanding" if hint_kind == "sign_flip" else "result_validation"
+                )
+                contributing_factors.append(
+                    attach_confidence_metadata(
+                        {
+                            "category": "agent",
+                            "subtype": cf_subtype,
+                            "code": cf_code,
+                            "summary": (
+                                f"Artifact comparison for `{metric_name}` (check `{fc.get('name') or 'check'}`) "
+                                f"indicates a {hint_kind.replace('_', ' ')} ({hint_label}, factor={hint_factor}; "
+                                f"delivered={item.get('delivered')}, recomputed={item.get('recomputed')})."
+                            ),
+                        },
+                        direct_causal_evidence=len(ev_refs),
+                        cross_source_corroboration=cf_cross,
+                    )
+                )
+            if fc.get("failure_kind") == "trace_or_provenance":
+                check_label = str(fc.get("name") or "trace").strip()
+                if check_label and check_label not in trace_checks:
+                    trace_checks.append(check_label)
+        if trace_checks:
+            contributing_factors.append(
+                attach_confidence_metadata(
+                    {
+                        "category": "agent",
+                        "subtype": "planning",
+                        "code": "AGENT_PLANNING",
+                        "summary": (
+                            f"Execution/analysis trace or provenance check failed ({', '.join(trace_checks[:3])}), "
+                            "indicating missing or inconsistent calculation provenance records."
+                        ),
+                    },
+                    direct_causal_evidence=len(ev_refs),
+                    cross_source_corroboration=cf_cross,
+                )
+            )
     else:
         ctx.trace.record(
             gate_id="gate6_agent_primary",

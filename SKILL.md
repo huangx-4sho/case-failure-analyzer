@@ -52,11 +52,14 @@ python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkou
   - **顶层保持 Clean Markdown**：仅保留主报告 `{task_id}.md`、速览卡片 `summary.md`（按需包含 `skill-prescription.md`）；
   - **消除单语重复**：请求 `zh` 仅输出中文主报告，不再产生字节完全相同的 `.zh.md`；
   - **多试次轻量归档**：多试次输出到 `trials/<trial_name>/`，仅存储 `summary.md`、`analysis.json` 与 `summary.json`，避免复制 200KB+ 的全量证据；可通过 `--archive-evidence` 按需开启全量保存；
-  - **只读脱敏检视**：使用 `python3 scripts/cfa.py inspect <task_id> [--section verdict|report|errors|confidence|evidence|anchors|data] [--raw]` 安全检视结果，默认自动脱敏家目录路径与敏感凭据：
+  - **只读脱敏检视**：使用 `python3 scripts/cfa.py inspect <task_id> [--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data] [--step <id>] [--raw]` 安全检视结果，默认自动脱敏家目录路径与敏感凭据：
     - `--section errors`：直观展示裁决、主因、验证器诊断性与具名失败检查明细（层级、偏差、比较与复算散度）；
     - `--section confidence`：展示置信度、证据强度、`points/denominator` 动态分值、正负因子收据与待提升项；
     - `--section evidence`：输出紧凑人读摘要（运行态、检查计数、因果锚点、科学观测与行为信号）；
+    - `--section artifacts`：汇总已采集 `artifacts`、`missing_deliverables`、`contract_observations`、交付物完整性诊断（`deliverable_diagnostics`）以及逐项 `artifact_comparison` / `scale_or_sign_hint` / `stale_deliverable_sync`；
+    - `--section step [--step <id>]`：按步骤编号或事件前缀（如 `--step 43` 或 `--step trajectory:step:43`）过滤展示时间线思考、工具调用、命令、退出码、观测与代码载荷（省略 `--step` 时显示最近 5 步索引）；
     - `--raw`：直接输出对应段落的无格式原生 JSON / 文本；
+  - **跨任务与多试次对比**：`python3 scripts/cfa.py diff <task_a> [<task_b>] [--trials <t1> <t2>] [--jobs-root <path>] [--report-dir <path>] [--raw] [--no-redact]` 对比两个任务或同一任务两个试次（省略 `task_b` 与 `--trials` 时自动取最新两个试次）的运行态、主根因、失败检查差异及因果锚点（含 `parameter_evolution`）。
   - **全量用例自动发现与批量审计**：`python3 scripts/cfa.py audit --all --jobs-root <benchmark checkout>` 自动发现全量用例，按自然数序（`task98` < `task194`）依序审计并原子生成 `<bench_root>/failure-report/INDEX.md` 全局看板。
 
 ### Required Answer Shape (answer order is load-bearing)
@@ -108,6 +111,10 @@ For harbor jobs (`jobs/<timestamp>/<trial>/` + sibling `task.toml`, `artifacts/`
 - **Not-scored trials**: harbor `docker cp` runs *after* the agent and *before* the verifier. A missing declared path raises `Engine cp failed ... Could not find the file /app/...` and aborts the trial with `reward=None` (`verifier_started == false`). Gate 1c attributes these to `infra` (`INFRA_ARTIFACT_COLLECTION_CRASH`, `INFRA_RUNNER_INTERRUPTED`, or causal `INFRA_AGENT_TIMEOUT` with priority over the downstream collection crash), keeping the agent's incomplete deliverables as a contributing factor — **never** `AGENT_PREMATURE_TERMINATION`.
 - **Three-state batch board**: `job_summary.md` reports Scored Passed / Scored Failed / Not Scored plus a **scored pass rate** (`passed / scored`), alongside the overall rate (`passed / total`). Not-scored trials are not agent failures.
 - **Verifier report normalization**: the five harbor verifier JSON families (layered `core/verify.json`, `scientific/verify.json`, `raw-verifier.json` `criteria[]`, `science.json` `checks[]`, `verify.json` envelopes with `failure_origin`) are normalized into `evidence.verifier_report` with named `failed_checks`, `core_failures`, `failure_origin`, and `diagnosability`. `diagnosability == "low"` flags a terse generic message with no named check or numeric deviation. Report Section 2 renders this block.
+- **Trajectory, Cross-Check & Provenance Pipeline**:
+  - `.jsonl` / OpenAI / Anthropic `tool_use` & `tool_result` streams are folded across steps via `tool_call_id` into assistant `observation.results` (`resolve_trajectory_path` + `_convert_messages_to_steps`), with salience-preserving middle-line retention in `truncate_with_head_tail` and two-phase script output target tracking (`script_targets` bound to `written_files` on error-free `Bash` execution).
+  - Unbounded named-metric pairing pairs `verifier_report.failed_checks` to `artifacts/` entries, attaches `scale_or_sign_hint` (unit conversion factors like Hartree/eV, decadic powers, or sign flips), flags `stale_deliverable_sync` when the recomputed value appears in `trajectory_steps` while `artifacts/` retains a stale value, and emits `deliverable_diagnostics` for empty tables, `NaN`/`Inf`, or missing `checked_keys`.
+  - Causal anchor tracing awards a `+15` backward provenance bonus to `deliverable_generation` events producing implicated failed artifacts and attaches `parameter_evolution` (`initial` → `final` across steps) on `algorithm_or_param_definition`.
 
 ### 3-Step Core Workflow
 

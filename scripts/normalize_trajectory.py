@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -189,6 +190,174 @@ def sha256_text(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
+_SALIENT_ERROR_RE = re.compile(
+    r"(?:Traceback \(most recent call last\):|\b(?:FAIL(?:ED)?|ERROR|WARNING|Exception|Fatal|ABORT)\b"
+    r"|convergence NOT achieved|NOT converged|SCF NOT CONVERGED|Segmentation fault"
+    r"|Permission denied|No such file or directory|command not found|cannot be opened"
+    r"|Lost atoms|CUDA out of memory|RuntimeError:|LinAlgError:|ValueError:|KeyError:"
+    r"|Error EDDDAV|ZBRENT:|LINCS WARNING|link 9999|l502\.exe)",
+    re.IGNORECASE,
+)
+_SALIENT_METRIC_RE = re.compile(
+    r"(?:^|[\s\[|])([A-Za-z][A-Za-z0-9_.\-/ ]{0,40})\s*(?:=|:)\s*"
+    r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][+-]?\d+)?(?:\s|$|[A-Za-z%/()])"
+)
+
+_SHELL_EXECUTOR_RE = re.compile(
+    r"^(?:python\S*|bash|sh|zsh|pytest|node|env|uv|conda|mpirun|mpiexec|srun|nohup|time)\b"
+)
+_NON_EXEC_SHELL_VERB_RE = re.compile(
+    r"^(?:cat|head|tail|less|more|ls|grep|rg|egrep|fgrep|sed|awk|rm|chmod|chown|wc|diff|stat|file|cp|mv|touch|mkdir|echo)\b"
+)
+_SCRIPT_STRING_VAR_RE = re.compile(
+    r"""^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:(?:pathlib\.)?Path\s*\(\s*)?(['"])([^'"\n]+)\2\s*\)?""",
+    re.MULTILINE,
+)
+_PY_OPEN_WRITE_RE = re.compile(
+    r"""(?:\bopen|Path\s*\([^)]+\)\s*\.\s*open)\s*\(\s*(?:file\s*=\s*)?([^,)]+?)\s*,\s*(?:mode\s*=\s*)?(['"])[wa][^'"]*\2"""
+)
+_PY_PATH_OPEN_WRITE_RE = re.compile(
+    r"""Path\s*\(\s*([^)]+?)\s*\)\s*\.\s*open\s*\(\s*(?:mode\s*=\s*)?(['"])[wa][^'"]*\2"""
+)
+_PY_PATH_WRITE_RE = re.compile(
+    r"""Path\s*\(\s*([^)]+?)\s*\)\s*\.\s*write_(?:text|bytes)\s*\("""
+)
+_PY_PAREN_PATH_WRITE_RE = re.compile(
+    r"""\(\s*([A-Za-z_][A-Za-z0-9_]*\s*/\s*['"][^'"]+['"])\s*\)\s*\.\s*write_(?:text|bytes)\s*\("""
+)
+_PY_PANDAS_WRITE_RE = re.compile(
+    r"""\.to_(?:csv|json|excel|parquet)\s*\(\s*(?:path_or_buf\s*=\s*)?([^,)\n]+)"""
+)
+_PY_NP_SAVE_RE = re.compile(
+    r"""\b(?:np|numpy)\.save(?:z|z_compressed|txt)?\s*\(\s*(?:(?:file|fname)\s*=\s*)?([^,)\n]+)"""
+)
+_PY_ASE_WRITE_RE = re.compile(
+    r"""(?:(?:ase\.io\.|io\.)write|(?<![.\w])write)\s*\(\s*(?:filename\s*=\s*)?([^,)\n]+)"""
+)
+_SHELL_REDIRECT_PATH_RE = re.compile(
+    r"""(?<![\d&<>!=])>>?\s*(['"]?)((?:/|\./|\.\./)[^\s'"&|;<>]+|(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.(?:json|csv|txt|dat|xyz|out|log|ener|xml|npy|npz|md|yaml|yml|tsv|pdb|cif|poscar|vasp|sh|py))\1"""
+)
+_SHELL_TEE_PATH_RE = re.compile(
+    r"""\btee\s+(?:-a\s+)?(['"]?)((?:/|\./|\.\./)[^\s'"&|;<>]+|[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})\1"""
+)
+_PY_STATEMENT_LINE_RE = re.compile(
+    r"^\s*(?:if|elif|while|assert|return|for|def|class|except|raise|import|from)\b"
+)
+
+
+def _resolve_path_expr(expr: str, str_vars: Dict[str, str]) -> Optional[str]:
+    """Resolve a literal string, simple variable, or `DIR / 'file'` expression to a path."""
+    s = (expr or "").strip()
+    if not s:
+        return None
+    m_lit = re.match(r"""^(?:(?:pathlib\.)?Path\s*\(\s*)?(['"])([^'"\n]+)\1\s*\)?$""", s)
+    if m_lit:
+        val = m_lit.group(2).strip()
+        return val if val and not val.startswith(("-", " ")) else None
+    m_join = re.match(r"""^([A-Za-z_][A-Za-z0-9_]*)\s*/\s*(['"])([^'"\n]+)\2$""", s)
+    if m_join:
+        base = str_vars.get(m_join.group(1))
+        if base:
+            return posixpath.normpath(posixpath.join(base, m_join.group(3).strip()))
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s):
+        return str_vars.get(s)
+    return None
+
+
+def _extract_script_write_targets(code_text: str) -> List[str]:
+    """Statically extract output file paths written by a Python or shell script."""
+    if not isinstance(code_text, str) or not code_text.strip():
+        return []
+
+    str_vars: Dict[str, str] = {}
+    for m in _SCRIPT_STRING_VAR_RE.finditer(code_text):
+        var_name, _, val = m.groups()
+        val = val.strip()
+        if val and ("/" in val or "." in val) and " " not in val:
+            str_vars[var_name] = val
+
+    targets: List[str] = []
+
+    def _add(path: Optional[str]) -> None:
+        if not path:
+            return
+        cleaned = path.strip().strip("'\"")
+        if not cleaned or cleaned == "/dev/null" or cleaned.startswith("&"):
+            return
+        if cleaned not in targets:
+            targets.append(cleaned)
+
+    for pat in (
+        _PY_OPEN_WRITE_RE,
+        _PY_PATH_OPEN_WRITE_RE,
+        _PY_PATH_WRITE_RE,
+        _PY_PAREN_PATH_WRITE_RE,
+        _PY_PANDAS_WRITE_RE,
+        _PY_NP_SAVE_RE,
+        _PY_ASE_WRITE_RE,
+    ):
+        for m in pat.finditer(code_text):
+            _add(_resolve_path_expr(m.group(1), str_vars))
+
+    for raw_line in code_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or _PY_STATEMENT_LINE_RE.match(line):
+            continue
+        if any(op in line for op in ("==", "!=", ">=", "<=")):
+            continue
+        cleaned_line = strip_fd_redirects(line)
+        for m in _SHELL_REDIRECT_PATH_RE.finditer(cleaned_line):
+            _add(m.group(2))
+        for m in _SHELL_TEE_PATH_RE.finditer(cleaned_line):
+            _add(m.group(2))
+
+    return targets
+
+
+def _extract_heredoc_body(cmd: str) -> str:
+    """Extract the body of a heredoc command (`cat << EOF ... EOF`), if present."""
+    if not cmd:
+        return ""
+    m = re.search(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n([\s\S]*)", cmd)
+    if not m:
+        return ""
+    delim = m.group(1)
+    rest = m.group(2)
+    end_m = re.search(rf"(?m)^\s*{re.escape(delim)}\s*$", rest)
+    return rest[: end_m.start()] if end_m else rest
+
+
+def _command_executes_script(cmd: str, script_key: str) -> Tuple[bool, Optional[str]]:
+    """Return (executed, cd_dir) when `cmd` executes `script_key` rather than just reading it."""
+    if not cmd or not script_key or script_key not in cmd:
+        return False, None
+
+    token_re = re.compile(
+        r"(?:^|[\s'\"/=])" + re.escape(script_key) + r"(?:$|[\s'\";&|])"
+    )
+    active_cd: Optional[str] = None
+    for sub in re.split(r"(?:&&|\|\||;|\n)", cmd):
+        s = sub.strip()
+        if not s:
+            continue
+        # Strip leading environment variable assignments like `PYTHONPATH=/app `
+        s_no_env = re.sub(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+", "", s)
+        parts = s_no_env.split()
+        if not parts:
+            continue
+        verb = parts[0].strip("'\"")
+        if verb == "cd" and len(parts) >= 2:
+            active_cd = parts[1].strip("'\"")
+            continue
+        if not token_re.search(s_no_env):
+            continue
+        if _NON_EXEC_SHELL_VERB_RE.match(verb):
+            continue
+        if _SHELL_EXECUTOR_RE.match(verb) or verb == script_key or verb.endswith("/" + script_key):
+            return True, active_cd
+    return False, None
+
+
 def truncate_with_head_tail(
     text: Optional[str], max_bytes: int = 2000
 ) -> Tuple[Optional[str], Optional[str], bool]:
@@ -201,7 +370,42 @@ def truncate_with_head_tail(
     half = max(200, max_bytes // 2)
     head = encoded[:half].decode("utf-8", errors="replace")
     tail = encoded[-half:].decode("utf-8", errors="replace")
-    truncated = f"{head}\n... [TRUNCATED {len(encoded)} bytes, sha256={digest}] ...\n{tail}"
+
+    mid_end = len(encoded) - half
+    salient_lines: List[str] = []
+    if mid_end > half:
+        middle_text = encoded[half:mid_end].decode("utf-8", errors="replace")
+        err_hits: List[Tuple[int, str]] = []
+        metric_hits: List[Tuple[int, str]] = []
+        seen: set[str] = set()
+        for idx, raw_ln in enumerate(middle_text.splitlines()):
+            ln = raw_ln.strip()
+            if not ln or ln in seen:
+                continue
+            clipped = ln[:240]
+            if _SALIENT_ERROR_RE.search(ln):
+                seen.add(ln)
+                err_hits.append((idx, clipped))
+            elif _SALIENT_METRIC_RE.search(ln):
+                seen.add(ln)
+                metric_hits.append((idx, clipped))
+        picked = err_hits[:6]
+        if len(picked) < 6:
+            picked.extend(metric_hits[: 6 - len(picked)])
+        picked.sort(key=lambda pair: pair[0])
+        salient_lines = [line for _, line in picked]
+
+    if salient_lines:
+        salient_block = "\n".join(salient_lines)
+        truncated = (
+            f"{head}\n"
+            f"... [TRUNCATED {len(encoded)} bytes, sha256={digest}; salient middle lines:] ...\n"
+            f"{salient_block}\n"
+            f"... [END SALIENT MIDDLE] ...\n"
+            f"{tail}"
+        )
+    else:
+        truncated = f"{head}\n... [TRUNCATED {len(encoded)} bytes, sha256={digest}] ...\n{tail}"
     return truncated, digest, True
 
 
@@ -251,7 +455,7 @@ def classify_tool_event(
     if t_lower in ("write", "edit", "multiedit", "replace"):
         return "file_write", args.get("file_path") or args.get("path")
     if t_lower in ("bash", "shell", "exec"):
-        cmd = args.get("command") or ""
+        cmd = args.get("command") or args.get("cmd") or ""
         if has_error:
             return "shell_error", cmd
         return "tool_call", cmd
@@ -283,36 +487,254 @@ def _parse_trajectory_payload(text: str) -> Dict[str, Any]:
     raise ValueError("Unable to parse trajectory file as JSON or JSONL")
 
 
+def _normalize_tool_call(tc: Dict[str, Any], fallback_idx: int) -> Dict[str, Any]:
+    """Normalize OpenAI, Anthropic, or ATIF tool-call dicts into ATIF shape."""
+    fn_block = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+    call_id = (
+        tc.get("tool_call_id")
+        or tc.get("id")
+        or tc.get("call_id")
+        or f"call_{fallback_idx}"
+    )
+    fn_name = (
+        tc.get("function_name")
+        or fn_block.get("name")
+        or tc.get("name")
+        or "unknown"
+    )
+    if "arguments" in tc:
+        raw_args = tc.get("arguments")
+    elif "input" in tc:
+        raw_args = tc.get("input")
+    elif "arguments" in fn_block:
+        raw_args = fn_block.get("arguments")
+    else:
+        raw_args = {}
+
+    if isinstance(raw_args, str):
+        try:
+            parsed_args = json.loads(raw_args)
+            args: Any = parsed_args if isinstance(parsed_args, dict) else {"raw": raw_args}
+        except Exception:
+            args = {"raw": raw_args}
+    elif isinstance(raw_args, dict):
+        args = raw_args
+    elif raw_args is None:
+        args = {}
+    else:
+        args = {"raw": raw_args}
+
+    return {
+        "tool_call_id": str(call_id),
+        "function_name": str(fn_name),
+        "arguments": args,
+    }
+
+
+def _extract_result_text(content: Any) -> str:
+    """Flatten string, list-of-blocks, or structured tool result content to text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for elem in content:
+            if isinstance(elem, dict):
+                if "text" in elem:
+                    parts.append(str(elem.get("text") or ""))
+                elif "content" in elem:
+                    parts.append(_extract_result_text(elem.get("content")))
+                else:
+                    parts.append(json.dumps(elem, ensure_ascii=False))
+            else:
+                parts.append(str(elem))
+        return "\n".join(p for p in parts if p)
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False)
+    return str(content)
+
+
+def _attach_tool_result(steps: List[Dict[str, Any]], call_id: str, result_text: str) -> None:
+    """Attach a tool result to the matching preceding assistant step's observation.results."""
+    target_step: Optional[Dict[str, Any]] = None
+    resolved_id = call_id
+    if call_id:
+        for step in reversed(steps):
+            for tc in step.get("tool_calls") or []:
+                if tc.get("tool_call_id") == call_id:
+                    target_step = step
+                    break
+            if target_step is not None:
+                break
+    elif steps:
+        for step in reversed(steps):
+            if step.get("source") == "agent" and (step.get("tool_calls") or []):
+                target_step = step
+                first_tc = step["tool_calls"][0]
+                resolved_id = str(first_tc.get("tool_call_id") or "")
+                break
+
+    if target_step is None:
+        return
+    obs = target_step.setdefault("observation", {})
+    if not isinstance(obs, dict):
+        obs = {}
+        target_step["observation"] = obs
+    results = obs.setdefault("results", [])
+    results.append({"source_call_id": resolved_id, "content": result_text})
+
+
 def _convert_messages_to_steps(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Convert generic OpenAI/Anthropic/JSONL message or step records into ATIF-compatible step dicts."""
+    """Convert generic OpenAI/Anthropic/Claude Code/Codex JSONL or message records into ATIF steps."""
     steps: List[Dict[str, Any]] = []
-    for idx, item in enumerate(items):
+    for item in items:
         if not isinstance(item, dict):
             continue
-        if "tool_calls" in item or "observation" in item or "step_id" in item:
-            steps.append(item)
+
+        # Unwrap Claude Code / envelope records like {"type": "assistant", "message": {"role": ..., "content": ...}}
+        rec = item
+        ts = item.get("timestamp") or item.get("created_at")
+        if (
+            "role" not in item
+            and "source" not in item
+            and "step_id" not in item
+            and isinstance(item.get("message"), dict)
+            and ("role" in item["message"] or "content" in item["message"])
+        ):
+            rec = item["message"]
+            ts = ts or rec.get("timestamp") or rec.get("created_at")
+
+        # Already an ATIF step
+        if "step_id" in rec or "observation" in rec or ("source" in rec and "role" not in rec):
+            steps.append(rec)
             continue
-        role = item.get("role") or item.get("source") or "agent"
-        content = item.get("content")
+
+        # Codex JSONL top-level function_call / function_call_output events
+        rec_type = rec.get("type")
+        if "role" not in rec and rec_type == "function_call":
+            tc = _normalize_tool_call(rec, 0)
+            steps.append(
+                {
+                    "step_id": len(steps) + 1,
+                    "timestamp": ts,
+                    "source": "agent",
+                    "message": "",
+                    "tool_calls": [tc],
+                }
+            )
+            continue
+        if "role" not in rec and rec_type == "function_call_output":
+            cid = str(rec.get("call_id") or rec.get("tool_call_id") or "")
+            _attach_tool_result(steps, cid, _extract_result_text(rec.get("output")))
+            continue
+
+        role = str(rec.get("role") or rec.get("source") or "agent").lower()
+
+        # OpenAI / legacy function tool result message -> attach to preceding assistant step
+        if role in ("tool", "function"):
+            cid = str(
+                rec.get("tool_call_id") or rec.get("tool_use_id") or rec.get("call_id") or ""
+            )
+            raw_res = rec.get("content") if "content" in rec else rec.get("output")
+            _attach_tool_result(steps, cid, _extract_result_text(raw_res))
+            continue
+
+        content = rec.get("content")
+        text_parts: List[str] = []
+        thinking_parts: List[str] = []
+        extracted_calls: List[Dict[str, Any]] = []
+        seen_call_ids: set[str] = set()
+        tool_results: List[Tuple[str, str]] = []
+
         if isinstance(content, list):
-            text_parts = [
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
-            ]
-            msg_str = "\n".join(t for t in text_parts if t)
+            for block in content:
+                if isinstance(block, str):
+                    if block:
+                        text_parts.append(block)
+                    continue
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    t = block.get("text", "")
+                    if t:
+                        text_parts.append(str(t))
+                elif btype == "thinking":
+                    th = block.get("thinking") or block.get("text") or ""
+                    if th:
+                        thinking_parts.append(str(th))
+                elif btype == "tool_use":
+                    norm_tc = _normalize_tool_call(block, len(extracted_calls))
+                    seen_call_ids.add(norm_tc["tool_call_id"])
+                    extracted_calls.append(norm_tc)
+                elif btype == "tool_result":
+                    cid = str(block.get("tool_use_id") or block.get("tool_call_id") or "")
+                    rtext = _extract_result_text(block.get("content"))
+                    tool_results.append((cid, rtext))
+            msg_str = "\n".join(text_parts)
         else:
-            msg_str = str(content or item.get("message") or "")
-        steps.append(
-            {
-                "step_id": idx + 1,
-                "timestamp": item.get("timestamp") or item.get("created_at"),
-                "source": "user" if role in ("user", "system") else "agent",
-                "message": msg_str,
-                "tool_calls": item.get("tool_calls") or [],
-            }
+            raw_msg = content if content is not None else rec.get("message")
+            msg_str = "" if raw_msg is None else str(raw_msg)
+
+        for tc_idx, raw_tc in enumerate(rec.get("tool_calls") or []):
+            if not isinstance(raw_tc, dict):
+                continue
+            norm_tc = _normalize_tool_call(raw_tc, len(extracted_calls) + tc_idx)
+            if norm_tc["tool_call_id"] not in seen_call_ids:
+                seen_call_ids.add(norm_tc["tool_call_id"])
+                extracted_calls.append(norm_tc)
+
+        if tool_results:
+            for cid, rtext in tool_results:
+                _attach_tool_result(steps, cid, rtext)
+            if not msg_str.strip() and not extracted_calls and not thinking_parts:
+                continue
+
+        source = "user" if role in ("user", "system", "developer") else "agent"
+        step_dict: Dict[str, Any] = {
+            "step_id": len(steps) + 1,
+            "timestamp": ts,
+            "source": source,
+            "message": msg_str,
+            "tool_calls": extracted_calls,
+        }
+        thinking_val = (
+            "\n".join(thinking_parts)
+            or rec.get("thinking")
+            or rec.get("reasoning_content")
         )
+        if isinstance(thinking_val, str) and thinking_val.strip():
+            step_dict["thinking"] = thinking_val.strip()
+        steps.append(step_dict)
     return steps
+
+
+def _record_script_targets(
+    script_targets: Dict[str, List[str]],
+    script_path: str,
+    code_text: str,
+    replace: bool = False,
+) -> None:
+    """Bind statically extracted write targets to `script_path` and its basename."""
+    if not script_path:
+        return
+    targets = _extract_script_write_targets(code_text)
+    keys = [script_path]
+    base = Path(script_path).name
+    if base and base != script_path:
+        keys.append(base)
+    for key in keys:
+        if replace:
+            if targets:
+                script_targets[key] = list(targets)
+            else:
+                script_targets.pop(key, None)
+        elif targets:
+            existing = script_targets.setdefault(key, [])
+            for t in targets:
+                if t not in existing:
+                    existing.append(t)
 
 
 def normalize_trajectory(
@@ -381,6 +803,7 @@ def normalize_trajectory(
     signals: List[Dict[str, Any]] = []
     written_files: List[str] = []
     read_files: List[str] = []
+    script_targets: Dict[str, List[str]] = {}
 
     prev_commands: List[Tuple[str, bool, str, int]] = []  # (cmd, failed, event_id, epoch)
     mutation_epoch = 0  # bumps whenever the agent edits/writes anything
@@ -487,7 +910,7 @@ def normalize_trajectory(
 
             # Check for repeated command
             norm_cmd = (cmd_or_path or "").strip()
-            if fn_name.lower() == "bash" and norm_cmd:
+            if fn_name.lower() in ("bash", "shell", "exec") and norm_cmd:
                 for prev_cmd, prev_failed, prev_ev, prev_epoch in prev_commands:
                     if prev_cmd == norm_cmd:
                         ev_type = "repeated_command"
@@ -547,6 +970,29 @@ def normalize_trajectory(
                 hd_path = heredoc_written_path(norm_cmd)
                 if hd_path:
                     written_files.append(hd_path)
+                    _record_script_targets(
+                        script_targets,
+                        hd_path,
+                        _extract_heredoc_body(norm_cmd),
+                        replace=True,
+                    )
+
+                if not has_error and script_targets:
+                    for s_key, bound_targets in list(script_targets.items()):
+                        if not bound_targets:
+                            continue
+                        executed, cd_dir = _command_executes_script(norm_cmd, s_key)
+                        if not executed:
+                            continue
+                        for target in bound_targets:
+                            written_files.append(target)
+                            if cd_dir and not target.startswith("/"):
+                                written_files.append(
+                                    posixpath.normpath(posixpath.join(cd_dir, target))
+                                )
+                            if target.endswith("results.json"):
+                                results_json_written = True
+                                results_json_verified_after_write = False
 
                 if _SHELL_MUTATION_RE.search(strip_fd_redirects(norm_cmd)) or hd_path:
                     mutation_epoch += 1
@@ -657,6 +1103,26 @@ def normalize_trajectory(
                 mutation_epoch += 1
                 code_payload = summarize_code_payload(args)
                 written_files.append(cmd_or_path)
+                raw_code = (
+                    args.get("content")
+                    or args.get("new_string")
+                    or args.get("newString")
+                    or ""
+                )
+                if not raw_code and isinstance(args.get("edits"), list):
+                    raw_code = "\n".join(
+                        str(e.get("new_string", ""))
+                        for e in args["edits"]
+                        if isinstance(e, dict)
+                    )
+                if isinstance(raw_code, str) and raw_code.strip():
+                    is_replace = fn_name.lower() == "write" and "content" in args
+                    _record_script_targets(
+                        script_targets,
+                        cmd_or_path,
+                        raw_code,
+                        replace=is_replace,
+                    )
                 if "/workspace/assets/" in cmd_or_path:
                     signals.append(
                         {
@@ -801,6 +1267,8 @@ def normalize_trajectory(
         "written_files": sorted(set(written_files)),
         "read_files": sorted(set(read_files)),
     }
+    if script_targets:
+        result["script_targets"] = script_targets
     if declared_deliverables:
         # Additive: lets gates distinguish "declared deliverable missing" from a
         # generic completion heuristic without re-parsing task.toml.

@@ -17,9 +17,19 @@ Pairs each anchor with the agent's verbatim thought / reasoning at that step and
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from normalize_trajectory import SELF_CHECK_RUN_RE, SELF_CHECK_SCRIPT_RE
+from normalize_trajectory import (
+    SELF_CHECK_RUN_RE,
+    SELF_CHECK_SCRIPT_RE,
+    _command_executes_script,
+    _command_writes_path,
+    _extract_heredoc_body,
+    _extract_script_write_targets,
+    _record_script_targets,
+    heredoc_written_path,
+)
 
 _SELF_CHECK_PASS_RE = re.compile(
     r"(?:VERIFY\s*OK|ALL\s+CHECKS\s+PASSED|SELF[-_ ]?CHECK\s+(?:OK|PASSED)|"
@@ -153,6 +163,258 @@ def _detect_parameter_tradeoff(thought: str, code: str) -> bool:
     """Detect explicit parameter selection / tradeoff in thought and code."""
     combined = f"{thought}\n{code}"
     return bool(_TRADEOFF_PARAM_RE.search(combined) and _TRADEOFF_CHOICE_RE.search(combined))
+
+
+_KEY_EVOLUTION_PARAMS = (
+    "cutoff",
+    "eta",
+    "alpha",
+    "tol",
+    "tolerance",
+    "ecutwfc",
+    "ecutrho",
+    "dt",
+    "timestep",
+    "kpoints",
+    "conv_thr",
+    "mixing_beta",
+    "nsteps",
+)
+_PARAM_ALT = "|".join(_KEY_EVOLUTION_PARAMS)
+_PARAM_ASSIGN_RE = re.compile(
+    rf"""(?<![A-Za-z0-9_])({_PARAM_ALT})\s*(?<![!<>=])(?:=(?!=)|:)\s*"""
+    r"""([\[(][^\]\)\n]+[\])]|['"][^'"\n]+['"]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][+-]?\d+)?)""",
+    re.IGNORECASE,
+)
+_PARAM_FLAG_RE = re.compile(
+    rf"""--({_PARAM_ALT})(?:=|\s+)"""
+    r"""([-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][+-]?\d+)?|['"][^'"\n]+['"]|\[[^\]\n]+\])""",
+    re.IGNORECASE,
+)
+_PARAM_SPACE_RE = re.compile(
+    rf"""^\s*({_PARAM_ALT})\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][+-]?\d+)?)\b""",
+    re.IGNORECASE,
+)
+_QE_KPOINTS_RE = re.compile(
+    r"""\bK_POINTS\b[^\n]*\n\s*(\d+\s+\d+\s+\d+(?:\s+\d+\s+\d+\s+\d+)?)"""
+)
+
+
+def _normalize_artifact_ref_path(raw_ref: str) -> str:
+    """Normalize `art:artifacts/app/out.csv:L3` or `file:out.csv` into a clean artifact path."""
+    s = (raw_ref or "").strip()
+    if not s:
+        return ""
+    for prefix in ("art:", "file:"):
+        if s.startswith(prefix):
+            s = s[len(prefix) :]
+    s = re.sub(r":L\d+$", "", s)
+    s = re.sub(r":\d+$", "", s)
+    if s.startswith("artifacts/app/"):
+        s = "/app/" + s[len("artifacts/app/") :]
+    elif s.startswith("artifacts/"):
+        s = "/" + s[len("artifacts/") :]
+    return s.strip()
+
+
+def _extract_failed_artifact_targets(evidence: Dict[str, Any]) -> List[str]:
+    """Extract implicated artifact paths from verifier_report, scientific_observations, and contracts."""
+    targets: List[str] = []
+
+    def _add(raw_val: Any) -> None:
+        if not isinstance(raw_val, str):
+            return
+        norm = _normalize_artifact_ref_path(raw_val)
+        if norm and ("/" in norm or "." in norm) and norm not in targets:
+            targets.append(norm)
+
+    def _scan_comparison(obj: Any) -> None:
+        if isinstance(obj, str):
+            _add(obj)
+        elif isinstance(obj, list):
+            for item in obj:
+                _scan_comparison(item)
+        elif isinstance(obj, dict):
+            for key in ("artifact_ref", "agent_artifact_ref", "artifact_path", "path", "file"):
+                if key in obj:
+                    _add(obj.get(key))
+
+    report = evidence.get("verifier_report")
+    if isinstance(report, dict):
+        for check in report.get("failed_checks") or []:
+            if not isinstance(check, dict):
+                continue
+            _scan_comparison(check.get("artifact_comparison"))
+
+    for obs in evidence.get("scientific_observations") or []:
+        if not isinstance(obs, dict) or obs.get("matches") is True:
+            continue
+        _add(obs.get("agent_artifact_ref"))
+        _add(obs.get("artifact_ref"))
+
+    for c in evidence.get("contract_observations") or []:
+        if not isinstance(c, dict):
+            continue
+        alignment = c.get("alignment")
+        status = c.get("agent_output_status")
+        if alignment in ("consistent", "implicit_consistent") and status == "present":
+            continue
+        before_len = len(targets)
+        for key in ("agent_artifact_ref", "artifact_ref", "artifact_path", "path", "file"):
+            _add(c.get(key))
+        item = str(c.get("item") or "").strip()
+        if item.startswith("file:"):
+            _add(item[len("file:") :])
+        elif ":" in item:
+            head = item.split(":", 1)[0].strip()
+            if "." in head:
+                _add(head)
+        if len(targets) == before_len and alignment not in (None, "consistent", "implicit_consistent"):
+            details = str(c.get("details") or "")
+            for m in re.finditer(r"`([^`\s]+\.[A-Za-z0-9]{1,8})`", details):
+                _add(m.group(1))
+
+    return targets
+
+
+def _build_timeline_script_targets(timeline: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """Build script_path/basename -> written output target paths from timeline write/heredoc events."""
+    script_targets: Dict[str, List[str]] = {}
+    for e in timeline:
+        tool = (e.get("tool_name") or "").strip()
+        tool_low = tool.lower()
+        ev_type = e.get("event_type") or ""
+        cmd = (e.get("command") or "").strip()
+        if tool_low in ("write", "edit", "multiedit", "replace") or ev_type == "file_write":
+            script_path = cmd.split()[0] if cmd else ""
+            code_text = "\n".join(
+                p for p in (e.get("code_payload") or "", e.get("observation") or "") if p
+            )
+            if script_path and code_text.strip():
+                _record_script_targets(
+                    script_targets,
+                    script_path,
+                    code_text,
+                    replace=(tool_low == "write"),
+                )
+        elif cmd:
+            hd_path = heredoc_written_path(cmd)
+            if hd_path:
+                _record_script_targets(
+                    script_targets,
+                    hd_path,
+                    _extract_heredoc_body(cmd),
+                    replace=True,
+                )
+    return script_targets
+
+
+def _target_matches_failed_artifact(target: str, failed_targets: List[str]) -> bool:
+    """True when `target` matches any implicated failed artifact path."""
+    wt = (target or "").strip().rstrip("/")
+    if not wt:
+        return False
+    wt_name = Path(wt).name
+    for ft in failed_targets:
+        ft_clean = (ft or "").strip().rstrip("/")
+        if not ft_clean:
+            continue
+        if wt == ft_clean:
+            return True
+        if wt.startswith("/") and ft_clean.startswith("/"):
+            if wt.startswith(ft_clean + "/") or ft_clean.startswith(wt + "/"):
+                return True
+        else:
+            if wt.endswith("/" + ft_clean) or ft_clean.endswith("/" + wt):
+                return True
+            if wt_name and wt_name == Path(ft_clean).name:
+                return True
+    return False
+
+
+def _clean_param_value(raw_val: str) -> str:
+    v = (raw_val or "").strip().strip("'\"")
+    return re.sub(r"\s+", " ", v)
+
+
+def _param_values_differ(v1: str, v2: str) -> bool:
+    c1 = _clean_param_value(v1)
+    c2 = _clean_param_value(v2)
+    try:
+        f1 = float(re.sub(r"(?<=\d)[dD](?=[+-]?\d)", "e", c1))
+        f2 = float(re.sub(r"(?<=\d)[dD](?=[+-]?\d)", "e", c2))
+        return f1 != f2
+    except ValueError:
+        return c1 != c2
+
+
+def _extract_param_assignments(text: str) -> Dict[str, str]:
+    """Extract key scientific parameter assignments from code or command text (last wins per param)."""
+    if not text:
+        return {}
+    found: Dict[str, str] = {}
+    for raw_ln in text.splitlines():
+        ln = raw_ln.strip()
+        if not ln or ln.startswith("#") or ln.startswith("print("):
+            continue
+        for m in _PARAM_ASSIGN_RE.finditer(ln):
+            found[m.group(1).lower()] = _clean_param_value(m.group(2))
+        for m in _PARAM_FLAG_RE.finditer(ln):
+            found[m.group(1).lower()] = _clean_param_value(m.group(2))
+        m_space = _PARAM_SPACE_RE.match(ln)
+        if m_space:
+            found[m_space.group(1).lower()] = _clean_param_value(m_space.group(2))
+    for m_kp in _QE_KPOINTS_RE.finditer(text):
+        found["kpoints"] = _clean_param_value(m_kp.group(1))
+    return found
+
+
+def _extract_parameter_evolution(timeline: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Track repeated assignments to key scientific parameters across trajectory steps."""
+    history: Dict[str, List[Tuple[str, str]]] = {}
+    for e in timeline:
+        event_id = str(e.get("event_id") or "")
+        tool_low = (e.get("tool_name") or "").strip().lower()
+        ev_type = e.get("event_type") or ""
+
+        if tool_low in ("write", "edit", "multiedit", "replace") or ev_type == "file_write":
+            text = str(e.get("code_payload") or "")
+            if not text:
+                text = str(e.get("observation") or "")
+        elif ev_type in ("tool_call", "shell_error", "repeated_command") or tool_low in (
+            "bash",
+            "shell",
+            "exec",
+        ):
+            text = str(e.get("command") or "")
+        else:
+            continue
+
+        assigns = _extract_param_assignments(text)
+        for param, val in assigns.items():
+            if not val:
+                continue
+            history.setdefault(param, []).append((val, event_id))
+
+    evolution: List[Dict[str, str]] = []
+    for param, entries in history.items():
+        if len(entries) < 2:
+            continue
+        initial_val, from_ev = entries[0]
+        final_val, to_ev = entries[-1]
+        if _step_id_from_event(from_ev) == _step_id_from_event(to_ev) and from_ev == to_ev:
+            continue
+        if _param_values_differ(initial_val, final_val):
+            evolution.append(
+                {
+                    "param": param,
+                    "initial": initial_val,
+                    "final": final_val,
+                    "from_event": from_ev,
+                    "to_event": to_ev,
+                }
+            )
+    return evolution
 
 
 def _step_id_from_event(event_id: str) -> str:
@@ -388,12 +650,17 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
 
     declared = (evidence.get("metadata") or {}).get("declared_deliverables") or []
     failed_names, id_tokens = _extract_failed_check_targets(evidence)
+    failed_artifact_targets = _extract_failed_artifact_targets(evidence)
+    script_targets = _build_timeline_script_targets(timeline)
+    param_evolution = _extract_parameter_evolution(timeline)
 
     # 1. Trace algorithm_or_param_definition
     algo_anchor: Optional[Dict[str, Any]] = None
     candidates: List[Tuple[int, Dict[str, Any], List[str]]] = []
     for e in timeline:
         tool = e.get("tool_name") or ""
+        tool_low = tool.lower()
+        ev_type = e.get("event_type") or ""
         cmd = e.get("command") or ""
         obs = e.get("observation") or ""
         code = e.get("code_payload") or ""
@@ -401,7 +668,12 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
         thought = _find_thought_for_step(timeline, step_prefix) or ""
         text = f"{cmd}\n{obs}\n{code}\n{thought}"
 
-        if tool in ("Write", "Edit") or "cat <<" in cmd or "cat >" in cmd:
+        if (
+            tool_low in ("write", "edit", "multiedit", "replace")
+            or ev_type == "file_write"
+            or "cat <<" in cmd
+            or "cat >" in cmd
+        ):
             score = 0
             if re.search(
                 r"\b(analysis|run_state|solve|calc|simulator|model|eqeq|dft|scf)\.py\b", text, re.I
@@ -442,6 +714,8 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
             "matched_failed_checks": best_matched,
             "parameter_tradeoff_detected": tradeoff_detected,
         }
+        if param_evolution:
+            algo_anchor["parameter_evolution"] = param_evolution
 
     # 2. Trace deliverable_generation (working backward from end of trajectory, weighted by relevance)
     deliv_anchor: Optional[Dict[str, Any]] = None
@@ -451,6 +725,8 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
     for idx, e in enumerate(timeline):
         cmd = (e.get("command") or "").strip()
         tool = e.get("tool_name") or ""
+        tool_low = tool.lower()
+        ev_type = e.get("event_type") or ""
         obs = e.get("observation") or ""
         code = e.get("code_payload") or ""
         step_prefix = _step_id_from_event(e.get("event_id", ""))
@@ -462,6 +738,8 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
         if cmd.startswith(("rm ", "rm -", "rmdir ")):
             continue
 
+        is_write_ev = tool_low in ("write", "edit", "multiedit", "replace") or ev_type == "file_write"
+        is_read_ev = tool_low in ("read", "view", "cat") or ev_type == "file_read"
         is_exec = False
         base_score = 10
         if re.search(r"\b(?:build_outputs|analysis|solve|calc)\.py\b", cmd) and (
@@ -472,7 +750,7 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
         elif re.search(r"(?:python\S*|bash|sh)\s+.*?(--output\b|-o\b)", cmd):
             is_exec = True
             base_score = 12
-        elif tool == "Write" and not cmd.endswith((".md", ".txt")):
+        elif tool_low == "write" and not cmd.endswith((".md", ".txt")):
             if any(d in cmd for d in declared):
                 is_exec = True
                 base_score = 14
@@ -481,14 +759,39 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
         ):
             is_exec = True
             base_score = 13
-        elif "results.json" in cmd and (">" in cmd or tool == "Write"):
+        elif "results.json" in cmd and (">" in cmd or tool_low == "write"):
             is_exec = True
             base_score = 11
+
+        provenance_bonus = 0
+        if failed_artifact_targets and not is_read_ev:
+            if is_write_ev:
+                if _target_matches_failed_artifact(cmd.split()[0], failed_artifact_targets):
+                    provenance_bonus = 15
+                    is_exec = True
+            else:
+                direct_write = any(
+                    _command_writes_path(cmd, ft) for ft in failed_artifact_targets
+                ) or any(
+                    _target_matches_failed_artifact(wt, failed_artifact_targets)
+                    for wt in _extract_script_write_targets(cmd)
+                )
+                script_exec = any(
+                    _command_executes_script(cmd, s_key)[0]
+                    and any(
+                        _target_matches_failed_artifact(wt, failed_artifact_targets)
+                        for wt in targets
+                    )
+                    for s_key, targets in script_targets.items()
+                )
+                if direct_write or script_exec:
+                    provenance_bonus = 15
+                    is_exec = True
 
         if is_exec:
             rel_bonus, matched_names = _score_relevance(text, failed_names, id_tokens)
             recency_bonus = (idx / total_events) * 2.0
-            total_score = base_score + rel_bonus + recency_bonus
+            total_score = base_score + provenance_bonus + rel_bonus + recency_bonus
             deliv_candidates.append((total_score, e, matched_names))
 
     if deliv_candidates:
@@ -577,6 +880,20 @@ def render_causal_anchors_markdown(anchors: Dict[str, Any], lang: str = "zh") ->
                 else ("检测到显式权衡" if is_zh else "detected")
             )
             lines.append(f"  - **{t_lbl}**: {t_val}")
+        if algo.get("parameter_evolution"):
+            pe_lbl = (
+                "参数演化 / Parameter evolution"
+                if lang == "bilingual"
+                else ("参数演化" if is_zh else "Parameter evolution")
+            )
+            pe_items = [
+                f"`{item['param']}`: `{item['initial']}` -> `{item['final']}` "
+                f"(`{item['from_event']}` -> `{item['to_event']}`)"
+                for item in algo["parameter_evolution"]
+                if isinstance(item, dict)
+            ]
+            if pe_items:
+                lines.append(f"  - **{pe_lbl}**: {'; '.join(pe_items)}")
 
     deliv = anchors.get("deliverable_generation")
     if deliv:

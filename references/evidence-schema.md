@@ -288,3 +288,58 @@ Harbor jobs (`jobs/<timestamp>/<trial>/` with `result.json`, `agent/trajectory.j
 - **`missing_deliverables`** is the reconciled list of declared paths that were never produced. Trajectory matching is heuristic, so `collect_case_evidence.py` cross-checks `<trial>/artifacts/app/<declared path>` (harbor's `docker cp` output, which cannot be imagined) and drops any path that was actually collected. A `premature_completion` signal carries `declared_deliverables` / `missing_deliverables` arrays; when all declared paths were collected, the signal is removed entirely.
 - **`verifier_report`** normalizes the five harbor verifier JSON families (layered `core/verify.json`, `scientific/verify.json` with `ACADEMIC_INTEGRITY_VETO`, `raw-verifier.json` `criteria[]`, `science.json` `checks[]`, and `verify.json` envelopes with `failure_origin`) into one shape: named `failed_checks` with `layer`, `name`, `detail`, `core`, `source`; `core_failures`; `failure_origin`; `scorable`; `reward`; and a `diagnosability` flag. `diagnosability == "low"` means the verifier emitted only a terse generic message with no named check or numeric deviation — the report surfaces this explicitly instead of pretending the evidence is complete. When a report is present, `build_check_stats_from_report()` also feeds `verifier_check_stats` so check localization and confidence scoring work on harbor reports too.
 - **`error_observations`** may carry harbor runner-stage entries with `stage: "runner"`, `runner_phase: "post_agent_execution"`, `scoring_reached`, and `missing_deliverable`. Codes: `INFRA_ARTIFACT_COLLECTION_CRASH` (`Engine cp failed ... Could not find the file /app/...`), `INFRA_RUNNER_INTERRUPTED` (log ends at `Collecting main service artifacts`), and causal `INFRA_AGENT_TIMEOUT`. These are temporally *after* agent execution but *before* verification, so they must never be staged as `environment_build` / `container_build`. A benign `Cannot estimate Claude cost ... litellm.BadRequestError: LLM Provider NOT provided` line is telemetry present in successful trials and is deliberately not an error rule.
+
+---
+
+## 4. Additive Cross-Check, Deliverable & Provenance Extensions
+
+All keys below are additive and optional in `evidence.json` / `summary.json`:
+
+```json
+{
+  "deliverable_diagnostics": {
+    "scanned_files": ["artifacts/app/results.json", "artifacts/app/summary.csv"],
+    "empty_tables": [],
+    "non_finite_values": [
+      {"file": "artifacts/app/summary.csv", "column": "force_max", "value": "NaN", "row": 3}
+    ],
+    "missing_checked_keys": ["converged_energy"]
+  },
+  "scientific_observations": [
+    {
+      "sci_id": "sci:recompute_div:1",
+      "error_family": "verifier_recompute_divergence",
+      "metric": "total_energy",
+      "agent_reported_value": -15.42,
+      "recomputed_value": -419.60,
+      "scale_or_sign_hint": {
+        "kind": "unit_conversion",
+        "factor": 27.211386,
+        "label": "Hartree <-> eV (27.211386)"
+      },
+      "stale_deliverable_sync": true,
+      "recomputed_match_in_trajectory_ref": "trajectory:step:18"
+    }
+  ],
+  "causal_anchors": {
+    "algorithm_or_param_definition": {
+      "event_id": "trajectory:step:9",
+      "parameter_evolution": [
+        {
+          "param": "ecutwfc",
+          "initial": "30",
+          "final": "80",
+          "from_event": "trajectory:step:4",
+          "to_event": "trajectory:step:9"
+        }
+      ]
+    }
+  }
+}
+```
+
+- **Multi-format trajectory normalization (`.json` / `.jsonl` / `messages.json`)**: `resolve_trajectory_path` and `_convert_messages_to_steps` fold OpenAI (`role: "tool"` / `"function"` via `tool_call_id`) and Anthropic (`tool_use` / `tool_result` content blocks) streams into preceding assistant steps' `observation.results`, preserve up to 6 high-salience middle diagnostic/metric lines in `truncate_with_head_tail`, and track static script write targets (`script_targets`) bound upon error-free `Bash` execution.
+- **`scale_or_sign_hint`**: Attached to matching `verifier_report.failed_checks[].artifact_comparison` entries and `verifier_recompute_divergence` observations when `detect_scale_or_sign_factor(delivered, recomputed)` detects common physical unit conversions (`27.211386` Hartree/eV, `627.5095` Hartree/kcal/mol, `23.06055` eV/kcal/mol, `96.4853` eV/kJ/mol, `4.184` kcal/kJ, `0.529177` Bohr/Angstrom), decadic powers (`10`, `100`, `1000`), or sign convention flips (`delivered ≈ -recomputed`).
+- **`stale_deliverable_sync` & `recomputed_match_in_trajectory_ref`**: Emitted on `verifier_recompute_divergence` when an execution step in `timeline` prints the verifier's `recomputed_value` alongside the metric while the collected deliverable still holds a stale diverging value.
+- **`deliverable_diagnostics`**: Produced by `inspect_delivered_artifacts(trial_dir)` over `artifacts/**/*.{json,csv,tsv}` to flag empty tables/JSON objects, `NaN`/`Inf` numeric values, and `verifier_info["checked_keys"]` missing from delivered `results.json`; emits `contract_observations` only when `verify.log` corroborates a schema/key/NaN/empty failure.
+- **`parameter_evolution`**: Attached to `causal_anchors.algorithm_or_param_definition` when key scientific parameters (`cutoff`, `eta`, `alpha`, `tol`, `tolerance`, `ecutwfc`, `ecutrho`, `dt`, `timestep`, `kpoints`, `conv_thr`, `mixing_beta`, `nsteps`) change across timeline events, alongside a `+15` backward provenance bonus on `deliverable_generation` events that write or execute scripts producing implicated failed artifacts.

@@ -290,3 +290,58 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 - **`missing_deliverables`** 是从未产出的已声明路径的对账（reconciled）列表。轨迹匹配本身是启发式的，因此 `collect_case_evidence.py` 会交叉核对 `<trial>/artifacts/app/<已声明路径>`（Harbor 的 `docker cp` 输出，无法凭空想象），并剔除任何实际已被采集到的路径。`premature_completion` 信号会携带 `declared_deliverables` / `missing_deliverables` 两个数组；当所有已声明路径都已被采集时，该信号会被整体移除。
 - **`verifier_report`** 将五类 Harbor 验证器 JSON 家族（分层式 `core/verify.json`、带 `ACADEMIC_INTEGRITY_VETO` 的 `scientific/verify.json`、`raw-verifier.json` 的 `criteria[]`、`science.json` 的 `checks[]`、以及带 `failure_origin` 的 `verify.json` 信封）归一化为统一形态：带 `layer`、`name`、`detail`、`core`、`source` 的具名 `failed_checks`；`core_failures`；`failure_origin`；`scorable`；`reward`；以及 `diagnosability` 标记。`diagnosability == "low"` 表示验证器只给出一条简短、泛化的消息，既无具名检查也无数值偏差——报告会显式点明这一点，而不会假装证据是完整的。存在报告时，`build_check_stats_from_report()` 也会填充 `verifier_check_stats`，使检查定位与置信度评分同样适用于 Harbor 报告。
 - **`error_observations`** 可携带 Harbor 运行阶段条目，附带 `stage: "runner"`、`runner_phase: "post_agent_execution"`、`scoring_reached` 与 `missing_deliverable` 等字段。相关码：`INFRA_ARTIFACT_COLLECTION_CRASH`（`Engine cp failed ... Could not find the file /app/...`）、`INFRA_RUNNER_INTERRUPTED`（日志止于 `Collecting main service artifacts`），以及作为因果项的 `INFRA_AGENT_TIMEOUT`。这些在时间上位于 Agent 执行*之后*、验证*之前*，因此绝不可被归入 `environment_build` / `container_build` 阶段。无害的 `Cannot estimate Claude cost ... litellm.BadRequestError: LLM Provider NOT provided` 行是遥测信息，在成功 Trial 中同样存在，故刻意不设为其错误规则。
+
+---
+
+## 4. 附加交叉核对、交付物完整性与因果溯源扩展
+
+以下字段均为 `evidence.json` / `summary.json` 中的附加可选扩展：
+
+```json
+{
+  "deliverable_diagnostics": {
+    "scanned_files": ["artifacts/app/results.json", "artifacts/app/summary.csv"],
+    "empty_tables": [],
+    "non_finite_values": [
+      {"file": "artifacts/app/summary.csv", "column": "force_max", "value": "NaN", "row": 3}
+    ],
+    "missing_checked_keys": ["converged_energy"]
+  },
+  "scientific_observations": [
+    {
+      "sci_id": "sci:recompute_div:1",
+      "error_family": "verifier_recompute_divergence",
+      "metric": "total_energy",
+      "agent_reported_value": -15.42,
+      "recomputed_value": -419.60,
+      "scale_or_sign_hint": {
+        "kind": "unit_conversion",
+        "factor": 27.211386,
+        "label": "Hartree <-> eV (27.211386)"
+      },
+      "stale_deliverable_sync": true,
+      "recomputed_match_in_trajectory_ref": "trajectory:step:18"
+    }
+  ],
+  "causal_anchors": {
+    "algorithm_or_param_definition": {
+      "event_id": "trajectory:step:9",
+      "parameter_evolution": [
+        {
+          "param": "ecutwfc",
+          "initial": "30",
+          "final": "80",
+          "from_event": "trajectory:step:4",
+          "to_event": "trajectory:step:9"
+        }
+      ]
+    }
+  }
+}
+```
+
+- **多格式轨迹规整化（`.json` / `.jsonl` / `messages.json`）**：`resolve_trajectory_path` 与 `_convert_messages_to_steps` 支持将 OpenAI（`role: "tool"` / `"function"` 经由 `tool_call_id`）及 Anthropic（`tool_use` / `tool_result` 内容块）消息流跨步折叠至前序助手步骤的 `observation.results`；`truncate_with_head_tail` 会在截断块内保留最多 6 条中段高显著性错误/指标行；并在写入脚本后于无错 `Bash` 执行时将静态解析的 `script_targets` 绑定至 `written_files`。
+- **`scale_or_sign_hint`**：当 `detect_scale_or_sign_factor(delivered, recomputed)` 识别出常见物理单位换算系数（`27.211386` Hartree/eV、`627.5095` Hartree/kcal/mol、`23.06055` eV/kcal/mol、`96.4853` eV/kJ/mol、`4.184` kcal/kJ、`0.529177` Bohr/Angstrom）、十进制数量级（`10`、`100`、`1000`）或符号约定反转（`delivered ≈ -recomputed`）时，自动附加至对应的 `verifier_report.failed_checks[].artifact_comparison` 与 `verifier_recompute_divergence` 观测。
+- **`stale_deliverable_sync` 与 `recomputed_match_in_trajectory_ref`**：当轨迹执行步骤已打印出与验证器 `recomputed_value` 一致的数值及指标名，但采集到的交付物仍保留过时分歧值时，在 `verifier_recompute_divergence` 上标记过时同步提示。
+- **`deliverable_diagnostics`**：由 `inspect_delivered_artifacts(trial_dir)` 扫描 `artifacts/**/*.{json,csv,tsv}` 生成，记录空表/空 JSON、`NaN`/`Inf` 非有限数值以及交付物 `results.json` 中缺失的 `verifier_info["checked_keys"]`；仅当 `verify.log` 明确印证了架构/键/NaN/空表失败时才触发 `contract_observations`。
+- **`parameter_evolution`**：当关键科学参数（`cutoff`、`eta`、`alpha`、`tol`、`tolerance`、`ecutwfc`、`ecutrho`、`dt`、`timestep`、`kpoints`、`conv_thr`、`mixing_beta`、`nsteps`）在轨迹多步之间发生变化时，附加至 `causal_anchors.algorithm_or_param_definition`；同时 `deliverable_generation` 候选打分为直接写出或执行关联失败产物脚本的事件提供 `+15` 反向溯源加权。

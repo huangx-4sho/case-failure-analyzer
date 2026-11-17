@@ -18,6 +18,7 @@ from normalize_trajectory import SELF_CHECK_SCRIPT_RE
 from trace_causal_anchors import (
     _clean_code_snippet,
     _clean_thought_snippet,
+    _extract_failed_artifact_targets,
     render_causal_anchors_markdown,
     trace_causal_anchors,
 )
@@ -305,6 +306,203 @@ class TestCausalAnchors(unittest.TestCase):
         deliv = anchors["deliverable_generation"]
         self.assertEqual(deliv["event_id"], "trajectory:step:8:tool:0")
         self.assertIn("charges.csv", deliv["matched_failed_checks"])
+
+    def test_extract_failed_artifact_targets_across_sources(self) -> None:
+        evidence = {
+            "verifier_report": {
+                "failed_checks": [
+                    {
+                        "name": "dipole_check",
+                        "artifact_comparison": [
+                            {
+                                "metric": "dipole_z",
+                                "artifact_ref": "art:artifacts/app/outputs/dipole.json:L4",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "scientific_observations": [
+                {
+                    "sci_id": "sci:1",
+                    "matches": False,
+                    "agent_artifact_ref": "art:artifacts/app/outputs/forces.csv:L12",
+                },
+                {
+                    "sci_id": "sci:2",
+                    "matches": True,
+                    "agent_artifact_ref": "art:artifacts/app/outputs/ignored_ok.csv:L1",
+                },
+            ],
+            "contract_observations": [
+                {
+                    "item": "file:/app/outputs/energies.dat",
+                    "alignment": "agent_mismatch",
+                    "agent_output_status": "missing_at_verify",
+                },
+                {
+                    "item": "file:/app/outputs/consistent.dat",
+                    "alignment": "consistent",
+                    "agent_output_status": "present",
+                },
+            ],
+        }
+        targets = _extract_failed_artifact_targets(evidence)
+        self.assertIn("/app/outputs/dipole.json", targets)
+        self.assertIn("/app/outputs/forces.csv", targets)
+        self.assertIn("/app/outputs/energies.dat", targets)
+        self.assertNotIn("/app/outputs/ignored_ok.csv", targets)
+        self.assertNotIn("/app/outputs/consistent.dat", targets)
+
+    def test_backward_provenance_bonus_selects_producing_script_and_direct_write(self) -> None:
+        # Custom script custom_dipole.py (no --output flag, non-canonical name) produces dipole.json;
+        # should beat generic build_outputs.py (score 15) thanks to +15 provenance bonus!
+        evidence = {
+            "metadata": {"declared_deliverables": ["other.json", "dipole.json"]},
+            "verifier_report": {
+                "failed_checks": [
+                    {
+                        "name": "moment_check",
+                        "detail": "value out of range",
+                        "artifact_comparison": [
+                            {
+                                "metric": "mu",
+                                "artifact_ref": "art:artifacts/app/outputs/dipole.json:L2",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "timeline": [
+                {
+                    "event_id": "trajectory:step:2:tool:0",
+                    "event_type": "file_write",
+                    "tool_name": "Write",
+                    "command": "/app/code/custom_dipole.py",
+                    "code_payload": "with open('/app/outputs/dipole.json', 'w') as f:\n    json.dump(res, f)\n",
+                },
+                {
+                    "event_id": "trajectory:step:3:tool:0",
+                    "event_type": "tool_call",
+                    "tool_name": "Bash",
+                    "command": "python3 /app/code/custom_dipole.py",
+                    "observation": "done",
+                },
+                {
+                    "event_id": "trajectory:step:4:tool:0",
+                    "event_type": "tool_call",
+                    "tool_name": "Bash",
+                    "command": "python3 /app/code/build_outputs.py",
+                    "observation": "wrote other.json",
+                },
+            ],
+        }
+        anchors = trace_causal_anchors(evidence)
+        deliv = anchors.get("deliverable_generation")
+        self.assertIsNotNone(deliv)
+        assert deliv is not None
+        self.assertEqual(deliv["event_id"], "trajectory:step:3:tool:0")
+        self.assertIn("custom_dipole.py", deliv["command"])
+
+        # Direct Write of the implicated artifact path also receives provenance selection
+        evidence_direct = {
+            "scientific_observations": [
+                {
+                    "sci_id": "sci:1",
+                    "agent_artifact_ref": "art:artifacts/app/outputs/dipole.json:L1",
+                }
+            ],
+            "timeline": [
+                {
+                    "event_id": "trajectory:step:1:tool:0",
+                    "event_type": "file_write",
+                    "tool_name": "Write",
+                    "command": "/app/outputs/dipole.json",
+                    "code_payload": '{"mu": 1.2}',
+                }
+            ],
+        }
+        anchors_direct = trace_causal_anchors(evidence_direct)
+        self.assertEqual(
+            anchors_direct["deliverable_generation"]["event_id"],
+            "trajectory:step:1:tool:0",
+        )
+
+    def test_parameter_evolution_tracking_and_rendering(self) -> None:
+        evidence = {
+            "timeline": [
+                {
+                    "event_id": "trajectory:step:1:thought",
+                    "observation": "Start with coarse cutoff and ecutwfc.",
+                },
+                {
+                    "event_id": "trajectory:step:1:tool:0",
+                    "event_type": "file_write",
+                    "tool_name": "Write",
+                    "command": "/app/code/solve.py",
+                    "code_payload": (
+                        "def solve():\n"
+                        "    cutoff = 10\n"
+                        "    eta = 0.05\n"
+                        "    tol = 1e-6\n"
+                        "    conv_thr = 1.0d-6\n"
+                        "    return cutoff\n"
+                    ),
+                },
+                {
+                    "event_id": "trajectory:step:3:tool:0",
+                    "event_type": "file_write",
+                    "tool_name": "Edit",
+                    "command": "/app/code/solve.py",
+                    "code_payload": (
+                        "    cutoff = 10.0\n"  # Numerically equal -> should NOT report evolution
+                        "    eta = 0.02\n"     # Changed 0.05 -> 0.02
+                        "    conv_thr = 1.0d-8\n"
+                    ),
+                },
+                {
+                    "event_id": "trajectory:step:5:tool:0",
+                    "event_type": "tool_call",
+                    "tool_name": "Bash",
+                    "command": "python3 /app/code/solve.py --cutoff 14.0 --ecutwfc=60",
+                    "observation": "Exit code: 0",
+                },
+            ]
+        }
+        anchors = trace_causal_anchors(evidence)
+        algo = anchors.get("algorithm_or_param_definition")
+        self.assertIsNotNone(algo)
+        assert algo is not None
+        evo = algo.get("parameter_evolution")
+        self.assertIsNotNone(evo)
+        assert evo is not None
+
+        by_param = {item["param"]: item for item in evo}
+        self.assertIn("cutoff", by_param)
+        self.assertEqual(by_param["cutoff"]["initial"], "10")
+        self.assertEqual(by_param["cutoff"]["final"], "14.0")
+        self.assertEqual(by_param["cutoff"]["from_event"], "trajectory:step:1:tool:0")
+        self.assertEqual(by_param["cutoff"]["to_event"], "trajectory:step:5:tool:0")
+
+        self.assertIn("eta", by_param)
+        self.assertEqual(by_param["eta"]["initial"], "0.05")
+        self.assertEqual(by_param["eta"]["final"], "0.02")
+
+        self.assertIn("conv_thr", by_param)
+        self.assertEqual(by_param["conv_thr"]["initial"], "1.0d-6")
+        self.assertEqual(by_param["conv_thr"]["final"], "1.0d-8")
+
+        # Unchanged tol and single-step ecutwfc should not appear
+        self.assertNotIn("tol", by_param)
+        self.assertNotIn("ecutwfc", by_param)
+
+        md_zh = "\n".join(render_causal_anchors_markdown(anchors, lang="zh"))
+        self.assertIn("参数演化", md_zh)
+        self.assertIn("`eta`: `0.05` -> `0.02`", md_zh)
+
+        md_en = "\n".join(render_causal_anchors_markdown(anchors, lang="en"))
+        self.assertIn("Parameter evolution", md_en)
+        self.assertIn("`cutoff`: `10` -> `14.0`", md_en)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,9 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
+from normalize_trajectory import _parse_trajectory_payload
+from runtime_state import resolve_trajectory_path
+
 
 REGISTRY_PATH = Path(__file__).resolve().parent.parent / "references" / "error-families.json"
 
@@ -57,13 +60,17 @@ _UNIT_TOKENS = frozenset(
         "e",
         "ev",
         "eh",
+        "ha",
         "hartree",
+        "ry",
+        "ryd",
         "kcal",
         "kj",
         "mol",
         "a",
         "ang",
         "angstrom",
+        "bohr",
         "nm",
         "ps",
         "fs",
@@ -389,49 +396,15 @@ def extract_scientific_errors(
                         dedup_key = detail
                         if dedup_key not in seen:
                             seen.add(dedup_key)
-                            agent_matches, agent_value, agent_ref, agent_artifact_ref = (
-                                _corroborate_agent_reported_value(
-                                    hit["metric"],
-                                    hit["reported_raw"],
-                                    hit["reported_value"],
-                                    trajectory_steps,
-                                    is_delta_divergence=hit.get("is_delta_divergence", False),
-                                    trial_dir=trial_dir,
-                                    match_text=detail,
-                                )
-                            )
                             observations.append(
-                                {
-                                    "sci_id": f"sci:recompute_divergence:{sci_counter}",
-                                    "software": VERIFIER_SOFTWARE_LABEL,
-                                    "error_family": VERIFIER_DIVERGENCE_FAMILY,
-                                    "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
-                                    "reference_anchor": None,
-                                    "matched_text": detail,
-                                    "source_ref": source_ref,
-                                    "metric": hit["metric"],
-                                    "reported_value": hit["reported_value"],
-                                    "recomputed_value": hit["recomputed_value"],
-                                    "tolerance": hit["tolerance"],
-                                    "check_kind": hit["check_kind"],
-                                    **(
-                                        {"is_delta_divergence": True}
-                                        if hit.get("is_delta_divergence")
-                                        else {}
-                                    ),
-                                    "agent_reported_value": agent_value,
-                                    "agent_ref": agent_ref,
-                                    "agent_artifact_ref": agent_artifact_ref,
-                                    "agent_reported_matches": agent_matches,
-                                    "discriminating": (
-                                        hit["reported_value"] is not None
-                                        and hit["recomputed_value"] is not None
-                                    ),
-                                    "candidate_causes": [],
-                                    "required_discriminating_evidence": list(
-                                        VERIFIER_DIVERGENCE_EVIDENCE
-                                    ),
-                                }
+                                _build_divergence_observation(
+                                    hit=hit,
+                                    matched_text=detail,
+                                    source_ref=source_ref,
+                                    trajectory_steps=trajectory_steps,
+                                    trial_dir=trial_dir,
+                                    sci_id=f"sci:recompute_divergence:{sci_counter}",
+                                )
                             )
                             sci_counter += 1
 
@@ -452,49 +425,17 @@ def extract_scientific_errors(
                 if div_key not in seen_divergence_keys:
                     seen_divergence_keys.add(div_key)
                     seen.add(msg_str)
-                    agent_matches, agent_value, agent_ref, agent_artifact_ref = (
-                        _corroborate_agent_reported_value(
-                            hit["metric"],
-                            hit["reported_raw"],
-                            hit["reported_value"],
-                            trajectory_steps,
-                            is_delta_divergence=hit.get("is_delta_divergence", False),
+                    observations.append(
+                        _build_divergence_observation(
+                            hit=hit,
+                            matched_text=msg_str,
+                            source_ref="verifier:report:messages",
+                            trajectory_steps=trajectory_steps,
                             trial_dir=trial_dir,
-                            match_text=msg_str,
+                            sci_id=f"sci:recompute_divergence:{sci_counter}",
                         )
                     )
-                    observations.append(
-                        {
-                            "sci_id": f"sci:recompute_divergence:{sci_counter}",
-                            "software": VERIFIER_SOFTWARE_LABEL,
-                            "error_family": VERIFIER_DIVERGENCE_FAMILY,
-                            "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
-                            "reference_anchor": None,
-                            "matched_text": msg_str,
-                            "source_ref": "verifier:report:messages",
-                            "metric": hit["metric"],
-                            "reported_value": hit["reported_value"],
-                            "recomputed_value": hit["recomputed_value"],
-                            "tolerance": hit["tolerance"],
-                            "check_kind": hit["check_kind"],
-                            **(
-                                {"is_delta_divergence": True}
-                                if hit.get("is_delta_divergence")
-                                else {}
-                            ),
-                            "agent_reported_value": agent_value,
-                            "agent_ref": agent_ref,
-                            "agent_artifact_ref": agent_artifact_ref,
-                            "agent_reported_matches": agent_matches,
-                            "discriminating": (
-                                hit["reported_value"] is not None
-                                and hit["recomputed_value"] is not None
-                            ),
-                            "candidate_causes": [],
-                            "required_discriminating_evidence": list(VERIFIER_DIVERGENCE_EVIDENCE),
-                        }
-                    )
-                sci_counter += 1
+                    sci_counter += 1
 
     # Attach artifact comparisons onto failed checks if verifier report and trial artifacts exist
     if verifier_report and trial_dir:
@@ -584,6 +525,101 @@ def _collect_artifact_numbers(trial_dir: Path) -> List[Tuple[str, float, str]]:
     return records
 
 
+_UNIT_CONVERSION_FACTORS: Tuple[Tuple[float, str], ...] = (
+    (27.211386, "Hartree/eV"),
+    (627.5095, "Hartree/kcal/mol"),
+    (23.06055, "eV/kcal/mol"),
+    (96.4853, "eV/kJ/mol"),
+    (4.184, "kcal/kJ"),
+    (0.529177, "Bohr/Angstrom"),
+)
+_DECADIC_FACTORS: Tuple[float, ...] = (10.0, 100.0, 1000.0)
+
+
+def detect_scale_or_sign_factor(
+    delivered: Optional[float],
+    recomputed: Optional[float],
+) -> Optional[Dict[str, Any]]:
+    """Detect common physical unit conversions, decadic scaling, or sign convention flips.
+
+    Returns ``{"kind": ..., "factor": ..., "label": ...}`` when ``delivered`` and
+    ``recomputed`` are non-zero and match within 1.5% relative error for unit/decadic
+    factors (in either direction) or within 2% magnitude error for a sign flip.
+    """
+    if delivered is None or recomputed is None:
+        return None
+    if isinstance(delivered, bool) or isinstance(recomputed, bool):
+        return None
+    try:
+        d = float(delivered)
+        r = float(recomputed)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(d) and math.isfinite(r)) or d == 0.0 or r == 0.0:
+        return None
+
+    # 1. Sign convention flip: delivered ≈ -recomputed within 2% relative magnitude error
+    if (d > 0.0 and r < 0.0) or (d < 0.0 and r > 0.0):
+        rel_mag_err = abs(d + r) / abs(r)
+        if rel_mag_err <= 0.02:
+            return {
+                "kind": "sign_flip",
+                "factor": -1.0,
+                "label": "sign convention flip (delivered ≈ -recomputed)",
+            }
+        return None
+
+    # 2. Same-sign physical unit conversion & decadic scaling within 1.5% relative error
+    d_over_r = d / r
+    r_over_d = r / d
+    best_match: Optional[Tuple[float, Dict[str, Any]]] = None
+
+    for factor, name in _UNIT_CONVERSION_FACTORS:
+        err_fwd = abs(d_over_r - factor) / factor
+        if err_fwd <= 0.015:
+            cand = {
+                "kind": "unit_conversion",
+                "factor": factor,
+                "label": f"{name} (×{factor})",
+            }
+            if best_match is None or err_fwd < best_match[0]:
+                best_match = (err_fwd, cand)
+        err_rev = abs(r_over_d - factor) / factor
+        if err_rev <= 0.015:
+            cand = {
+                "kind": "unit_conversion",
+                "factor": round(1.0 / factor, 6),
+                "label": f"{name} (÷{factor})",
+            }
+            if best_match is None or err_rev < best_match[0]:
+                best_match = (err_rev, cand)
+
+    if best_match is not None:
+        return best_match[1]
+
+    for factor in _DECADIC_FACTORS:
+        err_fwd = abs(d_over_r - factor) / factor
+        if err_fwd <= 0.015:
+            cand = {
+                "kind": "decadic_scale",
+                "factor": factor,
+                "label": f"decadic scale (×{int(factor)})",
+            }
+            if best_match is None or err_fwd < best_match[0]:
+                best_match = (err_fwd, cand)
+        err_rev = abs(r_over_d - factor) / factor
+        if err_rev <= 0.015:
+            cand = {
+                "kind": "decadic_scale",
+                "factor": round(1.0 / factor, 6),
+                "label": f"decadic scale (÷{int(factor)})",
+            }
+            if best_match is None or err_rev < best_match[0]:
+                best_match = (err_rev, cand)
+
+    return best_match[1] if best_match is not None else None
+
+
 def pair_verifier_evidence_with_artifacts(verifier_report: Dict[str, Any], trial_dir: Path) -> None:
     """Pair structured verifier evidence arrays/dicts with delivered artifacts.
 
@@ -601,6 +637,9 @@ def pair_verifier_evidence_with_artifacts(verifier_report: Dict[str, Any], trial
         return
 
     used_candidates: Set[Tuple[str, float, str]] = set()
+    _skip_hint_keys = frozenset(
+        {"tolerance", "tol", "bound", "threshold", "diff", "abs_diff", "rel_diff"}
+    )
 
     for fc in failed_checks:
         if not isinstance(fc, dict):
@@ -645,43 +684,61 @@ def pair_verifier_evidence_with_artifacts(verifier_report: Dict[str, Any], trial
 
         for metric_hint, rec_val in targets:
             best_cand: Optional[Tuple[str, float, str]] = None
-            best_diff = float("inf")
+            best_rank: Tuple[int, float] = (999, float("inf"))
 
             for cand_key, delivered_val, art_ref in artifact_numbers:
                 diff = abs(delivered_val - rec_val)
                 rel_diff = diff / (abs(rec_val) + 1e-12)
 
                 if metric_hint:
-                    # Key name match
-                    key_match = (
-                        cand_key.lower() == metric_hint.lower()
-                        or metric_hint.lower() in cand_key.lower()
-                        or cand_key.lower() in metric_hint.lower()
-                    )
-                    if key_match and diff < best_diff and (diff < 0.5 or rel_diff < 0.1):
-                        best_diff = diff
+                    m_low = metric_hint.lower()
+                    c_low = cand_key.lower()
+                    if c_low == m_low:
+                        tier = 0
+                    elif _metric_key_matches(metric_hint, cand_key):
+                        tier = 1
+                    else:
+                        m_stem = _normalized_metric_stem(metric_hint)
+                        c_stem = _normalized_metric_stem(cand_key)
+                        if m_stem and c_stem and m_stem == c_stem:
+                            tier = 1
+                        elif (
+                            len(m_low) >= 3
+                            and len(c_low) >= 3
+                            and m_low not in _skip_hint_keys
+                            and (m_low in c_low or c_low in m_low)
+                        ):
+                            tier = 2
+                        else:
+                            continue
+                    # Named metric match binds without rejecting large deviations
+                    rank = (tier, diff)
+                    if rank < best_rank:
+                        best_rank = rank
                         best_cand = (cand_key, delivered_val, art_ref)
                 else:
-                    # Numerical proximity match
+                    # Numerical proximity match (applied only when metric_hint is None)
                     cand_ident = (cand_key, delivered_val, art_ref)
                     if cand_ident in used_candidates:
                         continue
-                    if (rel_diff < 0.05 or diff < 0.05) and diff < best_diff:
-                        best_diff = diff
+                    if (rel_diff < 0.05 or diff < 0.05) and (0, diff) < best_rank:
+                        best_rank = (0, diff)
                         best_cand = (cand_key, delivered_val, art_ref)
 
             if best_cand is not None:
                 used_candidates.add(best_cand)
                 cand_key, delivered_val, art_ref = best_cand
-                comparisons.append(
-                    {
-                        "metric": cand_key,
-                        "delivered": delivered_val,
-                        "recomputed": rec_val,
-                        "abs_diff": abs(delivered_val - rec_val),
-                        "artifact_ref": art_ref,
-                    }
-                )
+                comp: Dict[str, Any] = {
+                    "metric": cand_key,
+                    "delivered": delivered_val,
+                    "recomputed": rec_val,
+                    "abs_diff": abs(delivered_val - rec_val),
+                    "artifact_ref": art_ref,
+                }
+                hint = detect_scale_or_sign_factor(delivered_val, rec_val)
+                if hint is not None:
+                    comp["scale_or_sign_hint"] = hint
+                comparisons.append(comp)
 
         if comparisons:
             fc["artifact_comparison"] = comparisons
@@ -967,6 +1024,14 @@ def _metric_key_matches(metric: Optional[str], key: Any) -> bool:
     metric_tokens = _metric_tokens(metric)
     key_tokens = _metric_tokens(key)
     return bool(metric_tokens) and metric_tokens == key_tokens
+
+
+def _normalized_metric_stem(value: Any) -> str:
+    """Return unit-stripped alphanumeric stem for fuzzy metric key matching."""
+    tokens = _metric_tokens(value)
+    if tokens:
+        return "".join(tokens)
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
 
 def _selector_tokens(text: str, metric: Optional[str]) -> List[str]:
@@ -1259,6 +1324,176 @@ def _corroborate_agent_reported_value(
     return False, None, None, None
 
 
+_NUMERIC_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.])[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?(?![A-Za-z0-9_.])"
+)
+
+
+def _step_contains_recomputed_value(
+    step_text: str,
+    metric: Optional[str],
+    rec_val: float,
+    rep_val: Optional[float],
+) -> bool:
+    """True when `step_text` contains `metric` and `rec_val` (>=4 sig figs), distinct from `rep_val`."""
+    if not step_text:
+        return False
+    if metric is not None and metric not in step_text and metric.lower() not in step_text.lower():
+        return False
+    normalized = step_text.replace("\u2212", "-")
+    for match in _NUMERIC_TOKEN_RE.finditer(normalized):
+        tok = match.group(0)
+        mantissa = tok.lstrip("+-").split("e", 1)[0].split("E", 1)[0].replace(".", "")
+        sig_digits = len(mantissa.lstrip("0"))
+        if sig_digits < 4:
+            continue
+        try:
+            tok_val = float(tok)
+        except ValueError:
+            continue
+        if not math.isfinite(tok_val):
+            continue
+        if abs(tok_val - rec_val) <= max(1e-9, abs(rec_val) * 5e-4):
+            if rep_val is not None:
+                if abs(tok_val - rep_val) <= abs(tok_val - rec_val):
+                    continue
+                if abs(tok_val - rec_val) >= abs(rep_val - rec_val) * 0.1:
+                    continue
+            return True
+    return False
+
+
+def _detect_stale_deliverable_sync(
+    metric: Optional[str],
+    reported_value: Any,
+    recomputed_value: Any,
+    trajectory_steps: Optional[List[Tuple[Any, str]]],
+    trial_dir: Optional[Path] = None,
+    is_delta_divergence: bool = False,
+    artifact_numbers: Optional[List[Tuple[str, float, str]]] = None,
+) -> Optional[str]:
+    """Return `trajectory:step:<id>` when trajectory computed `recomputed_value` while delivered artifact is stale."""
+    if (
+        is_delta_divergence
+        or recomputed_value is None
+        or isinstance(recomputed_value, bool)
+        or not trajectory_steps
+    ):
+        return None
+    try:
+        rec_val = float(recomputed_value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(rec_val):
+        return None
+
+    rep_val: Optional[float] = None
+    if reported_value is not None and not isinstance(reported_value, bool):
+        try:
+            parsed_rep = float(reported_value)
+            if math.isfinite(parsed_rep):
+                rep_val = parsed_rep
+        except (TypeError, ValueError):
+            rep_val = None
+    if rep_val is not None and rep_val == rec_val:
+        return None
+
+    # If delivered artifacts already hold `recomputed_value`, deliverable is not stale.
+    if trial_dir is not None:
+        if artifact_numbers is None:
+            artifact_numbers = _collect_artifact_numbers(trial_dir)
+        matching_art_vals = [
+            val
+            for key, val, _ in artifact_numbers
+            if metric is None
+            or _metric_key_matches(metric, key)
+            or _normalized_metric_stem(metric) == _normalized_metric_stem(key)
+        ]
+        if matching_art_vals:
+            for art_val in matching_art_vals:
+                if abs(art_val - rec_val) <= max(1e-9, abs(rec_val) * 1e-6):
+                    return None
+
+    for idx, (step_id, step_text) in enumerate(trajectory_steps):
+        if _step_contains_recomputed_value(step_text, metric, rec_val, rep_val):
+            ref_id = step_id if step_id is not None else idx + 1
+            return f"trajectory:step:{ref_id}"
+    return None
+
+
+def _build_divergence_observation(
+    hit: Dict[str, Any],
+    matched_text: str,
+    source_ref: str,
+    trajectory_steps: Optional[List[Tuple[Any, str]]],
+    trial_dir: Optional[Path],
+    sci_id: Optional[str] = None,
+    artifact_numbers: Optional[List[Tuple[str, float, str]]] = None,
+) -> Dict[str, Any]:
+    """Construct a structured `verifier_recompute_divergence` observation."""
+    is_delta = bool(hit.get("is_delta_divergence", False))
+    agent_matches, agent_value, agent_ref, agent_artifact_ref = _corroborate_agent_reported_value(
+        hit["metric"],
+        hit["reported_raw"],
+        hit["reported_value"],
+        trajectory_steps,
+        is_delta_divergence=is_delta,
+        trial_dir=trial_dir,
+        match_text=matched_text,
+    )
+    scale_hint: Optional[Dict[str, Any]] = None
+    if not is_delta and hit.get("check_kind") != "count_mismatch":
+        scale_hint = detect_scale_or_sign_factor(hit.get("reported_value"), hit.get("recomputed_value"))
+    stale_sync_ref = _detect_stale_deliverable_sync(
+        hit.get("metric"),
+        hit.get("reported_value"),
+        hit.get("recomputed_value"),
+        trajectory_steps,
+        trial_dir=trial_dir,
+        is_delta_divergence=is_delta,
+        artifact_numbers=artifact_numbers,
+    )
+
+    obs: Dict[str, Any] = {}
+    if sci_id is not None:
+        obs["sci_id"] = sci_id
+    obs.update(
+        {
+            "software": VERIFIER_SOFTWARE_LABEL,
+            "error_family": VERIFIER_DIVERGENCE_FAMILY,
+            "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
+            "reference_anchor": None,
+            "matched_text": matched_text,
+            "source_ref": source_ref,
+            "metric": hit["metric"],
+            "reported_value": hit["reported_value"],
+            "recomputed_value": hit["recomputed_value"],
+            "tolerance": hit["tolerance"],
+            "check_kind": hit["check_kind"],
+            **({"is_delta_divergence": True} if is_delta else {}),
+            "agent_reported_value": agent_value,
+            "agent_ref": agent_ref,
+            "agent_artifact_ref": agent_artifact_ref,
+            "agent_reported_matches": agent_matches,
+            "discriminating": (
+                hit["reported_value"] is not None and hit["recomputed_value"] is not None
+            ),
+            **({"scale_or_sign_hint": scale_hint} if scale_hint is not None else {}),
+            **(
+                {
+                    "stale_deliverable_sync": True,
+                    "recomputed_match_in_trajectory_ref": stale_sync_ref,
+                }
+                if stale_sync_ref is not None
+                else {}
+            ),
+            "candidate_causes": [],
+            "required_discriminating_evidence": list(VERIFIER_DIVERGENCE_EVIDENCE),
+        }
+    )
+    return obs
+
+
 def _load_trajectory_steps(trial_dir: Optional[Path]) -> List[Tuple[Any, str]]:
     """Load (step_id, execution text) pairs from the trial's raw trajectory.
 
@@ -1267,16 +1502,21 @@ def _load_trajectory_steps(trial_dir: Optional[Path]) -> List[Tuple[Any, str]]:
     a final answer that mentions a number is not evidence that the agent
     produced it, and must never be bound as the delivered value.
 
+    Supports ATIF JSON, JSON message arrays, and JSONL streams via
+    `resolve_trajectory_path` and `_parse_trajectory_payload`.
     Any read/parse failure yields an empty list: corroboration is best-effort
     and must never fabricate.
     """
     if trial_dir is None:
         return []
-    traj_path = trial_dir / "agent" / "trajectory.json"
+    traj_path = resolve_trajectory_path(trial_dir)
+    if traj_path is None:
+        return []
     try:
         if not traj_path.is_file() or traj_path.stat().st_size > MAX_TRAJECTORY_JSON_BYTES:
             return []
-        data = json.loads(traj_path.read_bytes().decode("utf-8", errors="replace"))
+        raw_text = traj_path.read_bytes().decode("utf-8", errors="replace")
+        data = _parse_trajectory_payload(raw_text)
     except (OSError, ValueError):
         return []
     steps = data.get("steps") if isinstance(data, dict) else None
@@ -1351,6 +1591,7 @@ def extract_verifier_divergences(
     agent's actually delivered value in `artifacts/`.
     """
     results: List[Dict[str, Any]] = []
+    artifact_numbers = _collect_artifact_numbers(trial_dir) if trial_dir is not None else None
     for lineno, raw_line in numbered_lines:
         line = raw_line.strip()
         if not line or not _HAS_DIGIT.search(line):
@@ -1360,41 +1601,15 @@ def extract_verifier_divergences(
         hit = _match_divergence_line(line)
         if hit is None:
             continue
-        agent_matches, agent_value, agent_ref, agent_artifact_ref = (
-            _corroborate_agent_reported_value(
-                hit["metric"],
-                hit["reported_raw"],
-                hit["reported_value"],
-                trajectory_steps,
-                is_delta_divergence=hit.get("is_delta_divergence", False),
-                trial_dir=trial_dir,
-                match_text=line,
-            )
-        )
         results.append(
-            {
-                "software": VERIFIER_SOFTWARE_LABEL,
-                "error_family": VERIFIER_DIVERGENCE_FAMILY,
-                "aliases": list(VERIFIER_DIVERGENCE_ALIASES),
-                "reference_anchor": None,
-                "matched_text": line,
-                "source_ref": f"{source_label}:L{lineno}",
-                "metric": hit["metric"],
-                "reported_value": hit["reported_value"],
-                "recomputed_value": hit["recomputed_value"],
-                "tolerance": hit["tolerance"],
-                "check_kind": hit["check_kind"],
-                **({"is_delta_divergence": True} if hit.get("is_delta_divergence") else {}),
-                "agent_reported_value": agent_value,
-                "agent_ref": agent_ref,
-                "agent_artifact_ref": agent_artifact_ref,
-                "agent_reported_matches": agent_matches,
-                "discriminating": (
-                    hit["reported_value"] is not None and hit["recomputed_value"] is not None
-                ),
-                "candidate_causes": [],
-                "required_discriminating_evidence": list(VERIFIER_DIVERGENCE_EVIDENCE),
-            }
+            _build_divergence_observation(
+                hit=hit,
+                matched_text=line,
+                source_ref=f"{source_label}:L{lineno}",
+                trajectory_steps=trajectory_steps,
+                trial_dir=trial_dir,
+                artifact_numbers=artifact_numbers,
+            )
         )
     return results
 

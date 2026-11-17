@@ -1,0 +1,402 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 1020" width="1320" height="1020">
+  <defs>
+    <!-- 渐变定义 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#f1f5f9"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="blueCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#eff6ff"/>
+      <stop offset="100%" stop-color="#dbeafe"/>
+    </linearGradient>
+    <linearGradient id="cyanCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f0f9ff"/>
+      <stop offset="100%" stop-color="#e0f2fe"/>
+    </linearGradient>
+    <linearGradient id="purpleCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#faf5ff"/>
+      <stop offset="100%" stop-color="#f3e8ff"/>
+    </linearGradient>
+    <linearGradient id="emeraldCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ecfdf5"/>
+      <stop offset="100%" stop-color="#d1fae5"/>
+    </linearGradient>
+
+    <!-- 阴影定义 -->
+    <filter id="shadow" x="-3%" y="-4%" width="106%" height="110%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.06"/>
+    </filter>
+    <filter id="cardShadow" x="-2%" y="-3%" width="104%" height="108%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.05"/>
+    </filter>
+
+    <!-- 箭头标记 -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <!-- 总体背景 -->
+  <rect width="1320" height="1020" fill="url(#bgGrad)" rx="16"/>
+  <rect width="1320" height="1020" fill="none" stroke="#e2e8f0" stroke-width="2" rx="16"/>
+
+  <!-- ================= 顶部标题横幅 ================= -->
+  <g transform="translate(30, 24)">
+    <rect width="1260" height="74" fill="url(#headerGrad)" rx="12" filter="url(#shadow)"/>
+    
+    <text x="32" y="36" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="22" font-weight="700" fill="#ffffff" letter-spacing="0.5">
+      Case Failure Analyzer (CFA) 系统架构全景
+    </text>
+    <text x="32" y="58" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="13" fill="#94a3b8">
+      科学计算基准测试失败证据归因与因果审计架构 · 确定性门控引擎 · 4 大并列根因 · 自动化中英报告与技能处方
+    </text>
+
+    <!-- 状态胶囊标签 -->
+    <g transform="translate(900, 24)">
+      <rect x="0" y="0" width="105" height="26" rx="13" fill="#334155"/>
+      <text x="52" y="17" font-family="-apple-system, sans-serif" font-size="11" fill="#38bdf8" font-weight="600" text-anchor="middle">Python 3.9+ 纯标库</text>
+      
+      <rect x="115" y="0" width="110" height="26" rx="13" fill="#334155"/>
+      <text x="170" y="17" font-family="-apple-system, sans-serif" font-size="11" fill="#a78bfa" font-weight="600" text-anchor="middle">9 级时序因果门控</text>
+
+      <rect x="235" y="0" width="105" height="26" rx="13" fill="#334155"/>
+      <text x="287" y="17" font-family="-apple-system, sans-serif" font-size="11" fill="#34d399" font-weight="600" text-anchor="middle">Clean Markdown</text>
+    </g>
+  </g>
+
+  <!-- ================= 模块 1: 输入与产物发现层 ================= -->
+  <g transform="translate(30, 115)">
+    <rect width="1260" height="110" fill="#ffffff" rx="12" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/>
+    
+    <!-- 区域标头 -->
+    <rect x="0" y="0" width="170" height="30" rx="12" fill="#2563eb"/>
+    <text x="14" y="20" font-family="-apple-system, 'PingFang SC', sans-serif" font-size="12" font-weight="700" fill="#ffffff">1. 接入与产物发现层</text>
+
+    <!-- 卡片 1.1: CLI 入口与解析 -->
+    <g transform="translate(20, 42)">
+      <rect width="360" height="54" fill="url(#blueCard)" rx="8" stroke="#bfdbfe" stroke-width="1"/>
+      <text x="14" y="22" font-family="-apple-system, sans-serif" font-size="13" font-weight="700" fill="#1e3a8a">统一 CLI 入口 &amp; 任务编号解析</text>
+      <text x="14" y="42" font-family="-apple-system, sans-serif" font-size="11" fill="#3b82f6">scripts/cfa.py · scripts/analyze_case.py · task_ref.py</text>
+    </g>
+
+    <!-- 卡片 1.2: 基准多源数据发现 -->
+    <g transform="translate(400, 42)">
+      <rect width="450" height="54" fill="#f8fafc" rx="8" stroke="#cbd5e1" stroke-width="1"/>
+      <text x="14" y="22" font-family="-apple-system, sans-serif" font-size="13" font-weight="700" fill="#334155">基准产物自动发现 (discover_artifacts.py)</text>
+      <text x="14" y="42" font-family="-apple-system, sans-serif" font-size="11" fill="#64748b">jobs/ 运行日志 · tasks/ 规范 · ATIF 轨迹 · tests/ 验证器代码 · Harbor 布局</text>
+    </g>
+
+    <!-- 卡片 1.3: 输入输出隔离 -->
+    <g transform="translate(870, 42)">
+      <rect width="370" height="54" fill="#f8fafc" rx="8" stroke="#cbd5e1" stroke-width="1"/>
+      <text x="14" y="22" font-family="-apple-system, sans-serif" font-size="13" font-weight="700" fill="#334155">环境隔离与原子发布 (staging.py)</text>
+      <text x="14" y="42" font-family="-apple-system, sans-serif" font-size="11" fill="#64748b">只读输入 · 进程排他文件锁 (.cfa_publish.lock) · 敏感路径脱敏</text>
+    </g>
+  </g>
+
+  <!-- 连接箭头 1 -> 2 -->
+  <line x1="660" y1="225" x2="660" y2="245" stroke="#2563eb" stroke-width="2" marker-end="url(#arrowBlue)"/>
+
+  <!-- ================= 模块 2: 多源规范化证据采集引擎 ================= -->
+  <g transform="translate(30, 245)">
+    <rect width="1260" height="195" fill="#ffffff" rx="12" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/>
+    
+    <rect x="0" y="0" width="230" height="30" rx="12" fill="#0284c7"/>
+    <text x="14" y="20" font-family="-apple-system, 'PingFang SC', sans-serif" font-size="12" font-weight="700" fill="#ffffff">2. 多源规范化证据采集引擎</text>
+    <text x="250" y="20" font-family="-apple-system, 'PingFang SC', sans-serif" font-size="11" fill="#0284c7" font-weight="600">统一归一化产物：data/evidence.json (结构化客观事实矩阵)</text>
+
+    <!-- 子模块 2.1 运行态门控 -->
+    <g transform="translate(20, 42)">
+      <rect width="190" height="135" fill="url(#cyanCard)" rx="8" stroke="#bae6fd" stroke-width="1"/>
+      <text x="12" y="24" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#0369a1">运行态与生命周期</text>
+      <text x="12" y="44" font-family="-apple-system, sans-serif" font-size="10" font-weight="600" fill="#0284c7">runtime_state.py</text>
+      <text x="12" y="66" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• agent_started 门控</text>
+      <text x="12" y="86" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• verifier_started 门控</text>
+      <text x="12" y="106" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• reward 与三态评测</text>
+      <text x="12" y="124" font-family="-apple-system, sans-serif" font-size="10" fill="#64748b">通过 / 失败 / 未评分</text>
+    </g>
+
+    <!-- 子模块 2.2 轨迹标准化 -->
+    <g transform="translate(225, 42)">
+      <rect width="200" height="135" fill="url(#cyanCard)" rx="8" stroke="#bae6fd" stroke-width="1"/>
+      <text x="12" y="24" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#0369a1">轨迹规范化与行为信号</text>
+      <text x="12" y="44" font-family="-apple-system, sans-serif" font-size="10" font-weight="600" fill="#0284c7">normalize_trajectory.py</text>
+      <text x="12" y="66" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• ATIF 格式多轮解析</text>
+      <text x="12" y="86" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 工具调用与环境反馈流</text>
+      <text x="12" y="106" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 提前终止 / 重复失败</text>
+      <text x="12" y="124" font-family="-apple-system, sans-serif" font-size="10" fill="#64748b">提取正面行为偏离信号</text>
+    </g>
+
+    <!-- 子模块 2.3 契约审计与代码静态分析 -->
+    <g transform="translate(440, 42)">
+      <rect width="220" height="135" fill="url(#cyanCard)" rx="8" stroke="#bae6fd" stroke-width="1"/>
+      <text x="12" y="24" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#0369a1">三方契约审计 &amp; 评测器 AST</text>
+      <text x="12" y="44" font-family="-apple-system, sans-serif" font-size="10" font-weight="600" fill="#0284c7">audit_contract.py</text>
+      <text x="12" y="66" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• Prompt ↔ Verifier ↔ 交付物</text>
+      <text x="12" y="86" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• AST 静态解析正则/隐式列序</text>
+      <text x="12" y="106" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• failure_binding (因果绑定)</text>
+      <text x="12" y="124" font-family="-apple-system, sans-serif" font-size="10" fill="#64748b">直接绑定 / 间接 / 无关</text>
+    </g>
+
+    <!-- 子模块 2.4 科学软件错误提取 -->
+    <g transform="translate(675, 42)">
+      <rect width="235" height="135" fill="url(#cyanCard)" rx="8" stroke="#bae6fd" stroke-width="1"/>
+      <text x="12" y="24" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#0369a1">科学计算错误模式识别</text>
+      <text x="12" y="44" font-family="-apple-system, sans-serif" font-size="10" font-weight="600" fill="#0284c7">extract_scientific_errors.py</text>
+      <text x="12" y="66" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 11 大科学软件套件覆盖</text>
+      <text x="12" y="86" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 60 类权威异常特征注册表</text>
+      <text x="12" y="106" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• CP2K / VASP / QE / LAMMPS</text>
+      <text x="12" y="124" font-family="-apple-system, sans-serif" font-size="10" fill="#64748b">区分已恢复与未恢复错误</text>
+    </g>
+
+    <!-- 子模块 2.5 运行时异常 & 验证器报表 -->
+    <g transform="translate(925, 42)">
+      <rect width="180" height="135" fill="url(#cyanCard)" rx="8" stroke="#bae6fd" stroke-width="1"/>
+      <text x="12" y="24" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#0369a1">环境与验证报表</text>
+      <text x="12" y="44" font-family="-apple-system, sans-serif" font-size="10" font-weight="600" fill="#0284c7">normalize_verifier_report</text>
+      <text x="12" y="66" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 5 类验证器 JSON 规整化</text>
+      <text x="12" y="86" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 具名失败检查提取</text>
+      <text x="12" y="106" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 可诊断性 (diagnosability)</text>
+      <text x="12" y="124" font-family="-apple-system, sans-serif" font-size="10" fill="#64748b">OOM / 超时 / 采集崩溃</text>
+    </g>
+
+    <!-- 子模块 2.6 因果锚点与首次偏离 -->
+    <g transform="translate(1120, 42)">
+      <rect width="120" height="135" fill="url(#cyanCard)" rx="8" stroke="#bae6fd" stroke-width="1"/>
+      <text x="10" y="24" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#0369a1">因果锚点 FUD</text>
+      <text x="10" y="44" font-family="-apple-system, sans-serif" font-size="9" font-weight="600" fill="#0284c7">trace_causal_anchors</text>
+      <text x="10" y="66" font-family="-apple-system, sans-serif" font-size="9.5" fill="#475569">• 参数定义点</text>
+      <text x="10" y="86" font-family="-apple-system, sans-serif" font-size="9.5" fill="#475569">• 交付物生成</text>
+      <text x="10" y="106" font-family="-apple-system, sans-serif" font-size="9.5" fill="#475569">• 自检覆盖差距</text>
+      <text x="10" y="124" font-family="-apple-system, sans-serif" font-size="9.5" fill="#0369a1" font-weight="600">锁定首次偏离</text>
+    </g>
+  </g>
+
+  <!-- 连接箭头 2 -> 3 -->
+  <line x1="660" y1="440" x2="660" y2="460" stroke="#0284c7" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ================= 模块 3: 假设生成与置信度量化层 ================= -->
+  <g transform="translate(30, 460)">
+    <rect width="1260" height="90" fill="#ffffff" rx="12" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/>
+    
+    <rect x="0" y="0" width="220" height="28" rx="12" fill="#6366f1"/>
+    <text x="14" y="19" font-family="-apple-system, 'PingFang SC', sans-serif" font-size="12" font-weight="700" fill="#ffffff">3. 假设竞争与置信度量化层</text>
+
+    <!-- 卡片 3.1 候选假设生成 -->
+    <g transform="translate(20, 38)">
+      <rect width="600" height="42" fill="url(#purpleCard)" rx="6" stroke="#ddd6fe" stroke-width="1"/>
+      <text x="14" y="20" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#4338ca">竞争性根因假设模型 (generate_hypotheses.py → candidate-hypotheses.json)</text>
+      <text x="14" y="34" font-family="-apple-system, sans-serif" font-size="10.5" fill="#6366f1">列出候选假设 (H1..Hn) · 正向支持证据 (for) · 反向证伪 (against) · 反事实检验 (counterfactual_test)</text>
+    </g>
+
+    <!-- 卡片 3.2 动态置信度量化 -->
+    <g transform="translate(640, 38)">
+      <rect width="600" height="42" fill="url(#purpleCard)" rx="6" stroke="#ddd6fe" stroke-width="1"/>
+      <text x="14" y="20" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#4338ca">启发式证据强度分值与因子收据 (confidence.py)</text>
+      <text x="14" y="34" font-family="-apple-system, sans-serif" font-size="10.5" fill="#6366f1">动态分数 (points / denominator) · 强度三档分级 (High / Medium / Low) · 正负证据项原子明细收据</text>
+    </g>
+  </g>
+
+  <!-- 连接箭头 3 -> 4 -->
+  <line x1="660" y1="550" x2="660" y2="570" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrowPurple)"/>
+
+  <!-- ================= 模块 4: 确定性时序判定门控引擎 (核心大脑) ================= -->
+  <g transform="translate(30, 570)">
+    <rect width="1260" height="245" fill="#ffffff" rx="12" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/>
+    
+    <rect x="0" y="0" width="260" height="30" rx="12" fill="#7c3aed"/>
+    <text x="14" y="20" font-family="-apple-system, 'PingFang SC', sans-serif" font-size="12" font-weight="700" fill="#ffffff">4. 确定性因果时序门控引擎 (Core Brain)</text>
+    <text x="280" y="20" font-family="-apple-system, 'PingFang SC', sans-serif" font-size="11" fill="#7c3aed" font-weight="600">scripts/attribution/engine.py · 严格按客观因果先后顺序线性求值 (首个命中即熔断)</text>
+
+    <!-- 9 个 Gate 的水平流转展示 -->
+    <g transform="translate(18, 42)">
+      <!-- Gate 0 -->
+      <g transform="translate(0, 0)">
+        <rect width="126" height="74" fill="#ecfdf5" rx="6" stroke="#a7f3d0" stroke-width="1"/>
+        <text x="8" y="18" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" fill="#065f46">Gate 0: 通过短路</text>
+        <text x="8" y="34" font-family="-apple-system, sans-serif" font-size="9.5" fill="#047857">reward &gt;= 1.0</text>
+        <text x="8" y="48" font-family="-apple-system, sans-serif" font-size="9.5" fill="#047857">或 status passed</text>
+        <text x="8" y="64" font-family="-apple-system, sans-serif" font-size="9.5" font-weight="700" fill="#059669">→ verdict: passed</text>
+      </g>
+      <path d="M 126 37 L 136 37" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Gate 1a/b -->
+      <g transform="translate(140, 0)">
+        <rect width="130" height="74" fill="#fef2f2" rx="6" stroke="#fecaca" stroke-width="1"/>
+        <text x="8" y="18" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" fill="#991b1b">Gate 1a/1b: 启动前</text>
+        <text x="8" y="34" font-family="-apple-system, sans-serif" font-size="9.5" fill="#b91c1c">agent_started == false</text>
+        <text x="8" y="48" font-family="-apple-system, sans-serif" font-size="9.5" fill="#b91c1c">1a: 致命错误 → infra</text>
+        <text x="8" y="64" font-family="-apple-system, sans-serif" font-size="9.5" font-weight="700" fill="#dc2626">1b: 无日志 → unknown</text>
+      </g>
+      <path d="M 270 37 L 280 37" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Gate 1c -->
+      <g transform="translate(284, 0)">
+        <rect width="132" height="74" fill="#fef2f2" rx="6" stroke="#fecaca" stroke-width="1"/>
+        <text x="8" y="18" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" fill="#991b1b">Gate 1c: 运行器故障</text>
+        <text x="8" y="34" font-family="-apple-system, sans-serif" font-size="9.5" fill="#b91c1c">Harbor 产物采集崩溃</text>
+        <text x="8" y="48" font-family="-apple-system, sans-serif" font-size="9.5" fill="#b91c1c">Engine cp failed/超时</text>
+        <text x="8" y="64" font-family="-apple-system, sans-serif" font-size="9.5" font-weight="700" fill="#dc2626">→ infra (未评分)</text>
+      </g>
+      <path d="M 416 37 L 426 37" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Gate 2 -->
+      <g transform="translate(430, 0)">
+        <rect width="132" height="74" fill="#fffbeb" rx="6" stroke="#fde68a" stroke-width="1"/>
+        <text x="8" y="18" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" fill="#92400e">Gate 2: 题目设计</text>
+        <text x="8" y="34" font-family="-apple-system, sans-serif" font-size="9.5" fill="#b45309">Prompt 资产缺失</text>
+        <text x="8" y="48" font-family="-apple-system, sans-serif" font-size="9.5" fill="#b45309">Dockerfile/镜像损坏</text>
+        <text x="8" y="64" font-family="-apple-system, sans-serif" font-size="9.5" font-weight="700" fill="#d97706">→ case</text>
+      </g>
+      <path d="M 562 37 L 572 37" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Gate 3 -->
+      <g transform="translate(576, 0)">
+        <rect width="134" height="74" fill="#eff6ff" rx="6" stroke="#bfdbfe" stroke-width="1"/>
+        <text x="8" y="18" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" fill="#1e40af">Gate 3: 评测器缺陷</text>
+        <text x="8" y="34" font-family="-apple-system, sans-serif" font-size="9.5" fill="#1d4ed8">评测器内部崩溃</text>
+        <text x="8" y="48" font-family="-apple-system, sans-serif" font-size="9.5" fill="#1d4ed8">直接绑定正则/解析</text>
+        <text x="8" y="64" font-family="-apple-system, sans-serif" font-size="9.5" font-weight="700" fill="#2563eb">→ verifier</text>
+      </g>
+      <path d="M 710 37 L 720 37" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Gate 4 -->
+      <g transform="translate(724, 0)">
+        <rect width="144" height="74" fill="#eff6ff" rx="6" stroke="#bfdbfe" stroke-width="1"/>
+        <text x="8" y="18" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" fill="#1e40af">Gate 4: 数值容差缺陷</text>
+        <text x="8" y="34" font-family="-apple-system, sans-serif" font-size="9.5" fill="#1d4ed8">瞬时发散但系综均值吻合</text>
+        <text x="8" y="48" font-family="-apple-system, sans-serif" font-size="9.5" fill="#1d4ed8">三方契约闭环校验</text>
+        <text x="8" y="64" font-family="-apple-system, sans-serif" font-size="9.5" font-weight="700" fill="#2563eb">→ verifier (容差过严)</text>
+      </g>
+      <path d="M 868 37 L 878 37" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Gate 5 -->
+      <g transform="translate(882, 0)">
+        <rect width="162" height="74" fill="#f8fafc" rx="6" stroke="#cbd5e1" stroke-width="1"/>
+        <text x="8" y="18" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" fill="#475569">Gate 5: 正面证据不足</text>
+        <text x="8" y="34" font-family="-apple-system, sans-serif" font-size="9.5" fill="#64748b">仅有 reward=0 / FAIL</text>
+        <text x="8" y="48" font-family="-apple-system, sans-serif" font-size="9.5" fill="#64748b">无明确指向 Agent 的客观证据</text>
+        <text x="8" y="64" font-family="-apple-system, sans-serif" font-size="9.5" font-weight="700" fill="#64748b">→ unknown (弃判兜底)</text>
+      </g>
+      <path d="M 1044 37 L 1054 37" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Gate 6 -->
+      <g transform="translate(1058, 0)">
+        <rect width="166" height="74" fill="#faf5ff" rx="6" stroke="#e9d5ff" stroke-width="1.5"/>
+        <text x="8" y="18" font-family="-apple-system, sans-serif" font-size="11" font-weight="700" fill="#6b21a8">Gate 6: 智能体主因</text>
+        <text x="8" y="34" font-family="-apple-system, sans-serif" font-size="9.5" fill="#7e22ce">满足 5 项归因必要条件</text>
+        <text x="8" y="48" font-family="-apple-system, sans-serif" font-size="9.5" fill="#7e22ce">具备明确正面行为偏离</text>
+        <text x="8" y="64" font-family="-apple-system, sans-serif" font-size="9.5" font-weight="700" fill="#9333ea">→ agent (自检缺口/方法参数)</text>
+      </g>
+    </g>
+
+    <!-- 四大并列归因大类定义看板 (Peer-level Categories) -->
+    <g transform="translate(20, 128)">
+      <rect width="1220" height="100" fill="#f8fafc" rx="8" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="16" y="22" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#334155">四大并列根因大类 (Peer Categories) 架构边界与判定标准</text>
+
+      <!-- Category 1: Agent -->
+      <g transform="translate(16, 32)">
+        <rect width="285" height="58" fill="#ffffff" rx="6" stroke="#c084fc" stroke-width="1"/>
+        <text x="10" y="20" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#7e22ce">1. agent (智能体决策与操作)</text>
+        <text x="10" y="36" font-family="-apple-system, sans-serif" font-size="10" fill="#4b5563">方法错误 · 参数截断 · 工具语法 · 契约不符</text>
+        <text x="10" y="50" font-family="-apple-system, sans-serif" font-size="10" fill="#6b21a8" font-weight="600">自检覆盖缺口 (AGENT_SELF_CHECK_GAP)</text>
+      </g>
+
+      <!-- Category 2: Verifier -->
+      <g transform="translate(315, 32)">
+        <rect width="285" height="58" fill="#ffffff" rx="6" stroke="#93c5fd" stroke-width="1"/>
+        <text x="10" y="20" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#1d4ed8">2. verifier (验证器规则与缺陷)</text>
+        <text x="10" y="36" font-family="-apple-system, sans-serif" font-size="10" fill="#4b5563">验证器内部崩溃 · 正则缺陷直接因果绑定</text>
+        <text x="10" y="50" font-family="-apple-system, sans-serif" font-size="10" fill="#1e40af" font-weight="600">隐式契约 · 混沌瞬时轨迹容差过严</text>
+      </g>
+
+      <!-- Category 3: Case -->
+      <g transform="translate(615, 32)">
+        <rect width="285" height="58" fill="#ffffff" rx="6" stroke="#fcd34d" stroke-width="1"/>
+        <text x="10" y="20" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#b45309">3. case (题目与基准设计)</text>
+        <text x="10" y="36" font-family="-apple-system, sans-serif" font-size="10" fill="#4b5563">提示词与基准资产缺失 · 题目镜像损坏</text>
+        <text x="10" y="50" font-family="-apple-system, sans-serif" font-size="10" fill="#92400e" font-weight="600">真实参考矛盾 · 不切实际的算力/时间配额</text>
+      </g>
+
+      <!-- Category 4: Infra -->
+      <g transform="translate(915, 32)">
+        <rect width="285" height="58" fill="#ffffff" rx="6" stroke="#fca5a5" stroke-width="1"/>
+        <text x="10" y="20" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#b91c1c">4. infra (运行环境与基础设施)</text>
+        <text x="10" y="36" font-family="-apple-system, sans-serif" font-size="10" fill="#4b5563">容器启动失败 · Harbor 产物采集崩溃</text>
+        <text x="10" y="50" font-family="-apple-system, sans-serif" font-size="10" fill="#991b1b" font-weight="600">系统依赖缺失 · 运行器中断 · 显存/内存 OOM</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- 连接箭头 4 -> 5 -->
+  <line x1="660" y1="815" x2="660" y2="835" stroke="#059669" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ================= 模块 5: 约束校验与多层呈现交付层 ================= -->
+  <g transform="translate(30, 835)">
+    <rect width="1260" height="155" fill="#ffffff" rx="12" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/>
+    
+    <rect x="0" y="0" width="220" height="28" rx="12" fill="#059669"/>
+    <text x="14" y="19" font-family="-apple-system, 'PingFang SC', sans-serif" font-size="12" font-weight="700" fill="#ffffff">5. 约束校验与多层交互呈现层</text>
+
+    <!-- 5.1 硬规则校验器 -->
+    <g transform="translate(20, 38)">
+      <rect width="250" height="102" fill="url(#emeraldCard)" rx="6" stroke="#a7f3d0" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#065f46">约束校验器 (validate_analysis)</text>
+      <text x="12" y="42" font-family="-apple-system, sans-serif" font-size="10" fill="#047857">• Schema 字段与因果链核验</text>
+      <text x="12" y="60" font-family="-apple-system, sans-serif" font-size="10" fill="#047857">• 证据指针完整性 (evidence_refs)</text>
+      <text x="12" y="78" font-family="-apple-system, sans-serif" font-size="10" fill="#047857">• Agent 正面证据与 FUD 锚点约束</text>
+      <text x="12" y="96" font-family="-apple-system, sans-serif" font-size="10" fill="#047857">• 严禁非 Agent 生成技能处方</text>
+    </g>
+
+    <!-- 5.2 终端速览卡片 (summary.md) -->
+    <g transform="translate(285, 38)">
+      <rect width="250" height="102" fill="#f8fafc" rx="6" stroke="#cbd5e1" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#1e293b">终端速览卡 (summary.md)</text>
+      <text x="12" y="42" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 一句话核心判定与具名错误</text>
+      <text x="12" y="60" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 四大类裁决横向对比表</text>
+      <text x="12" y="78" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 主因大类下小分类与证据溯源</text>
+      <text x="12" y="96" font-family="-apple-system, sans-serif" font-size="10" fill="#2563eb" font-weight="600">与标准输出 stdout 严格一致</text>
+    </g>
+
+    <!-- 5.3 深度报告产物 (taskXXX.md) -->
+    <g transform="translate(550, 38)">
+      <rect width="235" height="102" fill="#f8fafc" rx="6" stroke="#cbd5e1" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#1e293b">Clean 深度报告 ({task}.md)</text>
+      <text x="12" y="42" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 单语模式消除重复 .zh.md</text>
+      <text x="12" y="60" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 顶层整洁 Markdown 文档</text>
+      <text x="12" y="78" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 关联文件行号可点击链接</text>
+      <text x="12" y="96" font-family="-apple-system, sans-serif" font-size="10" fill="#64748b">机器数据全部下沉 data/ 目录</text>
+    </g>
+
+    <!-- 5.4 领域技能处方 (skill-prescription.md) -->
+    <g transform="translate(800, 38)">
+      <rect width="220" height="102" fill="#f8fafc" rx="6" stroke="#cbd5e1" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#1e293b">技能处方 (按需生成)</text>
+      <text x="12" y="42" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• skill-prescription.md</text>
+      <text x="12" y="60" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 仅针对 Agent 领域能力缺口</text>
+      <text x="12" y="78" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 物理软件参数/脚本可复用处方</text>
+      <text x="12" y="96" font-family="-apple-system, sans-serif" font-size="10" fill="#dc2626">严禁为 Infra/Verifier 缺陷生成</text>
+    </g>
+
+    <!-- 5.5 全局看板与只读检视 -->
+    <g transform="translate(1035, 38)">
+      <rect width="205" height="102" fill="#f8fafc" rx="6" stroke="#cbd5e1" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, sans-serif" font-size="12" font-weight="700" fill="#1e293b">全局看板 &amp; 脱敏检视</text>
+      <text x="12" y="42" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• failure-report/INDEX.md</text>
+      <text x="12" y="60" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 自然数序批量审计总览</text>
+      <text x="12" y="78" font-family="-apple-system, sans-serif" font-size="10" fill="#475569">• 三态统计与已评分通过率</text>
+      <text x="12" y="96" font-family="-apple-system, sans-serif" font-size="10" fill="#0284c7" font-weight="600">cfa.py inspect 段落安全脱敏</text>
+    </g>
+  </g>
+</svg>

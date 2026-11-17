@@ -32,24 +32,30 @@
 
 ## 核心工作流 (`Workflow`)
 
-1. **运行产物收集与候选假设生成**
-   执行 `scripts/analyze_case.py`（支持 `--phase collect` 仅生成证据与候选假设，或默认 `--phase all` 完成全流程分析与中英双版报告渲染）：
+1. **运行产物收集与统一 CLI 审计**
+   使用统一 CLI（`scripts/cfa.py`）执行任务 ID 审计、只读脱敏检视与跨任务/跨试次对比，或对已知路径调用 `scripts/analyze_case.py`：
    ```bash
    SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
    [ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.agents/skills/case-failure-analyzer"
+   python3 "$SKILL_DIR/scripts/cfa.py" audit task208 --jobs-root <benchmark checkout> --lang zh
+   python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --section artifacts
+   python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --section step --step 43
+   python3 "$SKILL_DIR/scripts/cfa.py" diff task207 task208
+   # 或按显式目录路径运行：
    python3 "$SKILL_DIR/scripts/analyze_case.py" \
      --job jobs/<job_name> \
      --task tasks/<task_name> \
      --output failure-analysis/<case_id>
    ```
+   `cfa.py inspect` 支持 `--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data`（默认自动脱敏，支持 `--raw` 与 `--no-redact`）；`cfa.py diff <target_a> [<target_b>] [--trials <t1> <t2>]` 用于对比两个任务或同一任务两个试次的裁决、主因、失败检查与因果锚点差异。
 2. **单 Trial 启动与基础设施状态门控 (`scripts/runtime_state.py` + `scripts/extract_runtime_errors.py`)**
    基于单 Trial 证据判定 `agent_started`、`verifier_started`、`execution_status`、`verification_status` 与 `verdict`。若 `reward >= 1.0` 则直接判定为 `passed`，绝不因 Job 级汇总统计 `stats.n_errored_trials > 0` 误判通过的 Trial。
-3. **重建统一执行时间线 (`scripts/normalize_trajectory.py`)**
-   将 `ATIF-v1.7`（及兼容版本）轨迹标准化为时间线事件与客观行为信号 (`behavioral_signals`)。
-4. **审计三方契约与评测器缺陷 (`scripts/audit_contract.py`)**
-   比对 `Prompt <-> Verifier <-> Agent Output`，并对 `tests/verify.py` 静态解析风险做因果绑定 (`failure_binding: direct | indirect | none`)，同时独立识别 Verifier 自身崩溃 (`verifier_internal_crash` / `VERIFIER_RECOMPUTE_DEFECT`)。
-5. **提取科学计算软件错误 (`scripts/extract_scientific_errors.py`)**
-   基于单一真值源 `references/error-families.json` 匹配 11 类科学计算与机器学习势套件的 60 类 `error_family`，并结合 `references/software/<software>.md` 判别证据要求。
+3. **重建统一执行时间线与因果锚点 (`scripts/normalize_trajectory.py` + `scripts/trace_causal_anchors.py`)**
+   将 `ATIF-v1.7`、`.jsonl` 及 OpenAI/Anthropic `tool_use`/`tool_result` 消息流跨步折叠标准化为时间线事件与行为信号（`behavioral_signals`），结合保留中段高显著性错误/指标行的截断策略与两阶段脚本输出目标图（`script_targets`）精准识别交付物写出；`trace_causal_anchors.py` 对关联失败产物的脚本执行/写入事件给予反向溯源加权，并提取关键科学参数的 `parameter_evolution` 演化轨迹。
+4. **审计三方契约、交付物完整性与评测器缺陷 (`scripts/audit_contract.py`)**
+   比对 `Prompt <-> Verifier <-> Agent Output`，扫描 `artifacts/` 下的 JSON/CSV/TSV 交付物生成 `deliverable_diagnostics`（检测空表、`NaN`/`Inf` 数值与 `checked_keys` 缺失），并对 `tests/verify.py` 静态解析风险做因果绑定 (`failure_binding: direct | indirect | none`)，同时独立识别 Verifier 自身崩溃 (`verifier_internal_crash` / `VERIFIER_RECOMPUTE_DEFECT`)。
+5. **提取科学计算软件错误与交叉核对事件 (`scripts/extract_scientific_errors.py`)**
+   基于单一真值源 `references/error-families.json` 匹配 11 类科学计算与机器学习势套件的 60 类 `error_family`（支持 `.jsonl` 轨迹印证、无界具名指标交付物配对、`scale_or_sign_hint` 单位/量纲/符号识别以及 `stale_deliverable_sync` 过时交付同步检测），并结合 `references/software/<software>.md` 判别证据要求。
 6. **定位首次不可恢复偏离点 (`first_unrecovered_deviation`)**
    记录 `{"status": "identified", "event_ref": "...", "summary": "..."}`；若因日志缺失无法定位，显式记录 `{"status": "not_identified", "event_ref": null, "summary": "..."}`。
 7. **评估竞争根因假设 (`scripts/generate_hypotheses.py` & `scripts/confidence.py`)**

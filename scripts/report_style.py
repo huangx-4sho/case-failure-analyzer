@@ -969,6 +969,21 @@ def format_confidence_breakdown(
         return f"| **可信度拆解 (Confidence breakdown)** | {full_str} |\n"
 
 
+def _format_divergence_tags(item: Any) -> str:
+    """Return concise `[label]` / `[stale_sync]` suffix tags for unit/sign/stale-sync findings."""
+    if not isinstance(item, dict):
+        return ""
+    tags: List[str] = []
+    hint = item.get("scale_or_sign_hint")
+    if isinstance(hint, dict) and hint:
+        label = str(hint.get("label") or hint.get("kind") or "").strip()
+        if label:
+            tags.append(f"[{label}]")
+    if item.get("stale_deliverable_sync"):
+        tags.append("[stale_sync]")
+    return (" " + " ".join(tags)) if tags else ""
+
+
 def format_artifact_comparison(comp: Any, lang: str = "zh") -> str:
     """Concise representation of artifact_comparison / evidence dict or list for error matrix."""
     is_en = lang == "en"
@@ -989,12 +1004,15 @@ def format_artifact_comparison(comp: Any, lang: str = "zh") -> str:
                 else ""
             )
             ref_s = f", {ref}" if ref else ""
-            return f"{metric}: {dlv_s} vs {rec_s}{more}{ref_s}"
+            tag_s = _format_divergence_tags(first)
+            return f"{metric}: {dlv_s} vs {rec_s}{more}{ref_s}{tag_s}"
         return clean_prose(", ".join(str(x) for x in comp[:3]), 120)
     if not isinstance(comp, dict):
         return clean_prose(comp, 120)
     parts = []
     for k, v in comp.items():
+        if k in ("scale_or_sign_hint", "stale_deliverable_sync"):
+            continue
         if isinstance(v, list):
             if len(v) > 3:
                 vals = ", ".join(
@@ -1012,7 +1030,9 @@ def format_artifact_comparison(comp: Any, lang: str = "zh") -> str:
         else:
             v_str = str(v)
         parts.append(f"{k}={v_str}")
-    return "; ".join(parts)
+    tag_s = _format_divergence_tags(comp)
+    base = "; ".join(parts)
+    return f"{base}{tag_s}" if base else tag_s.strip()
 
 
 def render_error_matrix_table(evidence: Dict[str, Any], lang: str = "zh") -> List[str]:
@@ -1114,6 +1134,9 @@ def render_error_matrix_table(evidence: Dict[str, Any], lang: str = "zh") -> Lis
                     values_col = f"`{rep_s}` vs `{rec_s}` (`{comp_str}`)"
                 else:
                     values_col = f"`{rep_s}` vs `{rec_s}`"
+                div_tags = _format_divergence_tags(div)
+                if div_tags and div_tags.strip() not in values_col:
+                    values_col += div_tags
             elif comp_str:
                 values_col = f"`{comp_str}`"
             else:
@@ -1209,7 +1232,7 @@ def render_error_matrix_table(evidence: Dict[str, Any], lang: str = "zh") -> Lis
                 if d.get("is_delta_divergence")
                 else (str(rec) if rec is not None else "—")
             )
-            values_col = f"`{rep_s}` vs `{rec_s}`"
+            values_col = f"`{rep_s}` vs `{rec_s}`{_format_divergence_tags(d)}"
 
             delta = d.get("reported_value")
             tol = d.get("tolerance")

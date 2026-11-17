@@ -17,7 +17,9 @@ Verifies Phase 1 requirements:
 
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -26,6 +28,8 @@ SCRIPT_DIR = REPO_ROOT / "scripts"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from analyze_case import collect_case_evidence
+from discover_artifacts import discover_all
 from render_report import (
     filter_core_missing_artifacts,
     format_evidence_list_text,
@@ -34,6 +38,7 @@ from render_report import (
 )
 from render_verdict import build_verdict_card, render_verdict_card_markdown
 from report_style import (
+    format_artifact_comparison,
     format_confidence_breakdown,
     localize_engine_text,
     render_error_matrix_table,
@@ -1411,6 +1416,119 @@ class TestRedesignedReportingAndLocalization(unittest.TestCase):
         self.assertIn(
             "- **Recovered warnings**: 1 transient diagnostic warning(s) recovered cleanly", rep_en
         )
+
+    def test_collect_case_evidence_attaches_deliverable_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job_dir = root / "jobs" / "job1"
+            trial_dir = job_dir / "task__t1"
+            task_dir = root / "tasks" / "task"
+            (trial_dir / "agent").mkdir(parents=True)
+            (trial_dir / "verifier").mkdir(parents=True)
+            (trial_dir / "artifacts").mkdir(parents=True)
+            (task_dir / "tests").mkdir(parents=True)
+            (task_dir / "instruction.md").write_text("Write results.json", encoding="utf-8")
+            (task_dir / "tests" / "verify.py").write_text(
+                "import json\nd = json.load(open('results.json'))\n_ = d['energy']\n_ = d['missing_k']\n",
+                encoding="utf-8",
+            )
+            (trial_dir / "agent" / "trajectory.json").write_text(
+                json.dumps({"schema_version": "ATIF-v1.7", "steps": []}), encoding="utf-8"
+            )
+            (trial_dir / "verifier" / "reward.txt").write_text("0", encoding="utf-8")
+            (trial_dir / "artifacts" / "empty.csv").write_text("a,b\n", encoding="utf-8")
+            (trial_dir / "artifacts" / "results.json").write_text(
+                json.dumps({"energy": float("nan")}), encoding="utf-8"
+            )
+
+            disc = discover_all(job_path=job_dir, task_path=task_dir)
+            evidence, _, _, _ = collect_case_evidence(disc["trials"][0], job_dir=job_dir)
+
+        diag = evidence.get("deliverable_diagnostics")
+        self.assertIsInstance(diag, dict)
+        assert diag is not None
+        self.assertEqual(diag["missing_checked_keys"], ["missing_k"])
+        self.assertEqual(
+            [item["file"] for item in diag["empty_deliverables"]],
+            ["artifacts/empty.csv"],
+        )
+        self.assertEqual(
+            [item["file"] for item in diag["nan_or_inf_values"]],
+            ["artifacts/results.json"],
+        )
+
+    def test_error_matrix_and_comparison_render_scale_hint_and_stale_sync(self) -> None:
+        comp_list = [
+            {
+                "metric": "total_energy_Ha",
+                "delivered": -10.0,
+                "recomputed": -272.11386,
+                "artifact_ref": "art:artifacts/results.json",
+                "scale_or_sign_hint": {
+                    "kind": "unit_conversion",
+                    "factor": 0.036749,
+                    "label": "Hartree/eV (÷27.211386)",
+                },
+                "stale_deliverable_sync": True,
+            }
+        ]
+        formatted_list = format_artifact_comparison(comp_list, lang="en")
+        self.assertIn("[Hartree/eV (÷27.211386)]", formatted_list)
+        self.assertIn("[stale_sync]", formatted_list)
+
+        comp_dict = {
+            "delivered": -1.85,
+            "recomputed": 1.85,
+            "scale_or_sign_hint": {
+                "kind": "sign_flip",
+                "factor": -1.0,
+                "label": "sign convention flip (delivered ≈ -recomputed)",
+            },
+        }
+        formatted_dict = format_artifact_comparison(comp_dict, lang="zh")
+        self.assertIn("[sign convention flip (delivered ≈ -recomputed)]", formatted_dict)
+
+        # Render Error Matrix with divergences-only branch
+        ev_divs_only = {
+            "scientific_observations": [
+                {
+                    "error_family": "verifier_recompute_divergence",
+                    "metric": "final_energy",
+                    "reported_value": -10.0,
+                    "recomputed_value": -272.11386,
+                    "tolerance": 0.01,
+                    "matched_text": "FAIL: reported final_energy -10.0 != recomputed -272.11386",
+                    "scale_or_sign_hint": {
+                        "kind": "unit_conversion",
+                        "factor": 0.036749,
+                        "label": "Hartree/eV (÷27.211386)",
+                    },
+                    "stale_deliverable_sync": True,
+                }
+            ]
+        }
+        rows_divs = "\n".join(render_error_matrix_table(ev_divs_only, lang="en"))
+        self.assertIn("[Hartree/eV (÷27.211386)]", rows_divs)
+        self.assertIn("[stale_sync]", rows_divs)
+
+        # Render Error Matrix with failed_checks-backed branch
+        ev_checks = {
+            "verifier_report": {
+                "failed_checks": [
+                    {
+                        "layer": "L3",
+                        "name": "energy_check",
+                        "detail": "energy mismatch",
+                        "failure_kind": "numerical",
+                        "artifact_comparison": comp_list,
+                    }
+                ]
+            },
+            "scientific_observations": ev_divs_only["scientific_observations"],
+        }
+        rows_checks = "\n".join(render_error_matrix_table(ev_checks, lang="zh"))
+        self.assertIn("[Hartree/eV (÷27.211386)]", rows_checks)
+        self.assertIn("[stale_sync]", rows_checks)
 
 
 if __name__ == "__main__":

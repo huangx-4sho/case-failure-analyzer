@@ -34,23 +34,29 @@ Require or automatically discover:
 ## Workflow
 
 1. **Run Evidence Collection & Candidate Hypothesis Generation**
-   Execute `scripts/analyze_case.py` (supports `--phase collect` for evidence + candidate hypotheses, or `--phase all` for end-to-end conservative attribution and bilingual report generation):
+   Use the unified CLI (`scripts/cfa.py`) for task-ID auditing, read-only inspection, and cross-case diffing, or invoke `scripts/analyze_case.py` directly for path-based jobs:
    ```bash
    SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/case-failure-analyzer"
    [ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.agents/skills/case-failure-analyzer"
+   python3 "$SKILL_DIR/scripts/cfa.py" audit task208 --jobs-root <benchmark checkout> --lang en
+   python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --section artifacts
+   python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --section step --step 43
+   python3 "$SKILL_DIR/scripts/cfa.py" diff task207 task208
+   # Or by explicit job/task directory:
    python3 "$SKILL_DIR/scripts/analyze_case.py" \
      --job jobs/<job_name> \
      --task tasks/<task_name> \
      --output failure-analysis/<case_id>
    ```
+   `cfa.py inspect` supports `--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data` (with `--raw` and automatic redaction unless `--no-redact` is passed), and `cfa.py diff <target_a> [<target_b>] [--trials <t1> <t2>]` compares verdicts, root causes, failed checks, and causal anchors across two tasks or two trials of the same task.
 2. **Gate on Per-Trial Startup & Infrastructure State (`scripts/runtime_state.py` + `scripts/extract_runtime_errors.py`)**
    Determine from `evidence.json` (`runtime.agent_started`, `runtime.verifier_started`, `runtime.execution_status`, `runtime.verification_status`, `error_observations`) whether the trial passed (`reward >= 1.0`) or whether the container/agent failed prior to startup. Job-level `stats.n_errored_trials` is never used to mark an individual passing trial as failed.
-3. **Reconstruct the Unified Execution Timeline (`scripts/normalize_trajectory.py`)**
-   Trace chronological events across runner setup, agent steps (`ATIF-v1.7`), tool calls, file writes, and verifier execution.
-4. **Audit the Three-Way Contract (`scripts/audit_contract.py`)**
-   Inspect `contract_observations` and `verifier_observations` (`failure_binding: direct | indirect | none`, `verifier_internal_crash`) to distinguish genuine agent contract violations from causally bound verifier parser defects or internal verifier crashes.
-5. **Extract Scientific Software Error Events (`scripts/extract_scientific_errors.py`)**
-   Review `scientific_observations` backed by `references/error-families.json` and consult `references/software/<software>.md` for discriminating evidence requirements.
+3. **Reconstruct the Unified Execution Timeline & Causal Anchors (`scripts/normalize_trajectory.py` + `scripts/trace_causal_anchors.py`)**
+   Trace chronological events across runner setup, agent steps (`ATIF-v1.7`, `.jsonl`, OpenAI/Anthropic `tool_use`/`tool_result` folding), tool calls, file writes, two-phase script output target tracking (`script_targets`), salience-preserving truncation, and verifier execution. `trace_causal_anchors.py` applies backward provenance scoring for scripts producing implicated failed artifacts and extracts `parameter_evolution` across steps.
+4. **Audit the Three-Way Contract & Deliverable Integrity (`scripts/audit_contract.py`)**
+   Inspect `contract_observations`, `deliverable_diagnostics` (empty tables, `NaN`/`Inf` values, missing `checked_keys` in `artifacts/`), and `verifier_observations` (`failure_binding: direct | indirect | none`, `verifier_internal_crash`) to distinguish genuine agent contract violations from causally bound verifier parser defects or internal verifier crashes.
+5. **Extract Scientific Software Error & Cross-Check Events (`scripts/extract_scientific_errors.py`)**
+   Review `scientific_observations` backed by `references/error-families.json` (plus `.jsonl` trajectory corroboration, unbounded metric-matched artifact pairing, `scale_or_sign_hint`, and `stale_deliverable_sync`) and consult `references/software/<software>.md` for discriminating evidence requirements.
 6. **Identify the First Unrecovered Deviation (`first_unrecovered_deviation`)**
    Record `{"status": "identified", "event_ref": "...", "summary": "..."}` or `{"status": "not_identified", "event_ref": null, "summary": "..."}` when logs are incomplete.
 7. **Evaluate Competing Root-Cause Hypotheses (`scripts/generate_hypotheses.py` & `scripts/confidence.py`)**
