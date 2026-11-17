@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -305,7 +306,7 @@ def _manifestation_summary(evidence: Dict[str, Any], direct_cause: Any, lang: st
                 return f"The verifier failed {len(names)} named check(s): {shown}{tail}"
             tail = f" 等 {len(names)} 项" if more > 0 else f" {len(names)} 项"
             return f"验证器具名检查未通过{tail}：{shown}"
-    return clean_prose(direct_cause, 300)
+    return clean_prose(localize_engine_text(direct_cause, lang), 300)
 
 
 def _attribution_sentence(prc: Dict[str, Any], fallback: Any, lang: str = "zh") -> str:
@@ -492,11 +493,13 @@ def _render_verifier_report_block(evidence: Dict[str, Any], lang: str = "bilingu
     title, failed_label, source_label, diag_label, verdict_label = labels[:5]
     origin_label, core_label = labels[5], labels[6]
 
+    family_label = "Report family" if lang == "en" else "报告族"
+    primary_label = "Primary report" if lang == "en" else "主报告"
     meta = (
-        f"报告族 `{report.get('schema_family') or 'unknown'}` · "
+        f"{family_label} `{report.get('schema_family') or 'unknown'}` · "
         f"{verdict_label} `{report.get('verdict') or 'unknown'}` · "
         f"reward `{report.get('reward')}` · "
-        f"主报告 `{report.get('primary_report') or '—'}`"
+        f"{primary_label} `{report.get('primary_report') or '—'}`"
     )
     lines = [title + "\n", f"- {meta}\n"]
     origin = report.get("failure_origin")
@@ -631,7 +634,11 @@ def _render_evidence_file_pointers(
         )
 
     # 1. Trajectory
-    traj = art_map.get("agent/trajectory.json")
+    traj = next(
+        (a for a in artifacts if a.get("artifact_id") == "art:trajectory_json"),
+        art_map.get("agent/trajectory.json"),
+    )
+    traj_path = (traj or {}).get("rel_path") or "agent/trajectory.json"
     cc = art_map.get("agent/claude-code.txt")
     # 2. Verifier
     vlog = art_map.get("verifier/verify.log")
@@ -674,14 +681,14 @@ def _render_evidence_file_pointers(
                     "turns & tool calls" if lang == "en" else "交互轨迹及工具调用 / Turns & Tools"
                 )
             )
-            traj_items.append(f"[trial] `agent/trajectory.json` ({desc})")
+            traj_items.append(f"[trial] `{traj_path}` ({desc})")
         elif traj:
             m_tag = (
                 "【缺失】"
                 if lang == "zh"
                 else ("[Missing]" if lang == "en" else "【缺失 / Missing】")
             )
-            traj_items.append(f"[trial] `agent/trajectory.json` {m_tag}")
+            traj_items.append(f"[trial] `{traj_path}` {m_tag}")
 
         if cc and cc.get("exists"):
             desc = (
@@ -904,6 +911,32 @@ def _render_evidence_file_pointers(
     return lines
 
 
+def _failure_callout(manifestation: str, attribution: str, lang: str) -> str:
+    labels = {
+        "zh": ("失败表现", "归因判断"),
+        "en": ("Failure manifestation", "Attribution"),
+    }.get(lang, ("失败表现 (Failure manifestation)", "归因判断 (Attribution)"))
+    if manifestation.strip() == attribution.strip():
+        return f"> **{labels[0]} / {labels[1]}**: {clean_prose(attribution, 300)}\n"
+    return (
+        f"> **{labels[0]}**: {clean_prose(manifestation, 300)}  \n"
+        f"> **{labels[1]}**: {clean_prose(attribution, 300)}\n"
+    )
+
+
+def _confidence_details(row: str, lang: str) -> str:
+    """Keep the full scoring receipt available without widening the verdict table."""
+    title = {
+        "zh": "评分依据（启发式分数，不是正确率）",
+        "en": "Scoring details (heuristic, not a probability)",
+    }.get(lang, "评分依据 / Scoring details (heuristic, not a probability)")
+    columns = "项目 | 说明" if lang == "zh" else "Item | Detail"
+    return (
+        f"<details>\n<summary>{title}</summary>\n\n"
+        f"| {columns} |\n|---|---|\n{row.rstrip()}\n\n</details>\n"
+    )
+
+
 def _render_chinese_bilingual_core(
     evidence: Dict[str, Any],
     analysis: Dict[str, Any],
@@ -982,7 +1015,7 @@ def _render_chinese_bilingual_core(
         prc.get("confidence_breakdown"), conf_val, lang="bilingual" if include_en_labels else "zh"
     )
     if cb_row:
-        lines.append(cb_row)
+        lines.append(_confidence_details(cb_row, lang))
 
     gate_warn = _render_gate_warning(
         runtime, verdict=verdict, lang="bilingual" if include_en_labels else "zh"
@@ -997,16 +1030,7 @@ def _render_chinese_bilingual_core(
 
     manifestation = _manifestation_summary(evidence, direct_cause, "zh")
     attribution = _attribution_sentence(prc, internal_cause, "zh")
-    if include_en_labels:
-        lines.append(
-            f"> **失败表现 (Failure manifestation)**: {clean_prose(manifestation, 300)}  \n"
-            f"> **归因判断 (Attribution)**: {clean_prose(attribution, 300)}\n"
-        )
-    else:
-        lines.append(
-            f"> **失败表现**: {clean_prose(manifestation, 300)}  \n"
-            f"> **归因判断**: {clean_prose(attribution, 300)}\n"
-        )
+    lines.append(_failure_callout(manifestation, attribution, lang))
 
     # 2. 失败证据链
     lines.append(f"## {section_title(2, lang)}\n")
@@ -1048,12 +1072,16 @@ def _render_chinese_bilingual_core(
         fud_summary = localize_engine_text(fud.get("summary"), "zh")
         if not fud_summary:
             fud_summary = cause_narrative(prc.get("category"), prc.get("subtype"), "zh") or ""
+        fud_detail = (
+            ""
+            if fud_summary.strip() == attribution.strip()
+            else " · " + clean_prose(fud_summary, 200)
+        )
         lines.append(
             "- **首个未恢复偏差 (First unrecovered deviation)**: "
-            f"{status_txt} · 事件 `{fud_ref or '—'}` · {clean_prose(fud_summary, 200)}"
+            f"{status_txt} · 事件 `{fud_ref or '—'}`{fud_detail}"
             if include_en_labels
-            else "- **首个未恢复偏差**: "
-            f"{status_txt} · 事件 `{fud_ref or '—'}` · {clean_prose(fud_summary, 200)}"
+            else f"- **首个未恢复偏差**: {status_txt} · 事件 `{fud_ref or '—'}`{fud_detail}"
         )
 
     ev_refs = analysis.get("evidence_refs") or ["art:trial_result"]
@@ -1105,9 +1133,13 @@ def _render_chinese_bilingual_core(
             lang="bilingual" if include_en_labels else "zh",
         )
         role = "主因假设" if (cat_h, subtype_h) == (prc_cat, prc_subtype) else "竞争假设"
+        claim_text = localize_engine_text(claim, "zh")
+        claim_detail = (
+            "" if claim_text.strip() == attribution.strip() else ": " + clean_prose(claim_text, 220)
+        )
         lines.append(
             f"- **{role} `{hid}` (`{cat_h}` · {subtype_label(subtype_h, 'zh')} / `{subtype_h}`，"
-            f"置信度 `{score:.2f}`)**: {clean_prose(localize_engine_text(claim, 'zh'), 220)}{ev_text}"
+            f"置信度 `{score:.2f}`)**{claim_detail}{ev_text}"
         )
 
     for eh in ex_hyps:
@@ -1267,7 +1299,7 @@ def _render_english_edition(
     )
     cb_row = format_confidence_breakdown(prc.get("confidence_breakdown"), conf_val, lang="en")
     if cb_row:
-        lines.append(cb_row)
+        lines.append(_confidence_details(cb_row, "en"))
 
     gate_warn = _render_gate_warning(runtime, verdict=verdict, lang="en")
     if gate_warn:
@@ -1276,10 +1308,7 @@ def _render_english_edition(
     if integrity_warn:
         lines.append(integrity_warn)
 
-    lines.append(
-        f"> **Failure manifestation**: {clean_prose(manifestation_line, 300)}  \n"
-        f"> **Attribution**: {clean_prose(attribution_line, 300)}\n"
-    )
+    lines.append(_failure_callout(manifestation_line, attribution_line, "en"))
 
     # 2. Failure Evidence Chain
     lines.append(f"## {section_title(2, 'en')}\n")
@@ -1314,9 +1343,15 @@ def _render_english_edition(
         fud_status = fud.get("status", "identified" if fud.get("event_ref") else "not_identified")
         fud_ref = fud.get("event_ref")
         status_txt = "identified" if fud_status == "identified" else "not identified"
+        fud_summary = str(fud.get("summary") or "")
+        fud_detail = (
+            ""
+            if fud_summary.strip() == attribution_line.strip()
+            else " · " + clean_prose(fud_summary, 200)
+        )
         lines.append(
             "- **First unrecovered deviation**: "
-            f"{status_txt} · event `{fud_ref or '—'}` · {clean_prose(fud.get('summary'), 200)}"
+            f"{status_txt} · event `{fud_ref or '—'}`{fud_detail}"
         )
 
     ev_refs = analysis.get("evidence_refs") or ["art:trial_result"]
@@ -1355,9 +1390,12 @@ def _render_english_edition(
             if (cat_h, subtype_h) == (prc_cat, prc_subtype)
             else "Competing hypothesis"
         )
+        claim_detail = (
+            "" if str(claim).strip() == attribution_line.strip() else ": " + clean_prose(claim, 220)
+        )
         lines.append(
-            f"- **{role} `{hid}` (`{cat_h}` / `{subtype_h}`, confidence `{score:.2f}`)**: "
-            f"{clean_prose(claim, 220)}{ev_text}"
+            f"- **{role} `{hid}` (`{cat_h}` / `{subtype_h}`, confidence `{score:.2f}`)**"
+            f"{claim_detail}{ev_text}"
         )
 
     for eh in ex_hyps:
@@ -1372,7 +1410,7 @@ def _render_english_edition(
         cf_cat = cf.get("category")
         cf_code = cf.get("code")
         cf_score = float(cf.get("confidence", 0.0))
-        cf_summary = clean_prose(localize_engine_text(cf.get("summary"), "zh"), 220)
+        cf_summary = clean_prose(localize_engine_text(cf.get("summary"), "en"), 220)
         lines.append(
             f"- **Contributing `{cf_cat}` / `{cf_code}` (confidence `{cf_score:.2f}`)**: {cf_summary}"
         )
@@ -1702,29 +1740,24 @@ def render_report_markdown(
     analysis: Dict[str, Any],
     lang: str = "bilingual",
     output_format: str = "both",
+    data_paths: Optional[Dict[str, str]] = None,
 ) -> str:
-    """
-    Renders report markdown:
-      - For passed trials: lightweight 2-section view (< 30 lines) without failure semantics
-      - `lang="zh"`: Standalone pure Chinese report
-      - `lang="en"`: Standalone pure English report
-      - `lang="bilingual"`: Compact bilingual edition with parallel bilingual labels (no duplicated Part II)
-    """
-    verdict = analysis.get("verdict", "failed")
-    if verdict == "passed":
-        return _render_passed_edition(evidence, analysis, lang=lang, output_format=output_format)
-
-    if lang == "en":
-        return _render_english_edition(evidence, analysis, output_format=output_format)
-    if lang == "zh":
-        return _render_chinese_bilingual_core(
-            evidence, analysis, include_en_labels=False, output_format=output_format
+    """Render four failure sections or a two-section passed view with relative data links."""
+    if analysis.get("verdict", "failed") == "passed":
+        rendered = _render_passed_edition(
+            evidence, analysis, lang=lang, output_format=output_format
         )
-
-    # Default `bilingual`: Compact Chinese-English bilingual labeled edition (4 core sections).
-    return _render_chinese_bilingual_core(
-        evidence, analysis, include_en_labels=True, output_format=output_format
-    )
+    elif lang == "en":
+        rendered = _render_english_edition(evidence, analysis, output_format=output_format)
+    else:
+        rendered = _render_chinese_bilingual_core(
+            evidence, analysis, include_en_labels=lang != "zh", output_format=output_format
+        )
+    for name in ("evidence.json", "analysis.json"):
+        target = (data_paths or {}).get(name, name)
+        replacement = f"[{name}](<{target}>)" if output_format in ("json", "both") else f"`{name}`"
+        rendered = rendered.replace(f"`data/{name}`", replacement)
+    return rendered
 
 
 def render_skill_prescription_markdown(
@@ -1831,7 +1864,15 @@ def main() -> None:
     evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
     analysis = json.loads(args.analysis.read_text(encoding="utf-8"))
 
-    report_md = render_report_markdown(evidence, analysis, lang=args.lang)
+    data_paths = {
+        "evidence.json": os.path.relpath(
+            args.evidence.resolve(), args.output_report.parent.resolve()
+        ),
+        "analysis.json": os.path.relpath(
+            args.analysis.resolve(), args.output_report.parent.resolve()
+        ),
+    }
+    report_md = render_report_markdown(evidence, analysis, lang=args.lang, data_paths=data_paths)
     ok, val_errors = validate_all(evidence, analysis, report_md)
     if not ok:
         for err in val_errors:
@@ -1844,10 +1885,12 @@ def main() -> None:
     # Also emit companion report.zh.md and report.en.md when rendering standard report.md
     if args.output_report.name == "report.md":
         (args.output_report.parent / "report.zh.md").write_text(
-            render_report_markdown(evidence, analysis, lang="zh"), encoding="utf-8"
+            render_report_markdown(evidence, analysis, lang="zh", data_paths=data_paths),
+            encoding="utf-8",
         )
         (args.output_report.parent / "report.en.md").write_text(
-            render_report_markdown(evidence, analysis, lang="en"), encoding="utf-8"
+            render_report_markdown(evidence, analysis, lang="en", data_paths=data_paths),
+            encoding="utf-8",
         )
 
     sp = analysis.get("skill_prescription")

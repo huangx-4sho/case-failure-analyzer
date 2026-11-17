@@ -1095,6 +1095,64 @@ class TestRedesignedReportingAndLocalization(unittest.TestCase):
             actual_en = localize_engine_text(en_text, lang="en")
             self.assertEqual(actual_en, en_text)
 
+    def test_identical_failure_and_attribution_share_one_callout(self) -> None:
+        claim = "A unique recorded failure mechanism."
+        analysis = {
+            "verdict": "failed",
+            "failure_manifestation": {"summary": claim},
+            "primary_root_cause": {"category": "unknown", "subtype": "custom", "summary": claim},
+        }
+        for lang in ("zh", "en", "bilingual"):
+            report = render_report_markdown({}, analysis, lang=lang)
+            callouts = [
+                line for line in report.splitlines() if line.startswith("> ") and claim in line
+            ]
+            self.assertEqual(len(callouts), 1)
+            self.assertEqual(validate_report_sections(report, verdict="failed"), [])
+
+    def test_inventory_results_are_not_claimed_as_agent_deliverables(self) -> None:
+        for lang in ("zh", "en"):
+            for exists in (False, True):
+                with self.subTest(lang=lang, exists=exists):
+                    evidence = {
+                        "artifacts": [
+                            {
+                                "artifact_id": "art:trial_result",
+                                "rel_path": "result.json",
+                                "scope": "trial",
+                                "exists": exists,
+                            }
+                        ]
+                    }
+                    text = resolve_evidence_item("art:trial_result", evidence, lang=lang)
+                    self.assertNotIn("submitted by agent", text)
+                    self.assertNotIn("Agent 提交", text)
+                    self.assertIn("result.json", text)
+                    self.assertIn(
+                        ("运行器" if lang == "zh" else "Runner")
+                        if exists
+                        else ("缺失" if lang == "zh" else "Missing"),
+                        text,
+                    )
+
+    def test_jsonl_trajectory_is_visible_in_file_index(self) -> None:
+        evidence = {
+            "artifacts": [
+                {
+                    "artifact_id": "art:trajectory_json",
+                    "rel_path": "agent/trajectory.jsonl",
+                    "scope": "trial",
+                    "exists": True,
+                }
+            ]
+        }
+        analysis = {"verdict": "failed", "primary_root_cause": {"category": "unknown"}}
+        for lang in ("zh", "en", "bilingual"):
+            text = render_report_markdown(evidence, analysis, lang=lang)
+            self.assertIn("agent/trajectory.jsonl", text)
+            self.assertNotIn("全部缺失", text)
+            self.assertNotIn("All missing", text)
+
     def test_confidence_breakdown_rendering(self) -> None:
         """Verifies visual badges and Confidence breakdown row in report and verdict card."""
         evidence = {
@@ -1149,6 +1207,8 @@ class TestRedesignedReportingAndLocalization(unittest.TestCase):
         rep_zh = render_report_markdown(evidence, analysis, lang="zh")
         self.assertIn("🟢 **0.70**", rep_zh)
         self.assertIn("| **可信度拆解** |", rep_zh)
+        self.assertIn("<details>", rep_zh)
+        self.assertIn("|---|---|\n| **可信度拆解**", rep_zh)
         self.assertIn("`7/10 分`", rep_zh)
         self.assertIn("✓ 直接因果实证(+2)", rep_zh)
         self.assertIn("提分缺口：跨源互证、独立复算", rep_zh)

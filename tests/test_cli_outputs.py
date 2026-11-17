@@ -76,6 +76,10 @@ class TestFormatFilter(unittest.TestCase):
         out = self._run("both")
         for name in JSON_ARTIFACTS + MARKDOWN_ARTIFACTS:
             self.assertTrue((out / name).is_file(), f"{name} should exist")
+        report = (out / "report.md").read_text()
+        self.assertIn("[evidence.json](<evidence.json>)", report)
+        self.assertIn("[analysis.json](<analysis.json>)", report)
+        self.assertNotIn("data/evidence.json", report)
 
 
 class TestMultiTrialLayout(unittest.TestCase):

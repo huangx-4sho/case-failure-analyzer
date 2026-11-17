@@ -1271,6 +1271,21 @@ def resolve_evidence_item(ref: str, evidence: Dict[str, Any], lang: str = "zh") 
 
     # 1. Delivered artifact
     if ref_s.startswith("art:"):
+        artifact = next(
+            (a for a in evidence.get("artifacts") or [] if a.get("artifact_id") == ref_s),
+            None,
+        )
+        if artifact is not None:
+            path = artifact.get("rel_path") or ref_s
+            scope = artifact.get("scope") or "trial"
+            title = "Evidence file" if is_en else "证据文件"
+            if artifact.get("exists") is False:
+                desc = "Missing from collected artifacts" if is_en else "采集清单标记为缺失"
+            elif ref_s in ("art:trial_result", "art:job_result"):
+                desc = "Runner result metadata" if is_en else "运行器结果记录"
+            else:
+                desc = "Collected file" if is_en else "已采集文件"
+            return f"📄 **{title}** (`{ref_s}` → `{scope}:{path}`): {desc}"
         path = ref_s[4:]
         title = "Delivered Artifact" if is_en else "交付产物"
         if ":L" in path or "/outputs/" in path or "/app/" in path:

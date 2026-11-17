@@ -4,7 +4,7 @@
 
 <a id="case-failure-analyzer--系统工作流与归因总规范"></a>
 
-**本页：** [安装与调用](#安装与调用) · [输入参数](#输入参数) · [默认行为与边界](#默认行为与边界) · [分析流程](#分析流程) · [归因约束](#归因约束) · [科学软件错误签名](#科学软件错误签名) · [开发与导出](#开发与导出)
+**本页：** [安装与调用](#安装与调用) · [输入参数](#输入参数) · [默认行为与边界](#默认行为与边界) · [分析流程](#分析流程) · [归因约束](#归因约束) · [科学软件错误签名](#科学软件错误签名) · [开发与导出](#开发与导出) · [Harbor 定位与结果复核](#harbor-定位与结果复核)
 
 本指南说明如何安装、调用和复核 `case-failure-analyzer`。智能体按 `SKILL.md` 组织取证与回答；Python 脚本负责提取证据、运行归因规则和生成报告。
 
@@ -194,6 +194,34 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 | `xtb` | 半经验量子化学与构象搜索 (`xTB`, `CREST`) | 5 | [xtb.md](../../references/software/xtb.md) |
 | `rdkit` | 化学信息学与构象生成 (`RDKit`) | 5 | [rdkit.md](../../references/software/rdkit.md) |
 | `generic-scientific` | 数值求解器与偏微分方程 (`SciPy`, `NumPy`, `JAX`, `PyTorch`, `FEniCS`, `OpenFOAM`) | 4 | [generic-scientific.md](../../references/software/generic-scientific.md) |
+
+## Harbor 定位与结果复核
+
+任务编号模式先匹配常见 Harbor 目录，再在未命中时进行有深度限制、跳过重型目录的搜索。支持平铺的 `jobs/<job>/task208__<trial>` 和按套件组织的 `<suite>/jobs/<job>/task208__<trial>`；题目定义可放在套件根目录或 `tasks/` 下。同号任务优先绑定所选试次所在套件的定义；仍有多个候选时会报错，不按目录字母序猜测。
+
+分析会读取 job/trial 的 `result.json` 与日志、`agent/trajectory.json` 或可识别的 JSONL 轨迹、`verifier/` 判定、题目说明和验证脚本，并检查 `task.toml` 声明路径在 `artifacts/` 下的采集结果。数字任务编号是本项目的快捷约定；任意名称任务可通过 `--job`、`--task` 和 `--output` 显式指定。
+
+### 支持范围
+
+- 当前交付路径提取支持 `task.toml` 中的字符串或字符串数组。带 `source` / `service` 的对象声明尚未完整适配，不能把未提取到路径解释成已验证交付完整。
+- 数值核对主要处理 JSON/CSV/TSV 和可识别日志。文件扫描、字节数和轨迹读取均有限额，不是对任意二进制科学产物的完整验证。
+- 分析读取本地已保存记录，不会自动下载 Harbor Hub 作业，也不执行独立科学复算。规则分数表示证据强度，不是根因正确的概率。
+
+### 复核顺序
+
+1. 核对试次与题目路径。默认“最新”取修改时间，必要时使用完整试次名，避免把另一轮运行的产物混入分析。
+2. 检查 `diagnostics`、`missing_deliverables` 和具名失败检查，先确认哪些证据缺失或解析失败。`result.json` 是运行器记录，不等同于智能体提交的计算结果。
+3. 从报告的证据引用回到原始文件、工具调用和输出，检查单位、字段对应关系以及执行先后顺序；静态提示需要实证支持。
+4. 运行结构与约束校验。以下命令针对任务 ID 模式，`REPORT_DIR` 应为实际报告目录：
+
+```bash
+python3 "$SKILL_DIR/scripts/validate_analysis.py" \
+  --evidence "$REPORT_DIR/data/evidence.json" \
+  --analysis "$REPORT_DIR/data/analysis.json" \
+  --report "$REPORT_DIR/task208.md"
+```
+
+校验会检查字段、证据标识、归因约束和报告章节，但不能证明物理结论或因果判断必然正确。科学结论仍需在适当环境中独立复算或由领域人员复核；证据不足时保留 `unknown`。
 
 ## 开发与导出
 

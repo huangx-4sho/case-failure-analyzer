@@ -182,6 +182,9 @@ def _fast_candidates(root: Path, number: str) -> tuple[List[Path], List[Path]]:
         f"*/*/jobs/*/task {number}__*",
         f"*/*/jobs/*/task{number}__*",
         f"jobs/*/task {number}__*",
+        f"jobs/*/task{number}__*",
+        f"jobs/*/task {number}-*",
+        f"jobs/*/task{number}-*",
         f"*/task {number}__*",
     )
     task_def_globs = (
@@ -190,6 +193,7 @@ def _fast_candidates(root: Path, number: str) -> tuple[List[Path], List[Path]]:
         f"*/*/task {number}",
         f"*/*/task{number}",
         f"task {number}",
+        f"task{number}",
     )
     trials: List[Path] = []
     task_defs: List[Path] = []
@@ -333,16 +337,19 @@ def resolve_task_ref(
     # holds this task's definition.
     case_root = job_dir.parent.parent if job_dir.parent.name == "jobs" else job_dir.parent
 
-    # Prefer a task definition folder whose parent is the case root containing
-    # this job tree; fall back to any matching definition folder.
+    # Bind the definition to the selected trial's suite. The same task number
+    # can occur in several suites; lexical order is not evidence of ownership.
     task_def_dir: Optional[Path] = None
     if task_defs:
-        for cand in sorted(task_defs, key=str):
-            if cand.parent == case_root:
-                task_def_dir = cand
-                break
-        if task_def_dir is None:
-            task_def_dir = sorted(task_defs, key=str)[0]
+        local_defs = [cand for cand in task_defs if cand.parent in (case_root, case_root / "tasks")]
+        eligible = local_defs or task_defs
+        if len(eligible) != 1:
+            raise TaskRefError(
+                f"ambiguous task definitions for {task_id} and trial {chosen}: "
+                f"{', '.join(str(p) for p in sorted(eligible))}. "
+                "Narrow --jobs-root to the intended suite, or use path mode with --task."
+            )
+        task_def_dir = eligible[0]
 
     bench_root = derive_bench_root(root, chosen, case_root)
     report_root = (bench_root / REPORT_DIR_NAME).resolve()

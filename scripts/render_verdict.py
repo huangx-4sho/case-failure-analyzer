@@ -457,6 +457,15 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
             "candidate": "候选假设",
         }
 
+    if lang == "zh":
+        title = f"# {card['task_id']} — 根因速览"
+        reason_hdr = "**失败原因**"
+        cat_hdr = "## 1. 四大类裁决"
+        sub_hdr = "## 2. 主因大类下的小分类"
+        sub_cols = ("角色", "小分类", "编码", "置信度", "依据")
+        checks_hdr = "**具名失败检查**"
+        gate_hdr = "判定门控"
+
     lines: List[str] = [title, "", lead]
     cb = card.get("confidence_breakdown")
     if cb and isinstance(cb, dict) and cb.get("factors"):

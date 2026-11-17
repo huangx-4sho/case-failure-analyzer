@@ -4,7 +4,7 @@
 
 <a id="case-failure-analyzer--system-guide--workflow-specification"></a>
 
-**On this page:** [Installation and invocation](#installation-and-invocation) · [Inputs](#inputs) · [Default Behavior & Boundaries](#default-behavior--boundaries) · [Workflow](#workflow) · [Attribution Constraints (Hard Rules)](#attribution-constraints-hard-rules) · [Scientific software error signatures](#scientific-software-error-signatures) · [Development and export](#development-and-export)
+**On this page:** [Installation and invocation](#installation-and-invocation) · [Inputs](#inputs) · [Default Behavior & Boundaries](#default-behavior--boundaries) · [Workflow](#workflow) · [Attribution Constraints (Hard Rules)](#attribution-constraints-hard-rules) · [Scientific software error signatures](#scientific-software-error-signatures) · [Development and export](#development-and-export) · [Harbor discovery and result review](#harbor-discovery-and-result-review)
 
 This guide covers installation, invocation, and report review. The agent follows `SKILL.md` to organize the audit and answer; Python scripts extract evidence, apply attribution rules, and write reports.
 
@@ -188,6 +188,34 @@ The registry contains 11 software groups and 60 error families. These are log-ma
 | `xtb` | Semiempirical quantum chemistry (`xTB`, `CREST`) | 5 | [xtb.md](../../references/software/xtb.md) |
 | `rdkit` | Cheminformatics & conformer generation (`RDKit`) | 5 | [rdkit.md](../../references/software/rdkit.md) |
 | `generic-scientific` | Numerical solvers & PDEs (`SciPy`, `NumPy`, `JAX`, `PyTorch`, `FEniCS`, `OpenFOAM`) | 4 | [generic-scientific.md](../../references/software/generic-scientific.md) |
+
+## Harbor discovery and result review
+
+Task-ID mode first matches common Harbor layouts, then falls back to a depth-limited search that prunes heavy directories. It supports flat `jobs/<job>/task208__<trial>` and suite-based `<suite>/jobs/<job>/task208__<trial>` layouts, with task definitions at the suite root or under `tasks/`. Duplicate task numbers prefer a definition from the selected trial's suite. Remaining ambiguity raises an error instead of choosing lexically.
+
+Analysis reads job/trial `result.json` and logs, `agent/trajectory.json` or recognized JSONL trajectories, `verifier/` results, task instructions, and verifier scripts. It checks collected `artifacts/` against paths declared in `task.toml`. Numeric task IDs are this project's shortcut convention; use explicit `--job`, `--task`, and `--output` paths for arbitrary task names.
+
+### Supported scope
+
+- Declared-path extraction currently supports a string or an array of strings in `task.toml`. Object declarations containing `source` / `service` are not fully adapted; an empty extracted list does not establish complete delivery.
+- Numerical checks primarily cover JSON/CSV/TSV and recognized logs. File, byte, and trajectory limits apply; arbitrary binary scientific outputs are not fully validated.
+- Analysis reads local saved records. It does not download Harbor Hub jobs or independently rerun scientific calculations. Rule scores describe evidence strength, not the probability that a cause is correct.
+
+### Review sequence
+
+1. Check the selected trial and task paths. Default latest-trial selection uses modification time; use the full trial name when necessary to avoid mixing runs.
+2. Inspect `diagnostics`, `missing_deliverables`, and named failed checks to identify missing or unparsed evidence. Runner `result.json` metadata is not the agent's submitted scientific result.
+3. Follow evidence references to source files, tool calls, and outputs. Check units, field alignment, and execution order; static hints require corroboration.
+4. Run structure and constraint validation. For task-ID reports, set `REPORT_DIR` to the actual report directory:
+
+```bash
+python3 "$SKILL_DIR/scripts/validate_analysis.py" \
+  --evidence "$REPORT_DIR/data/evidence.json" \
+  --analysis "$REPORT_DIR/data/analysis.json" \
+  --report "$REPORT_DIR/task208.md"
+```
+
+Validation checks fields, evidence IDs, attribution constraints, and report sections. It cannot prove physical correctness or causal truth. Scientific conclusions still need independent recomputation in an appropriate environment or domain review; retain `unknown` when evidence is insufficient.
 
 ## Development and export
 

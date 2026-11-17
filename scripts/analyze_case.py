@@ -1009,8 +1009,13 @@ def write_outputs(
             else (out_dir / name("skill-prescription.md"))
         )
 
+        data_paths = (
+            {"evidence.json": ev_file, "analysis.json": an_file} if fmt in ("json", "both") else {}
+        )
         if lang == "zh":
-            zh_report = render_report_markdown(evidence, analysis, lang="zh", output_format=fmt)
+            zh_report = render_report_markdown(
+                evidence, analysis, lang="zh", output_format=fmt, data_paths=data_paths
+            )
             main_report_target.write_text(zh_report, encoding="utf-8")
             if not is_hierarchical:
                 (out_dir / name("report.zh.md")).write_text(zh_report, encoding="utf-8")
@@ -1022,7 +1027,9 @@ def write_outputs(
                         zh_skill, encoding="utf-8"
                     )
         elif lang == "en":
-            en_report = render_report_markdown(evidence, analysis, lang="en", output_format=fmt)
+            en_report = render_report_markdown(
+                evidence, analysis, lang="en", output_format=fmt, data_paths=data_paths
+            )
             main_report_target.write_text(en_report, encoding="utf-8")
             if not is_hierarchical:
                 (out_dir / name("report.en.md")).write_text(en_report, encoding="utf-8")
@@ -1035,7 +1042,7 @@ def write_outputs(
                     )
         else:  # bilingual
             bi_report = render_report_markdown(
-                evidence, analysis, lang="bilingual", output_format=fmt
+                evidence, analysis, lang="bilingual", output_format=fmt, data_paths=data_paths
             )
             main_report_target.write_text(bi_report, encoding="utf-8")
             en_report_target = (
@@ -1044,12 +1051,16 @@ def write_outputs(
                 else (out_dir / name("report.en.md"))
             )
             en_report_target.write_text(
-                render_report_markdown(evidence, analysis, lang="en", output_format=fmt),
+                render_report_markdown(
+                    evidence, analysis, lang="en", output_format=fmt, data_paths=data_paths
+                ),
                 encoding="utf-8",
             )
             if not is_hierarchical:
                 (out_dir / name("report.zh.md")).write_text(
-                    render_report_markdown(evidence, analysis, lang="zh", output_format=fmt),
+                    render_report_markdown(
+                        evidence, analysis, lang="zh", output_format=fmt, data_paths=data_paths
+                    ),
                     encoding="utf-8",
                 )
             if skill_md and sp:

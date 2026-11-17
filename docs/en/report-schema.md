@@ -12,6 +12,8 @@ Present the verdict, primary category → subtype (`CODE`), stages, and confiden
 
 Use relative evidence paths and natural-language evidence summaries instead of raw Python list representations. If all logs are missing, summarize that once. Show core missing inputs and computational outputs, suppressing incidental temporary files. Omit normal `agent_started=True, verifier_started=True` flags; show a gate warning only for startup failures or abnormal container interruptions.
 
+Scoring details are expandable; the main table retains the score, method, and evidence strength. Exact repetitions of the primary explanation are omitted from deviation and hypothesis entries, while event IDs, supporting evidence, and distinct claims remain. JSON links follow the actual output layout. Missing files and runner result metadata must not be described as submitted computational outputs.
+
 Evidence degradation must remain visible: when `diagnostics` includes `warning` or `error`, Section 1 warns about the affected conclusions and Section 2 lists the diagnostics.
 
 Path-mode report editions, selected by the requested language and format:

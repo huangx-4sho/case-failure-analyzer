@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -167,6 +168,43 @@ class TaskRefResolutionTests(unittest.TestCase):
         override = self.root / "custom-reports"
         ref = resolve_task_ref("task208", self.root, report_dir_override=override)
         self.assertEqual(ref.report_dir, override.resolve())
+
+    def test_flat_harbor_names_do_not_need_recursive_fallback(self) -> None:
+        for name in ("task208__flat", "task 208__flat", "task208-flat", "task 208-flat"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                root = Path(td).resolve()
+                task = root / "tasks" / "task208"
+                task.mkdir(parents=True)
+                (task / "task.toml").write_text('artifacts = ["/app/final"]\n')
+                trial = root / "jobs" / "job1" / name
+                trial.mkdir(parents=True)
+                (trial / "result.json").write_text("{}")
+                with patch("task_ref._walk_dirs", side_effect=AssertionError("broad walk")):
+                    ref = resolve_task_ref("task208", root)
+                self.assertEqual(ref.trial_dir, trial)
+                self.assertEqual(ref.task_def_dir, task)
+
+    def test_same_number_uses_definition_from_selected_suite(self) -> None:
+        for suite in ("a-suite", "z-suite"):
+            task = self.root / suite / "tasks" / "task208"
+            task.mkdir(parents=True)
+            (task / "task.toml").write_text('artifacts = ["/app/final"]\n')
+        trial = self.root / "z-suite" / "jobs" / "job1" / "task208__chosen"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text("{}")
+        ref = resolve_task_ref("task208__chosen", self.root)
+        self.assertEqual(ref.task_def_dir, (self.root / "z-suite/tasks/task208").resolve())
+
+    def test_ambiguous_foreign_definitions_are_not_silently_selected(self) -> None:
+        for suite in ("a-suite", "b-suite"):
+            task = self.root / suite / "tasks" / "task208"
+            task.mkdir(parents=True)
+            (task / "task.toml").write_text('artifacts = ["/app/final"]\n')
+        trial = self.root / "z-suite/jobs/job1/task208__chosen"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text("{}")
+        with self.assertRaisesRegex(TaskRefError, "ambiguous task definitions"):
+            resolve_task_ref("task208__chosen", self.root)
 
     def test_missing_jobs_root_raises(self) -> None:
         with self.assertRaises(TaskRefError):
@@ -427,12 +465,16 @@ class TaskIdCliTests(unittest.TestCase):
             timeout=120,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
+
         # stdout IS the direct answer, in the required order.
         self.assertIn("# task208", proc.stdout)
         self.assertLess(proc.stdout.index("四大类裁决"), proc.stdout.index("小分类"))
         self.assertIn("REPORT_DIR:", proc.stdout)
         report_dir = proc.stdout.strip().split("REPORT_DIR: ")[-1].strip()
         out = Path(report_dir)
+        report = (out / "task208.md").read_text()
+        self.assertIn("[evidence.json](<data/evidence.json>)", report)
+        self.assertIn("[analysis.json](<data/analysis.json>)", report)
         self.assertEqual(out.name, "task208")
         self.assertEqual(out.parent.name, REPORT_DIR_NAME)
         expected_top = {
