@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="390" viewBox="0 0 1000 390" role="img" aria-labelledby="title desc" xml:lang="zh">
+<title id="title">失败分析流程</title><desc id="desc">从既有运行材料中整理证据，按规则归因，再回到原始材料复核。</desc>
+<defs>
+<symbol id="files" viewBox="0 0 120 120">
+ <path d="M40 9h42l22 22v70H40z" fill="#e3e9ed"/><path d="M82 9v24h22" fill="#b9c9d2"/>
+ <path d="M26 20h42l22 22v70H26z" fill="#fff"/><path d="M68 20v24h22" fill="#dbe7ed"/>
+ <path d="M13 34h39l22 22v59H13z" fill="#fdfbf4"/><path d="M52 34v24h22" fill="#e7cf91"/>
+ <path d="M25 74h34M25 86h34M25 98h23" fill="none"/>
+</symbol>
+<symbol id="match" viewBox="0 0 120 120">
+ <rect x="8" y="13" width="66" height="88" rx="8" fill="#fff"/>
+ <path d="M21 30h38M21 47h27M21 64h22M21 81h17" fill="none"/>
+ <circle cx="79" cy="66" r="27" fill="#c7dfed"/><path d="M98 86l16 21" fill="none" stroke-width="9"/>
+ <path d="m65 66 10 10 18-21" fill="none" stroke="#44765d" stroke-width="5"/>
+</symbol>
+<symbol id="rules" viewBox="0 0 120 120">
+ <rect x="30" y="8" width="60" height="27" rx="7" fill="#f0c36f"/>
+ <path d="M60 35v21M19 56h82M19 56v22M60 56v22M101 56v22" fill="none"/>
+ <rect x="5" y="78" width="28" height="30" rx="6" fill="#b9d9c7"/>
+ <rect x="46" y="78" width="28" height="30" rx="6" fill="#b9d3e9"/>
+ <rect x="87" y="78" width="28" height="30" rx="6" fill="#d3bddf"/>
+ <path d="M44 21h32" fill="none"/>
+</symbol>
+<symbol id="report" viewBox="0 0 120 120">
+ <path d="M20 8h58l22 22v81H20z" fill="#fff"/><path d="M78 8v24h22" fill="#d9c7e5"/>
+ <path d="M36 47h47M36 63h31M36 79h24M36 95h20" fill="none"/>
+ <circle cx="86" cy="85" r="24" fill="#bcdcc9"/>
+ <path d="m74 85 9 9 16-19" fill="none" stroke="#396f53" stroke-width="5"/>
+</symbol>
+
+
+
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M1 1 9 5 1 9z" fill="#62676b"/></marker></defs>
+<rect width="1000" height="390" fill="#fff"/>
+<g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif"><rect x="8" y="14" width="228" height="326" rx="24" fill="#f7f3e7" stroke="#b8aa83" stroke-width="2" stroke-dasharray="7 6"/><text x="28" y="49" font-size="15" font-weight="600" text-anchor="start" fill="#b8aa83">01</text><text x="122" y="79" font-size="26" font-weight="650" text-anchor="middle" fill="#30343b">读取材料</text><use href="#files" x="72" y="102" width="100" height="100" stroke="#30343b" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/><text x="122" y="237" font-size="18" font-weight="400" text-anchor="middle" fill="#30343b">日志与智能体轨迹</text><text x="122" y="264" font-size="18" font-weight="400" text-anchor="middle" fill="#30343b">任务、验证器与交付物</text><rect x="24" y="288" width="196" height="33" rx="16" fill="#fff" fill-opacity="0.72"/><text x="122" y="310" font-size="16" font-weight="500" text-anchor="middle" fill="#505860">只读输入</text><path d="M239 158h17" stroke="#62676b" stroke-width="2.8" marker-end="url(#arrow)"/><rect x="260" y="14" width="228" height="326" rx="24" fill="#eaf3fa" stroke="#8caac3" stroke-width="2" stroke-dasharray="7 6"/><text x="280" y="49" font-size="15" font-weight="600" text-anchor="start" fill="#8caac3">02</text><text x="374" y="79" font-size="26" font-weight="650" text-anchor="middle" fill="#30343b">核对证据</text><use href="#match" x="324" y="102" width="100" height="100" stroke="#30343b" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/><text x="374" y="237" font-size="18" font-weight="400" text-anchor="middle" fill="#30343b">关联工具调用与结果</text><text x="374" y="264" font-size="18" font-weight="400" text-anchor="middle" fill="#30343b">比对字段、数值与契约</text><rect x="276" y="288" width="196" height="33" rx="16" fill="#fff" fill-opacity="0.72"/><text x="374" y="310" font-size="16" font-weight="500" text-anchor="middle" fill="#505860">提取与匹配</text><path d="M491 158h17" stroke="#62676b" stroke-width="2.8" marker-end="url(#arrow)"/><rect x="512" y="14" width="228" height="326" rx="24" fill="#fff0dc" stroke="#c3a05f" stroke-width="2" stroke-dasharray="7 6"/><text x="532" y="49" font-size="15" font-weight="600" text-anchor="start" fill="#c3a05f">03</text><text x="626" y="79" font-size="26" font-weight="650" text-anchor="middle" fill="#30343b">规则归因</text><use href="#rules" x="576" y="102" width="100" height="100" stroke="#30343b" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/><text x="626" y="237" font-size="18" font-weight="400" text-anchor="middle" fill="#30343b">按优先级检查归因规则</text><text x="626" y="264" font-size="18" font-weight="400" text-anchor="middle" fill="#30343b">证据不足时保留未知</text><rect x="528" y="288" width="196" height="33" rx="16" fill="#fff" fill-opacity="0.72"/><text x="626" y="310" font-size="16" font-weight="500" text-anchor="middle" fill="#505860">固定规则顺序</text><path d="M743 158h17" stroke="#62676b" stroke-width="2.8" marker-end="url(#arrow)"/><rect x="764" y="14" width="228" height="326" rx="24" fill="#f2eaf7" stroke="#b398c5" stroke-width="2" stroke-dasharray="7 6"/><text x="784" y="49" font-size="15" font-weight="600" text-anchor="start" fill="#b398c5">04</text><text x="878" y="79" font-size="26" font-weight="650" text-anchor="middle" fill="#30343b">报告复核</text><use href="#report" x="828" y="102" width="100" height="100" stroke="#30343b" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/><text x="878" y="237" font-size="18" font-weight="400" text-anchor="middle" fill="#30343b">查看摘要与根因报告</text><text x="878" y="264" font-size="18" font-weight="400" text-anchor="middle" fill="#30343b">沿证据引用核实结论</text><rect x="780" y="288" width="196" height="33" rx="16" fill="#fff" fill-opacity="0.72"/><text x="878" y="310" font-size="16" font-weight="500" text-anchor="middle" fill="#505860">人工或智能体复核</text><text x="500" y="374" font-size="17" font-weight="400" text-anchor="middle" fill="#646b73">分析已有记录，不重跑科学计算；提示和分数仍需结合证据解释。</text></g></svg>

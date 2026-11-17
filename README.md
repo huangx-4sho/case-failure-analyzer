@@ -4,9 +4,13 @@ English · [简体中文](README.zh.md) · [Skill definition](SKILL.md) · [Guid
 
 CFA reviews failed scientific-computing benchmark trials after execution. It reads runtime logs, agent trajectories, task instructions, verifier code, and collected deliverables, then produces a rule-based attribution report with evidence references for human or agent review.
 
+![Failure analysis workflow: collect, cross-check, attribute, review](docs/images/cfa-workflow.en.svg)
+
 Root causes fall into four categories: agent decisions and execution (`agent`), verifier rules (`verifier`), task design (`case`), and runtime infrastructure (`infra`). Insufficient evidence yields `unknown`; passed trials use `none`. Reports are available in Chinese, English, or both.
 
 Requires Python 3.9+ with no third-party runtime dependencies. The analysis does not rerun scientific calculations. Inputs remain read-only and reports go to a separate directory. Attribution and confidence use rules and heuristic scores; a score is not a probability that the cause is correct.
+
+[Quick start](#quick-start) · [Inspect results](#inspect-and-compare-results) · [Attribution](#analysis-and-limitations) · [Documentation](#documentation)
 
 ## Quick start
 
@@ -18,6 +22,9 @@ python3 scripts/cfa.py audit task208 --jobs-root "$BENCH_ROOT" --lang en
 ```
 
 By default, the command selects the most recently modified trial for that task, prints an attribution summary, and writes reports to `<bench_root>/failure-report/task208/`. Pass a full trial name, such as `"task 208__jaekojA"`, to select a specific trial, or `--report-dir` to change the output location. Without `--jobs-root`, resolution checks `$CFA_JOBS_ROOT`, the current directory, and its parent.
+
+<details>
+<summary>No job data yet? Try the built-in fixture</summary>
 
 To try CFA without your own job data, run the committed regression fixture:
 
@@ -31,6 +38,8 @@ cat "$REPORT_DIR/job_summary.md"
 ```
 
 The fixture produces 1 scored pass, 0 scored failures, and 1 unscored trial. Its overall pass rate is 50.0% and its scored pass rate is 100.0%; the unscored trial receives `UNKNOWN_INSUFFICIENT_EVIDENCE`. These figures describe the fixture's trial outcomes, not attribution accuracy.
+
+</details>
 
 ## Inspect and compare results
 
@@ -77,7 +86,7 @@ To rebuild the index separately, run `python3 scripts/cfa.py index --report-root
 
 ## Analysis and limitations
 
-![Inputs, rule-based attribution, and report review](docs/images/cfa_architecture.svg)
+![Four peer categories: agent, verifier, task, infrastructure](docs/images/cfa-causes.en.svg)
 
 CFA links trajectory tool calls to their results, then compares them with deliverables, task requirements, and verifier checks. It supports ATIF JSON and recognized OpenAI/Anthropic JSON or JSONL message structures; a matching file extension does not imply support for every trajectory schema. When long observations are truncated, it attempts to retain diagnostic and metric lines from the middle.
 
