@@ -336,6 +336,9 @@ def _attach_unscored_verifier_fault(
     if not isinstance(report, dict) or not _is_unscored_evaluator_fault(report):
         return
     message = _verifier_fault_message(report)
+    location = report.get("first_message_location") or {}
+    source = "verifier/" + (location.get("source") or report.get("primary_report") or "verify.json")
+    pointer = location.get("pointer") or "$"
     fail_log = next(
         (obs for obs in verifier_observations if obs.get("obs_id") == "ver:fail_log"), None
     )
@@ -346,15 +349,15 @@ def _attach_unscored_verifier_fault(
                 "type": "verifier_fail_message",
                 "summary": message[:240],
                 "matched_text": message[:500],
-                "source_file": "verifier/verify.json",
-                "source_pointer": "status",
+                "source_file": source,
+                "source_pointer": pointer,
             }
         )
     else:
         # `test-stdout.txt` often starts with library warnings; the structured
         # report carries the actual evaluator exception.
         fail_log["summary"] = message[:240]
-        fail_log["matched_text"] = message[:500]
+        fail_log.update(matched_text=message[:500], source_file=source, source_pointer=pointer)
     if any(obs.get("obs_id") == "ver:internal_crash" for obs in verifier_observations):
         return
     verifier_observations.append(
@@ -369,8 +372,8 @@ def _attach_unscored_verifier_fault(
             "failure_binding": "direct",
             "binding_evidence": ["ver:fail_log"],
             "triggered": True,
-            "source_file": "verifier/verify.json",
-            "source_pointer": "status",
+            "source_file": source,
+            "source_pointer": pointer,
         }
     )
 

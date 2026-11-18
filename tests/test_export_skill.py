@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -89,6 +90,17 @@ class TestExportSkill(unittest.TestCase):
             self.assertEqual(data.get("name"), "case-failure-analyzer")
             self.assertIn("SKILL.md", data.get("files", []))
             self.assertIn("scripts/analyze_case.py", data.get("files", []))
+
+            for relative_page in ("scripts/README.md", "references/README.md"):
+                self.assertIn(relative_page, data["files"])
+                page = dest / relative_page
+                contents = page.read_text(encoding="utf-8")
+                links = re.findall(r"\]\(([^)#]+)(?:#[^)]*)?\)", contents)
+                for link in links:
+                    with self.subTest(page=relative_page, link=link):
+                        target = (page.parent / link).resolve()
+                        self.assertTrue(target.is_relative_to(dest.resolve()))
+                        self.assertTrue(target.exists())
 
             # Excluded patterns check
             for p in dest.rglob("*"):

@@ -20,7 +20,11 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
-from normalize_trajectory import _parse_trajectory_payload, extract_exit_code_and_error
+from normalize_trajectory import (
+    _NON_EXEC_SHELL_VERB_RE,
+    _parse_trajectory_payload,
+    extract_exit_code_and_error,
+)
 from runtime_state import resolve_trajectory_path
 
 
@@ -146,6 +150,18 @@ def build_scientific_adapters(
 SCIENTIFIC_ADAPTERS: List[AdapterEntry] = build_scientific_adapters()
 
 
+def _is_scientific_execution(event: Dict[str, Any]) -> bool:
+    """Exclude prose, file-tool output and shell commands that only inspect records."""
+    if event.get("event_type") not in (None, "tool_call", "shell_error", "repeated_command"):
+        return False
+    command = event.get("command") or ""
+    segments = [part.strip() for part in re.split(r"&&|\|\||;|\n", command) if part.strip()]
+    return not segments or any(
+        not _NON_EXEC_SHELL_VERB_RE.match(part) and not re.match(r"^(?:cd|pwd)\b", part)
+        for part in segments
+    )
+
+
 def extract_scientific_errors(
     trial_dir: Optional[Path],
     normalized_traj: Optional[Dict[str, Any]] = None,
@@ -188,7 +204,9 @@ def extract_scientific_errors(
             "fenics",
         )
         for ev_idx, ev in enumerate(traj_events):
-            text = f"{ev.get('command') or ''}\n{ev.get('observation') or ''}"
+            if not _is_scientific_execution(ev):
+                continue
+            text = ev.get("observation") or ""
             ev_id = ev.get("event_id", "trajectory:unknown")
             for sw, family, aliases, pattern, causes, req_ev in SCIENTIFIC_ADAPTERS:
                 m = pattern.search(text)
@@ -204,15 +222,15 @@ def extract_scientific_errors(
                         later_cmd = (later_ev.get("command") or "").strip()
                         later_obs = later_ev.get("observation") or ""
                         later_exit = later_ev.get("exit_code")
-                        later_text = f"{later_cmd}\n{later_obs}"
                         is_sim_cmd = any(b in later_cmd for b in sim_bins)
                         if (
                             is_sim_cmd
                             and later_exit == 0
                             and later_ev.get("event_type") != "shell_error"
-                            and not pattern.search(later_text)
+                            and _is_scientific_execution(later_ev)
+                            and not pattern.search(later_obs)
                             and not any(
-                                p[3].search(later_text) for p in SCIENTIFIC_ADAPTERS if p[0] == sw
+                                p[3].search(later_obs) for p in SCIENTIFIC_ADAPTERS if p[0] == sw
                             )
                         ):
                             recovery_ref = later_ev.get("event_id")

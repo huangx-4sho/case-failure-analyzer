@@ -17,6 +17,7 @@ reviewable baseline diff.
 from __future__ import annotations
 
 from confidence import attach_confidence_metadata
+from extract_runtime_errors import API_LIMIT_CODE
 
 from typing import Any, Dict, Optional
 
@@ -47,6 +48,11 @@ def gate1a_infra_prestartup(ctx: AttributionContext) -> Optional[Dict[str, Any]]
 
     net_errs = [e for e in causal_infra_errors if e["code"] == "INFRA_EXTERNAL_NETWORK"]
     primary_err = net_errs[0] if net_errs else causal_infra_errors[0]
+    api_limit = primary_err["code"] == API_LIMIT_CODE
+    local_build_failure = primary_err.get("build_failure_kind") == "missing_local_build_dependency"
+    api_summary = f"The model API refused the request before any agent execution was recorded ({primary_err['matched_text']})."
+    api_action = "Check the configured model provider's usage budget or request limits."
+    local_build_action = "Provide the missing local build dependency recorded in the build log, then rebuild the image."
     secondary_errs = [e for e in causal_infra_errors if e["error_id"] != primary_err["error_id"]]
 
     contributing = []
@@ -71,7 +77,9 @@ def gate1a_infra_prestartup(ctx: AttributionContext) -> Optional[Dict[str, Any]]
             "category": "infra",
             "subtype": primary_err["subtype"],
             "code": primary_err["code"],
-            "summary": (
+            "summary": api_summary
+            if api_limit
+            else (
                 f"Container environment failed during `{primary_err.get('stage')}` ({primary_err['code']}); "
                 "agent never started (`runtime.agent_started == false`)."
             ),
@@ -85,11 +93,17 @@ def gate1a_infra_prestartup(ctx: AttributionContext) -> Optional[Dict[str, Any]]
             "hypothesis_id": "H1",
             "category": "infra",
             "subtype": primary_err["subtype"],
-            "claim": "Container build / network failure prevented trial startup.",
+            "claim": api_summary
+            if api_limit
+            else "Container build / network failure prevented trial startup.",
             "evidence_for": ev_refs,
             "evidence_against": [],
             "missing_evidence": [],
-            "counterfactual_test": "Pre-pull image or configure local Docker/apt mirror and re-run.",
+            "counterfactual_test": api_action
+            if api_limit
+            else local_build_action
+            if local_build_failure
+            else "Pre-pull image or configure local Docker/apt mirror and re-run.",
         },
         direct_causal_evidence=len(ev_refs),
         cross_source_corroboration=1,
@@ -123,17 +137,21 @@ def gate1a_infra_prestartup(ctx: AttributionContext) -> Optional[Dict[str, Any]]
         "schema_version": "failure-analysis-v1",
         "case_id": case_id,
         "trial_name": trial_name,
-        "verdict": "errored",
+        "verdict": "failed" if api_limit and runtime.get("score_produced") else "errored",
         "failure_stage": primary_err.get("stage", "environment_build"),
         "detection_stage": "runner",
         "first_unrecovered_deviation": {
             "status": "identified",
             "event_ref": primary_err["error_id"],
             "timestamp": runtime.get("started_at"),
-            "summary": f"Environment build/setup failed ({primary_err['code']}) before agent container could start.",
+            "summary": api_summary
+            if api_limit
+            else f"Environment build/setup failed ({primary_err['code']}) before agent container could start.",
         },
         "failure_manifestation": {
-            "type": "dependency_install_failure"
+            "type": "api_rate_limit"
+            if api_limit
+            else "dependency_install_failure"
             if primary_err["code"] == "INFRA_EXTERNAL_NETWORK"
             else "container_build_failure",
             "summary": primary_err["matched_text"][:240],
@@ -146,7 +164,9 @@ def gate1a_infra_prestartup(ctx: AttributionContext) -> Optional[Dict[str, Any]]
             {
                 "hypothesis_id": "H2",
                 "category": "agent",
-                "reason": (
+                "reason": "The model API refused the request before any agent execution was recorded."
+                if api_limit
+                else (
                     "Ruled out by Hard Attribution Gate: `runtime.agent_started == false` and "
                     "`agent/trajectory.json` was never created because container setup exited prior to agent launch."
                 ),
@@ -155,7 +175,11 @@ def gate1a_infra_prestartup(ctx: AttributionContext) -> Optional[Dict[str, Any]]
         "recommended_actions": [
             {
                 "owner": "Infra",
-                "action": "Pre-pull base Docker images (`docker pull`) and configure resilient registry/apt mirrors before launching benchmark jobs.",
+                "action": api_action
+                if api_limit
+                else local_build_action
+                if local_build_failure
+                else "Pre-pull base Docker images (`docker pull`) and configure resilient registry/apt mirrors before launching benchmark jobs.",
             }
         ],
         "skill_prescription": None,

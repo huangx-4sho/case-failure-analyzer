@@ -78,7 +78,7 @@ flowchart TD
 | `AGENT_PLANNING`<br>`planning` | **工作流编排与上下文状态保持失误**。多阶段计算次序错乱、未冻结前序构型资产（误触发弛豫）、未正确关联前序输出目录（`outdir`/`prefix`） |
 | `AGENT_TOOL_USE`<br>`tool_use` | **工具调用与脚本生成缺陷**。自动化生成输入文件或解析脚本时出现语法错误、遗漏关键晶胞参数（如 `celldm(1)`）或写错文件 |
 | `AGENT_RESULT_VALIDATION`<br>`result_validation` | **结果后处理与数据核验失误**。量纲单位转换除错、每原子归一化因子除错、衍生量未核验物理自洽性即写入 `results.json` |
-| `AGENT_SELF_CHECK_GAP`<br>`self_check_gap` | **自检覆盖不足**。智能体执行自检脚本并输出通过，但自检准则未覆盖验证器具名判定项或独立复算（如 `verify_outputs.py` 只校验内部一致性，未复算 `spin_selection` / `energy_parameters`） |
+| `AGENT_SELF_CHECK_GAP`<br>`self_check_gap` | 自检实际运行，漏过了一项公开要求，提交随后因这项要求遭拒。例如，`verify_outputs.py` 检查了内部一致性，却未复算 `spin_selection` 或 `energy_parameters`。 |
 | `AGENT_PATH_OR_DEPENDENCY_DISCOVERY`<br>`path_or_dependency_discovery` | **环境依赖与资产寻址失败**。未能在容器已知路径中定位已预装的二进制、赝势文件、力场参数文件或 Checkpoint |
 | `AGENT_ERROR_DIAGNOSIS`<br>`error_diagnosis` | **物理报错诊断失误**。仿真软件已给出明确报错诊断，智能体误判物理诱因并进行无效修改 |
 | `AGENT_RECOVERY`<br>`recovery` | **自愈恢复策略失效**。面对错误盲目重复执行完全相同的失败命令，或陷入重试死循环 |
@@ -106,7 +106,7 @@ flowchart TD
 | `INFRA_CONTAINER_RUNTIME`<br>`container_runtime` | **容器运行时异常**。容器意外崩溃、后台守护进程挂死或挂载失效 |
 | `INFRA_EXTERNAL_NETWORK`<br>`external_network` | **外部网络通信异常**。构建或初始化阶段 `apt`、`pip`、外部模型拉取因网络阻断失败 |
 | `INFRA_API_ERROR`<br>`api_error` | **LLM API 网关异常**。LLM Gateway 代理返回 HTTP 5xx/502/504 或连接重置 |
-| `INFRA_API_RATE_LIMIT`<br>`api_rate_limit` | **API 配额限流**。触发大模型 API 请求频次限制 (HTTP 429) |
+| `INFRA_API_RATE_LIMIT`<br>`api_rate_limit` | 模型服务因限流或配额耗尽中断请求。确认中断需要本试次的终止记录，例如 HTTP 429 后 SDK 终止执行。已恢复的请求单独记录。 |
 | `INFRA_OOM`<br>`oom` | **内存溢出**。容器或计算进程触发 OOM Killer (`SIGKILL` / exit 137) |
 | `INFRA_DISK`<br>`disk` | **磁盘空间耗尽**。容器存储配额耗尽 (`No space left on device`) |
 | `INFRA_AGENT_TIMEOUT`<br>`agent_timeout` | **智能体执行超时**。智能体推理与工具交互超出总时限门禁 |
@@ -159,3 +159,22 @@ Harbor 在 Agent 执行之后、验证之前，用 `docker cp` 采集已声明�
 `Verifier / Case contract mismatch` 是跨 case/verifier 的复核标签，不新增第五个根因大类。其下区分：`semantic_rejection`（语义误拒）、`hidden_format_requirement`（未公开格式要求）和 `definition_ambiguity`（定义歧义）。静态发现必须绑定实际拒绝规则、提交表示和公开材料；只作为待复核线索，不自动宣判 verifier 有错或把失败改成通过。
 
 数学上不同的量（如力分量最大值与每原子力向量范数最大值）、公开要求下仍未完成的核验、以及重放脚本漏生成产物，应分别检查，不能统一解释为“格式过严”。
+
+<a id="agent-capability-dimensions"></a>
+
+## Agent 能力诊断维度
+
+对主根因为 `agent` 的失败试次，沿实际输入、输出或报告找到能解释本次失败的具体决策。一个受审决策选一个主维度。后续自检若有独立的动作和证据，可作为伴随因素记录。现有根因代码用于描述失败机制，能力维度用于比较不同任务中的决策。
+
+| 维度 | 判定依据与边界 |
+|---|---|
+| `observable_definition` 科学问题与物理量定义 | 对照公开定义与采用的公式、参考态或停止量。例如用最大受力分量替代逐原子受力模长最大值，会改变用于收敛判断的物理量。 |
+| `physical_model` 体系构建与物理建模 | 从有效输入或实际公式定位组成、电荷、自旋、相互作用、边界条件或物理近似的改变，核对任务允许的模型。 |
+| `numerical_adequacy` 数值收敛与采样充分性 | 固定模型和目标量，查所选网格、截断、时间步长、收敛准则或采样方案如何影响精度。要辨别参数由谁选定，并查明对目标量的后果。 |
+| `workflow_state` 工作流编排与状态传递 | 查前一步生成什么、下一步实际读到什么，以及作业状态或目录如何关联。先核对公开任务对原始交付和隔离重放分别有何要求。 |
+| `execution_recovery` 软件执行与故障恢复 | 指出 Agent 控制的进程、报错后的动作和后续结果。核对重试时的输入是否改变、先前异常是否已经恢复。 |
+| `postprocessing_provenance` 后处理与结果溯源 | 当目标量已定义，沿原始列、引用、换算和聚合语句追到提交字段。例如能量计算完成后，将相对偏移量写入逐态能量栏。 |
+| `independent_validation` 独立验证与自检 | 定位实际执行的自检准则或按目标值选择验证数据的行为，将覆盖范围与公开要求、漏过的缺陷相对照。注明检查对象是格式契约、科学有效性还是证据独立性。 |
+| `conclusion_calibration` 科学结论与不确定性判断 | 对照证据可识别的范围与实际声明。包括从不同计算阶段的网格断言未收敛，以及推断不确定性时擅自缩小允许的协方差集合。 |
+
+遇到同一个错误数值，分别检查对物理量的定义、数值近似和写入结果的过程。公开要求含糊时，评分器采用的特定约定只能用于解释评分行为。保留这种竞争解释并记录缺失材料。[能力审查](evidence-review.md#能力判断) · [CompChemWorld 试标记录](agent-capability-pilot.md)

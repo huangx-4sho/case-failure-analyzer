@@ -22,6 +22,74 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from diagnostics import WARNING, make_diagnostic
 
 
+def _reconstructed_prompt_assets(environment: Path, dockerfile: str) -> Set[str]:
+    """Recognize complete split assets restored by an explicitly invoked build script."""
+    dockerfile = re.sub(r"\\\r?\n", " ", dockerfile)
+    copy_lines = "\n".join(re.findall(r"(?im)^\s*COPY[ \t]+([^\n]+)", dockerfile))
+    candidates = re.findall(r"(?<![\w./-])assets/[\w./-]+\.(?:json|py)(?![\w./-])", copy_lines)
+    asset_root = (environment / "assets").resolve()
+    copied = {
+        environment / name
+        for name in candidates
+        if ".." not in Path(name).parts
+        and (environment / name).resolve().is_relative_to(asset_root)
+    }
+    run_lines = "\n".join(re.findall(r"(?im)^\s*RUN[ \t]+([^\n]+)", dockerfile))
+    invoked = []
+    for path in copied:
+        if (
+            path.suffix == ".py"
+            and path.is_file()
+            and re.search(
+                rf"(?:^|\s)(?:\S+/)?python[23]?\s+(?:[^\s;&|]+/)?{re.escape(path.name)}(?=$|[\s;&|])",
+                run_lines,
+            )
+        ):
+            with path.open(encoding="utf-8", errors="replace") as file:
+                invoked.append(file.read(1024 * 1024))
+
+    restored = set()
+    for manifest in copied:
+        if manifest.suffix != ".json" or not any(manifest.name in text for text in invoked):
+            continue
+        try:
+            with manifest.open(encoding="utf-8") as file:
+                data = json.loads(file.read(1024 * 1024))
+        except (OSError, ValueError):
+            continue
+        entries = data.get("assets") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                continue
+            target = Path(entry["path"])
+            parts = entry.get("parts")
+            if (
+                not isinstance(parts, list)
+                or not parts
+                or target.parts[:1] != ("assets",)
+                or ".." in target.parts
+            ):
+                continue
+            for part in parts:
+                if not isinstance(part, dict) or not isinstance(part.get("path"), str):
+                    break
+                path = Path(part["path"])
+                if path.parts[:1] != ("assets",) or ".." in path.parts:
+                    break
+                local = environment / path
+                if (
+                    not local.resolve().is_relative_to(asset_root)
+                    or not local.is_file()
+                    or ("bytes" in part and local.stat().st_size != part["bytes"])
+                ):
+                    break
+            else:
+                restored.add(target.relative_to("assets").as_posix())
+    return restored
+
+
 def extract_prompt_contract(
     instruction_text: str,
     task_dir: Optional[Path],
@@ -58,15 +126,17 @@ def extract_prompt_contract(
     # Check if referenced assets exist in task_dir/environment/assets or Dockerfile
     missing_prompt_assets: List[str] = []
     if task_dir and task_dir.is_dir():
-        assets_dir = task_dir / "environment" / "assets"
+        environment = task_dir / "environment"
+        assets_dir = environment / "assets"
         dockerfile_text = (
-            (task_dir / "environment" / "Dockerfile").read_text(encoding="utf-8", errors="replace")
-            if (task_dir / "environment" / "Dockerfile").is_file()
+            (environment / "Dockerfile").read_text(encoding="utf-8", errors="replace")
+            if (environment / "Dockerfile").is_file()
             else ""
         )
+        reconstructed = _reconstructed_prompt_assets(environment, dockerfile_text)
         for aref in asset_refs:
             candidate = assets_dir / aref
-            if not candidate.exists() and aref not in dockerfile_text:
+            if not candidate.exists() and aref not in dockerfile_text and aref not in reconstructed:
                 missing_prompt_assets.append(aref)
 
     # 3. Extract mentioned output filenames

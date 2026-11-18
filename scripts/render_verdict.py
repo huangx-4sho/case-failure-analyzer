@@ -35,6 +35,7 @@ from report_style import (
 
 #: Fixed peer-level order. `unknown` is an auxiliary bucket, not a peer cause.
 from causal_assessment import render_assessment
+from attribution.capabilities import render_diagnosis
 
 PEER_CATEGORIES = ("agent", "verifier", "case", "infra")
 
@@ -99,6 +100,15 @@ def _failure_reason(evidence: Dict[str, Any], analysis: Dict[str, Any]) -> str:
     checks repeat the same explanation, the check names are grouped so the
     answer shows *which* checks failed without printing the same detail thrice.
     """
+    location = (analysis.get("causal_assessment") or {}).get("failure_detail") or {}
+    interruption = location.get("runtime_event") or {}
+    if (analysis.get("primary_root_cause") or {}).get("category") == "infra" and interruption.get(
+        "matched_text"
+    ):
+        return _text(interruption["matched_text"])
+    observed = location.get("scoring_event") or {}
+    if observed.get("detail") and not observed.get("name"):
+        return _text(observed["detail"])
     checks = _named_checks(evidence)
     if checks:
         detail = _text(checks[0].get("detail"), 300)
@@ -586,6 +596,8 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
         )
     lines.append("")
 
+    if diagnosis := render_diagnosis(card, lang):
+        lines.extend([diagnosis, ""])
     if card.get("named_failed_checks") or card.get("scientific_observations"):
         ev_tmp = {
             "verifier_report": {"failed_checks": card.get("named_failed_checks") or []},

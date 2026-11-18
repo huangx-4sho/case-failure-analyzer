@@ -63,13 +63,27 @@ python3 "$SKILL_DIR/scripts/cfa.py" review apply \
   --output /path/to/reviewed-cases/task208
 ```
 
-输出包含 `evidence.json`、`original-analysis.json`、`analysis.json`、`review.json`、`report.zh.md` 和 `report.en.md`，原始输入不变。JSON 和源文件摘要检查用于发现材料变化；源文件新鲜度检查最多读取每文件 1 MiB、合计 8 MiB。引用的来源未能核验时，会限制结论升级。结构校验检查引用、绑定、审查一致性和归因规则，不能自动判断领域解释在科学上是否正确。
+输出包含 `evidence.json`、`original-analysis.json`、`analysis.json`、`review.json`、`report.zh.md` 和 `report.en.md`，原始输入不变。JSON 和源文件摘要检查用于发现材料变化；默认每个源文件最多读取 1 MiB，合计 8 MiB。引用的来源未能核验时，会限制结论升级。结构校验检查引用、绑定、审查一致性和归因规则，不能自动判断领域解释在科学上是否正确。
 
 审查可选填 `proposed_attribution`，包含 `category`、`subtype`、规范归因代码 `code`，以及分别撰写的 `summary_en` 和 `summary_zh`。类别必须与 `decision.kind` 一致。验证器、题目和环境问题可以使用相应类型的已保存观测作为决策锚点；Agent 原因仍须绑定执行事件。各类审查都需要引用有效输入、输出、适用要求和终止观测，并逐项检查竞争解释。
 
 输出保留原始分析快照，供校验器重建归因变更。审查不会修改原始测评结论或奖励；保留的数值置信度会明确标为**原规则证据评分**，不能解释为本次审查的可信程度。源文件检查覆盖实际引用的来源，引用轨迹事件时也检查轨迹文件；无关共享任务日志的增长不会让已结束试次的审查失效。未能核验的引用仍记为限制。
 
+### 具体失败位置与自检证据
+
+报告、速览卡和 `inspect --section errors` 分别列出运行中断和评分拒绝。若一条拒绝消息只能匹配到一处评分代码，报告会给出行号和能识别的判定条件。能从唯一的交付文件中读到对应字段时，也会列出提交值。完整度评分会注明适用范围。`contract_review.failure_locations` 保存逐项定位记录，报告采用的记录在 `causal_assessment.failure_detail` 中。
+
+核对自检时，从 `causal_anchors.self_check_executions` 找到实际执行的命令、对应脚本版本和输出。逐项对照公开判据与终态拒绝，一个脚本可能通过接口检查，却在数值检查中失败。若生成程序先出错、自检随后漏检，应分别记录这两个决定。
+
+较大的证据文件可以在 `review plan` 中用 `--hash-source art:trajectory_json` 指定。每个文件使用一次该选项，并提供已有采集摘要的 artifact ID。生成计划和应用审查时都会分块读取文件，核对采集时的 SHA-256。每个指定文件最多读取 32 MiB，指定文件合计最多 128 MiB，普通扫描另计。引用的文件缺少采集摘要或内容已变，或者竞争原因尚未排除，都会限制结论等级。
+
 ## 能力判断
+
+对主因归为 Agent 的失败试次，在 `review plan` 生成的 JSON 中填写可选字段 `capability_dimension`。从[八个维度](taxonomy.md#agent-capability-dimensions)选一个，提供 `dimension`、`rationale_zh`、`rationale_en` 和 `evidence_refs`。引用受审决策的事件，以及其 `basis`、`outcome` 中的依据。理由写清具体做法、影响及相邻维度的区别。结论类错误可引用写出提交报告的工具调用。一次审查绑定一个决策。
+
+证据不足时，填写 `{"status":"insufficient_evidence","rationale_zh":"…","rationale_en":"…"}`，具体说明缺什么。留空表示尚待标注。结果位于 `causal_assessment.capability.diagnosis`，状态区分待标注、证据不足、候选、本次审查支持。自动规则只产生候选；单次审查的支持程度受同一决策的因果审查等级约束。其他根因和部分旧报告没有这个字段。父字段 `capability.status` 单独记录可复用指导的提议状态。
+
+跨任务审查特定维度时，在请求中加入 `dimension`。每份输入都须对同一维度有本次审查支持，仍需另外论证是否重复出现了同一失误机制。
 
 单次失败即使经过审查，也不足以确认可复用的科学能力缺口。每个试次的 `skill_prescription` 保持空值，启发式建议仅作为疑似指导方案保存。
 

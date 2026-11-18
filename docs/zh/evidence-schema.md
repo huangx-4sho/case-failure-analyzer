@@ -388,6 +388,10 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 | `evidence.deliverable_audit` | 声明、路径映射、采集状态、扫描覆盖和验证器明确缺失记录；不推断未生成 |
 | `evidence.trajectory_normalization` | 格式、覆盖程度、诊断与源指针空间 |
 | `analysis.causal_assessment.level` | `not_applicable`、`observed_failure`、`candidate_cause` 或 `evidence_supported_cause` |
+| `contract_review.failure_locations` | 失败检查或日志摘录及其来源位置。能唯一定位时，附评分条件或提交字段 |
+| `causal_assessment.failure_detail` | 报告采用的运行中断和评分拒绝记录。同一试次可以同时保留两者 |
+| `causal_anchors.self_check_executions` | 智能体实际运行的自检命令、脚本来源和输出。局部结果可以同时包含通过与失败的子项 |
+| `causal_assessment.capability.diagnosis` | 失败试次归因于智能体时，记录该决策涉及的能力维度、证据与审查等级 |
 | `causal_assessment.existing_verification` | 既有检查及数值记录、声明覆盖和限制；`new_calculation_performed` 为 false |
 | `causal_assessment.decision` | 具体决策、实际执行、有效输入输出、适用依据、最终观测和推理 |
 | `causal_assessment.alternatives` | 各替代解释的状态、理由和证据引用；未解决项保留 |

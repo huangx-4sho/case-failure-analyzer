@@ -27,27 +27,27 @@ For every failed trial:
 
 ## 2. Causal Precedence Timeline & Gate Evaluation Order
 
-The engine evaluates nine decision IDs in a fixed priority order (`gate0`–`gate6`) and returns the first matching attribution. This order encodes the rule dependencies; it is not a claim that every failure follows the same chronological chain. The selected rule and evaluated checks are recorded in `decision_trace`.
+The engine records each rule it evaluates in `decision_trace` and returns the first match. The order gives earlier runtime faults priority when they explain a later rejection.
 
-1. **Gate 0: Passed Short-Circuit (`gate0_passed`)**: If the trial passed verification (`verification_status == "passed"` or `reward >= 1.0`), there is no failure to attribute; the engine short-circuits with `category = "none"` and never pollutes a passing trial with job-level errors.
-2. **Gate 1a: Pre-Startup Infrastructure (`gate1a_infra_prestartup`)**: Fatal infra error when `agent_started == false` attributes to `infra`.
-3. **Gate 1b: Pre-Startup Silent (`gate1b_unknown_no_evidence`)**: `agent_started == false` with no logs or errors explaining why attributes conservatively to `unknown`.
-4. **Gate 1c: Pre-Verification Runner / Execution Infra (`gate1c_runner_artifact_collection`)**: A post-agent, pre-verifier harbor fault — `INFRA_ARTIFACT_COLLECTION_CRASH` (`Engine cp failed`), `INFRA_RUNNER_INTERRUPTED` (log ends at `Collecting main service artifacts`), or a causal `INFRA_AGENT_TIMEOUT` — attributes to `infra`. An upstream agent timeout outranks a downstream collection crash; the agent's missing declared deliverable is kept as an explicit contributing factor. The verifier never started in most of these trials, so there was **no scored failure** and `agent`/`AGENT_PREMATURE_TERMINATION` is forbidden.
-5. **Gate 2: Case Assets & Setup Defect (`gate2_case_definition`)**: Missing prompt assets or broken container setup attributes to `case`.
-6. **Gate 3: Verifier Defect (`gate3_verifier_defect`)**: Internal verifier crashes (`VERIFIER_RECOMPUTE_DEFECT`) or causally bound parser hazards (`failure_binding == "direct"`) attribute to `verifier`.
-7. **Gate 4: Numerical / Tolerance Defect (`gate4_numerical_divergence`)**: Corroborated verifier recompute/reference divergence can attribute to `agent` (`AGENT_RESULT_VALIDATION` or `AGENT_SCIENTIFIC_PARAMETER_SELECTION`). Instantaneous trajectory divergence with matching ensemble statistics and the required contract checks can instead attribute to `verifier` (`VERIFIER_TOLERANCE_TOO_STRICT`).
-8. **Gate 5: Insufficient Positive Evidence (`gate5_insufficient_positive_evidence`)**: If the trial failed but no positive agent evidence implicates Agent behaviour, abstains conservatively to `unknown` and prevents false agent blame (bare `reward == 0` or `FAIL` is not positive evidence). This is the conservative fallback before any Agent attribution.
-9. **Gate 6: Agent Primary Decision Error (`gate6_agent_primary`)**: Validates all 5 necessary gate conditions and positive behavioral signals before attributing to `agent`. A named failing verifier check outranks a generic `premature_completion` heuristic (subcase 5e precedes 5d when checks are localized). When the agent's own self-check passed while the verifier named failed checks, subcase 5e uses the `self_check_gap` subtype (`AGENT_SELF_CHECK_GAP`) and records which named checks the self-check script covered versus which it omitted. This gate always matches, so it terminates the chain.
+1. `gate0_review_pending` handles a recorded request for independent review when no numerical reward is available. `gate0_passed` returns `category = "none"` for a passing trial.
+2. `gate1a_infra_prestartup` identifies a fatal failure before agent startup. The actual build error can distinguish a missing local tool from a registry access or token request failure. `gate1b_unknown_no_evidence` leaves responsibility open when the startup cause is missing.
+3. `gate1c_runner_artifact_collection` checks for collection failures, runner interruptions, agent timeouts and terminal model-service quota errors. A causal timeout can precede a collection failure. If a verifier subsequently ran, its rejection and any score remain visible. A recovered 429 leaves no terminal cutoff to attribute. An independent verifier crash that prevents scoring is reviewed separately.
+4. `gate2_case_definition` checks for missing task assets and setup defects. An asset that the image build restores from declared, available shards may be absent as a standalone file in the checkout.
+5. `gate3_verifier_defect` checks for an internal verifier crash or a parser defect directly tied to the rejection.
+6. `gate4_numerical_divergence` uses corroborated numerical comparisons. A discrepancy tied to submitted data can support an agent candidate; matching ensemble statistics can support a verifier tolerance candidate when the contract permits them.
+7. `gate5_insufficient_positive_evidence` returns `unknown` when a trial failed and the available records cannot implicate an agent decision.
+8. `gate6_agent_primary` identifies a candidate agent error from the remaining evidence. A named rejection takes priority over a generic early-completion signal. To review `AGENT_SELF_CHECK_GAP`, link the actual self-check and the version it ran to a public criterion and a recorded rejection. [Self-check evidence](evidence-review.md#failure-location-and-self-check-evidence)
 
 <details>
 <summary>Gate overview table</summary>
 
 | Precedence Stage | Gate | Scope / Trigger | Required Category | Forbidden Defaults |
 | :--- | :--- | :--- | :--- | :--- |
+| Pending review | Gate 0 | Recorded request for independent review with no numeric reward | `none` | Preserve `pending` |
 | **Stage 0: Passed Trial** | Gate 0 | `verification_status == "passed"` or `reward >= 1.0` | `none` (no failure to attribute) | No failure attribution |
 | **Stage 1: Pre-Startup Infra** | Gate 1a | `agent_started == false` with fatal infra error | `infra` | Never `agent` |
 | **Stage 1b: Pre-Startup Silent**| Gate 1b | `agent_started == false` with no infra evidence | `unknown` | Never `agent` |
-| **Stage 1c: Pre-Verification Runner** | Gate 1c | Post-agent artifact-collection crash / silent interruption / agent timeout | `infra` | Never `agent`; never a scored `failed` verdict when the verifier did not start |
+| **Stage 1c: Runner or model service** | Gate 1c | Collection failure, runner interruption, agent timeout or terminal API quota error | `infra` | Check whether the verifier subsequently ran and produced a score |
 | **Stage 2: Case Assets/Setup** | Gate 2 | Missing prompt assets or broken container setup | `case` | Never `agent` |
 | **Stage 3: Verifier Crash / Defect**| Gate 3 | Internal verifier crash or direct-bound parser defect | `verifier` | Never `agent` or `unknown` (isolated crash) |
 | **Stage 4: Numerical evidence** | Gate 4 | Corroborated recompute divergence, or verified ensemble agreement with excessive instantaneous tolerance | `agent` / `verifier` | No attribution from an uncorroborated numerical difference |

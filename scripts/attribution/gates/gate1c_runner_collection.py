@@ -17,6 +17,9 @@ cause:
   before the declared deliverables were complete. A short timeout is an infra /
   job-configuration fault, not an agent decision; blaming `AGENT_PREMATURE_
   TERMINATION` here is a false agent blame.
+- `INFRA_API_RATE_LIMIT` - a terminal model-provider request/usage limit stopped
+  the agent. Retain later verifier observations without attributing absent
+  outputs to an agent decision.
 
 Neither is an `environment_build` / `container_build` failure, and neither is a
 scored agent "premature termination" verdict when the verifier never started.
@@ -30,6 +33,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from confidence import attach_confidence_metadata
+from extract_runtime_errors import API_LIMIT_CODE
 from runtime_state import SCHEMA_VERSION
 
 from ..context import AttributionContext
@@ -41,6 +45,7 @@ EXECUTION_INFRA_CODES = (
     "INFRA_AGENT_TIMEOUT",
     "INFRA_AGENT_AUTOCOMPACT_THRASHING",
     "INFRA_AGENT_OUTPUT_TOKEN_LIMIT",
+    API_LIMIT_CODE,
     "INFRA_VERIFIER_INTERPRETER_MISSING",
 )
 
@@ -63,6 +68,13 @@ def _summary_for(primary: Dict[str, Any], verifier_started: bool) -> str:
             "Harbor stopped agent execution at its configured timeout "
             f"(`{str(primary.get('matched_text') or '')[:120]}`); {scoring_note}."
         )
+    if code == API_LIMIT_CODE:
+        followup = (
+            "The verifier ran afterward. Its recorded results remain separate."
+            if verifier_started
+            else "The verifier did not start."
+        )
+        return f"The model API stopped agent execution ({primary['matched_text']}). {followup}"
     return (
         "Runner aborted while collecting the agent's declared deliverables "
         f"(`{code}`, stage=runner, post-agent); {scoring_note}."
@@ -71,10 +83,16 @@ def _summary_for(primary: Dict[str, Any], verifier_started: bool) -> str:
 
 def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     crashes = ctx.artifact_collection_crashes
+    score_produced = ctx.runtime.get("score_produced", ctx.runtime.get("reward") is not None)
+    unscored_verifier_crash = not score_produced and any(
+        o.get("type") == "verifier_internal_crash" for o in ctx.verifier_obs
+    )
     exec_errors = [
         e
         for e in ctx.errors
-        if e.get("code") in EXECUTION_INFRA_CODES and e.get("causal_candidate")
+        if e.get("code") in EXECUTION_INFRA_CODES
+        and e.get("causal_candidate")
+        and not (e["code"] == API_LIMIT_CODE and unscored_verifier_crash)
     ]
     if (not crashes and not exec_errors) or not ctx.agent_started:
         ctx.trace.record(
@@ -100,6 +118,7 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
     if primary is None:
         primary = crashes[0]
     is_execution_primary = primary["code"] in EXECUTION_INFRA_CODES
+    api_primary = primary["code"] == API_LIMIT_CODE
 
     missing = list(ctx.evidence.get("missing_deliverables") or [])
     declared_paths = [
@@ -112,12 +131,13 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
     ev_refs = list(dict.fromkeys(err_refs + sig_refs))
 
     verifier_started = bool(ctx.verifier_started)
-    score_produced = ctx.runtime.get("score_produced", ctx.runtime.get("reward") is not None)
     verdict = "failed" if score_produced else "errored"
     failure_stage = primary.get("stage") or (
         "agent_execution" if is_execution_primary else "runner"
     )
-    detection_stage = "verifier_execution" if verifier_started else "runner"
+    detection_stage = (
+        failure_stage if api_primary else "verifier_execution" if verifier_started else "runner"
+    )
     summary = _summary_for(primary, verifier_started)
     manifestation = str(primary.get("matched_text") or summary)[:300]
 
@@ -133,7 +153,7 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
     )
 
     contributing: List[Dict[str, Any]] = []
-    if declared_paths or sig_refs:
+    if (declared_paths or sig_refs) and not api_primary:
         contributing.append(
             attach_confidence_metadata(
                 {
@@ -197,11 +217,24 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
         direct_causal_evidence=len(sig_refs),
     )
 
+    scoring_record = (
+        "verifier produced a score"
+        if score_produced
+        else "verifier produced no score"
+        if verifier_started
+        else "verifier never started"
+    )
     ctx.trace.record(
         gate_id="gate1c_runner_artifact_collection",
         matched=True,
         reason=f"post-agent runner/execution failure ({primary['code']}); "
-        + ("verifier scored incomplete outputs" if verifier_started else "verifier never started"),
+        + (
+            scoring_record
+            if api_primary
+            else "verifier scored incomplete outputs"
+            if verifier_started
+            else "verifier never started"
+        ),
         checks={
             "agent_started": ctx.agent_started,
             "verifier_started": verifier_started,
@@ -221,11 +254,25 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
         infra_action = "Provide the interpreter used by tests/test.sh in the scoring environment."
     elif primary["code"] in ("INFRA_AGENT_AUTOCOMPACT_THRASHING", "INFRA_AGENT_OUTPUT_TOKEN_LIMIT"):
         infra_action = "Review the terminal SDK result and adjust context/output budgets and tool output chunking."
+    elif api_primary:
+        infra_action = "Check the configured model provider's usage budget or request limits before retrying the interrupted agent execution."
     else:
         infra_action = (
             "Make harbor's artifact collection tolerate a missing declared path "
             "(record a per-artifact error instead of aborting the trial) so the "
             "verifier still runs and produces a scored verdict."
+        )
+    actions = [{"owner": "Infra", "action": infra_action}]
+    if not api_primary:
+        actions.append(
+            {
+                "owner": "Agent Policy",
+                "action": (
+                    "Verify every declared deliverable exists inside the container before "
+                    "ending the trajectory: "
+                    + (", ".join(declared_paths[:4]) or "declared outputs")
+                ),
+            }
         )
 
     return {
@@ -249,9 +296,11 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
         },
         "primary_root_cause": prc,
         "contributing_factors": contributing,
-        "competing_hypotheses": [h1, h2],
+        "competing_hypotheses": [h1] if api_primary else [h1, h2],
         "evidence_refs": ev_refs,
-        "excluded_hypotheses": [
+        "excluded_hypotheses": []
+        if api_primary and verifier_started
+        else [
             {
                 "hypothesis_id": "H_VERIFIER",
                 "category": "verifier",
@@ -265,16 +314,6 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
                 ),
             }
         ],
-        "recommended_actions": [
-            {"owner": "Infra", "action": infra_action},
-            {
-                "owner": "Agent Policy",
-                "action": (
-                    "Verify every declared deliverable exists inside the container before "
-                    "ending the trajectory: "
-                    + (", ".join(declared_paths[:4]) or "declared outputs")
-                ),
-            },
-        ],
+        "recommended_actions": actions,
         "skill_prescription": None,
     }

@@ -7,9 +7,9 @@ Extracts high-signal trajectory anchors connecting agent decisions to failure ou
    method, solver parameters, or simulation setup.
 2. `deliverable_generation`: Where the agent executed the command or wrote the final artifacts
    required by the benchmark contract.
-3. `self_check`: Where the agent ran its own verification script, plus which named verifier
-   checks that script actually covered. This makes the self-check coverage gap explicit
-   instead of inferring it from a passing `VERIFY OK` line.
+3. `self_check_executions`: Observed local checks and their source bindings for review.
+   `self_check` remains readable in legacy evidence; current execution records carry
+   no conclusions about which verifier checks the script covered.
 
 Pairs each anchor with the agent's verbatim thought / reasoning at that step and code payloads.
 """
@@ -890,9 +890,17 @@ def trace_causal_anchors(evidence: Dict[str, Any]) -> Dict[str, Any]:
         result["algorithm_or_param_definition"] = algo_anchor
     if deliv_anchor:
         result["deliverable_generation"] = deliv_anchor
-    self_check_anchor = _trace_self_check_anchor(timeline, evidence)
-    if self_check_anchor:
-        result["self_check"] = self_check_anchor
+    observed_checks = [
+        check for event in timeline for check in event.get("self_check_executions") or []
+    ]
+    if observed_checks:
+        result["self_check_executions"] = observed_checks
+    if not observed_checks and not (evidence.get("trajectory_normalization") or {}).get(
+        "self_check_extraction"
+    ):
+        self_check_anchor = _trace_self_check_anchor(timeline, evidence)
+        if self_check_anchor:
+            result["self_check"] = self_check_anchor
     return result
 
 
@@ -1047,6 +1055,24 @@ def render_causal_anchors_markdown(anchors: Dict[str, Any], lang: str = "zh") ->
             for cl in sc["command"].splitlines():
                 lines.append(f"  {cl}")
             lines.append("  ```")
+
+    executions = anchors.get("self_check_executions") or []
+    if executions:
+        zh_status = {"passed": "脚本报告全通过", "partial": "个别检查有结果", "failed": "检查报错"}
+        en_status = {
+            "passed": "script reported all checks passed",
+            "partial": "individual check results",
+            "failed": "reported failure",
+        }
+        for item in executions[-3:]:
+            phase = item.get("result_status")
+            label = "自检执行记录" if is_zh else "Recorded self-check execution"
+            status = (zh_status if is_zh else en_status).get(
+                phase, "结果未知" if is_zh else "outcome unknown"
+            )
+            path = item.get("script_path") or ("内联脚本" if is_zh else "inline script")
+            coverage = "覆盖范围待审查" if is_zh else "coverage requires review"
+            lines.append(f"- **{label}** `{item['event_id']}` (`{path}`) · {status} · {coverage}")
 
     lines.append("")
     return lines

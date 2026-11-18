@@ -235,6 +235,7 @@ def _format_errors_summary(
             "task_id": task_id,
             "verdict": verdict,
             "primary_root_cause": prc,
+            "failure_detail": (an.get("causal_assessment") or {}).get("failure_detail"),
             "verifier_diagnosability": diagnosability,
             "verifier_diagnosability_reasons": reasons,
             "failed_checks": failed_checks,
@@ -258,6 +259,11 @@ def _format_errors_summary(
         "",
     ]
 
+    from attribution.failure_location import render_failure_detail
+
+    detail = render_failure_detail(an.get("causal_assessment") or {}, "en")
+    if detail:
+        lines.extend([detail, ""])
     lines.append(f"## Named Failed Checks ({len(failed_checks)})")
     lines.append("")
     if not failed_checks:

@@ -11,10 +11,12 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from attribution.capabilities import DIMENSIONS, reviewed_diagnosis, unassigned
 from causal_assessment import (
     analysis_binding,
     assess_static,
     digest,
+    execution_refs,
     promotion_ready,
     proposed_attribution_errors,
     review_errors,
@@ -35,9 +37,10 @@ def write(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def source_fingerprints(evidence: dict) -> list:
+def source_fingerprints(evidence: dict, hash_sources=()) -> list:
     """Stream bounded freshness checks; do not silently bind changed sources."""
     result, budget = [], 8 * 1024 * 1024
+    extended_budget = 128 * 1024 * 1024
     for artifact in evidence.get("artifacts") or []:
         raw = artifact.get("abs_path")
         entry = {
@@ -51,7 +54,13 @@ def source_fingerprints(evidence: dict) -> list:
             try:
                 if path.is_file():
                     size = path.stat().st_size
-                    if size > min(1024 * 1024, budget):
+                    extended = artifact.get("artifact_id") in hash_sources
+                    limit = (
+                        min(32 * 1024 * 1024, extended_budget)
+                        if extended
+                        else min(1024 * 1024, budget)
+                    )
+                    if size > limit:
                         entry["status"] = "size_limit"
                     else:
                         value = hashlib.sha256()
@@ -63,7 +72,10 @@ def source_fingerprints(evidence: dict) -> list:
                                     break
                                 remaining -= len(chunk)
                                 value.update(chunk)
-                        budget -= size
+                        if extended:
+                            extended_budget -= size
+                        else:
+                            budget -= size
                         if remaining != 1:
                             entry["status"] = "changed_during_read"
                         else:
@@ -90,7 +102,21 @@ def reject_input_write(output: Path, evidence: dict) -> None:
         raise ValueError("Review output overlaps original benchmark input directories")
 
 
-def plan(evidence: dict, analysis: dict) -> dict:
+def _hash_source_ids(evidence: dict, requested) -> list:
+    if not isinstance(requested, (list, tuple)) or not all(isinstance(i, str) for i in requested):
+        raise ValueError("hash sources must be a list of saved artifact IDs")
+    known = {
+        a.get("artifact_id")
+        for a in evidence.get("artifacts") or []
+        if a.get("exists") and a.get("sha256")
+    }
+    if set(requested) - known:
+        raise ValueError("--hash-source requires an existing artifact ID with a collected SHA-256")
+    return sorted(set(requested))
+
+
+def plan(evidence: dict, analysis: dict, hash_sources=()) -> dict:
+    selected = _hash_source_ids(evidence, hash_sources)
     fresh = copy.deepcopy(analysis)
     assess_static(evidence, fresh)
     a = fresh["causal_assessment"]
@@ -100,11 +126,13 @@ def plan(evidence: dict, analysis: dict) -> dict:
             "evidence_digest": digest(evidence),
             "analysis_digest": analysis_binding(analysis),
             "original_analysis_digest": digest(analysis),
-            "source_fingerprints": source_fingerprints(evidence),
+            "source_fingerprints": source_fingerprints(evidence, selected),
+            **({"hash_sources": selected} if selected else {}),
         },
         "reviewer": "",
         "rationale": "",
         "decision": a["decision"],
+        "capability_dimension": None,
         "alternatives": a["alternatives"],
         "limitations": [
             "Use existing evidence only; unresolved alternatives prevent promotion.",
@@ -199,6 +227,7 @@ def check_binding(review: dict, evidence: dict, analysis: dict) -> None:
     if review.get("schema_version") != REVIEW_SCHEMA:
         raise ValueError("Invalid evidence review schema")
     binding = review.get("binding") or {}
+    extended = _hash_source_ids(evidence, binding.get("hash_sources", []))
     if binding.get("evidence_digest") != digest(evidence) or binding.get(
         "analysis_digest"
     ) != analysis_binding(analysis):
@@ -223,7 +252,7 @@ def check_binding(review: dict, evidence: dict, analysis: dict) -> None:
     original = {
         (x.get("artifact_id"), x.get("path")): x for x in binding.get("source_fingerprints") or []
     }
-    current = source_fingerprints({**evidence, "artifacts": selected})
+    current = source_fingerprints({**evidence, "artifacts": selected}, extended)
     for artifact, now in zip(selected, current):
         previous = original.get((artifact.get("artifact_id"), artifact.get("abs_path")))
         if previous is None or (
@@ -330,7 +359,9 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
     fingerprints = review["binding"]["source_fingerprints"]
     cited_artifacts = cited_source_refs(evidence, review)
     unchecked = []
-    for artifact, fingerprint in zip(evidence.get("artifacts") or [], fingerprints):
+    by_source = {(f.get("artifact_id"), f.get("path")): f for f in fingerprints}
+    for artifact in evidence.get("artifacts") or []:
+        fingerprint = by_source.get((artifact.get("artifact_id"), artifact.get("abs_path")), {})
         aliases = {
             artifact.get("artifact_id"),
             artifact.get("rel_path"),
@@ -339,7 +370,7 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
         if (
             aliases.intersection(cited_artifacts)
             and artifact.get("exists") is True
-            and fingerprint["status"] != "checked"
+            and fingerprint.get("status") != "checked"
         ):
             unchecked.append(fingerprint)
     a["review_limits"] = [
@@ -359,6 +390,23 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
         "reviewer": review["reviewer"],
         "rationale": review["rationale"],
     }
+    cap = a["capability"]
+    annotation = review.get("capability_dimension")
+    if annotation is not None:
+        if category != "agent" or result.get("verdict") != "failed":
+            raise ValueError(
+                "capability_dimension requires a reviewed decision in a failed agent trial"
+            )
+        cap["diagnosis"] = reviewed_diagnosis(
+            annotation, a["decision"], a["level"], execution_refs(evidence)
+        )
+    elif "capability_dimension" not in review and "diagnosis" not in (
+        (analysis.get("causal_assessment") or {}).get("capability") or {}
+    ):
+        # Replay reviews written before the optional diagnosis existed byte-for-byte.
+        cap.pop("diagnosis", None)
+    elif "diagnosis" in cap:
+        cap["diagnosis"] = unassigned()
     return result
 
 
@@ -426,6 +474,9 @@ def capability(review_path: Path, output: Path) -> dict:
     request = read(review_path)
     if request.get("schema_version") != "cfa-capability-review-v1":
         raise ValueError("Expected cfa-capability-review-v1")
+    dimension = request.get("dimension")
+    if dimension is not None and (not isinstance(dimension, str) or dimension not in DIMENSIONS):
+        raise ValueError("Unknown capability dimension")
     bundles = request.get("reviewed_bundles") or []
     if len(bundles) < 2:
         raise ValueError("Capability review requires at least two independent reviewed tasks")
@@ -447,6 +498,13 @@ def capability(review_path: Path, output: Path) -> dict:
             or (an.get("primary_root_cause") or {}).get("category") != "agent"
         ):
             raise ValueError("Capability inputs must be evidence-supported agent-cause reviews")
+        if dimension is not None:
+            diagnosis = an["causal_assessment"]["capability"].get("diagnosis") or {}
+            if (
+                diagnosis.get("status") != "supported_in_trial"
+                or diagnosis.get("dimension") != dimension
+            ):
+                raise ValueError("Requested dimension must be supported in every reviewed task")
         # Explicit task identity, not trial count, prevents repeated trials being independence.
         identity = str(ev.get("case_id") or "")
         source_hashes = sorted(
@@ -507,6 +565,8 @@ def capability(review_path: Path, output: Path) -> dict:
         "review": request,
         "skill_prescription": prescription,
     }
+    if dimension is not None:
+        result["dimension"] = dimension
     if output.exists():
         raise ValueError("Capability output must be a fresh file")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -520,6 +580,13 @@ def main(argv=None) -> None:
     p = subs.add_parser("plan")
     for name in ("evidence", "analysis", "output"):
         p.add_argument("--" + name, type=Path, required=True)
+    p.add_argument(
+        "--hash-source",
+        action="append",
+        default=[],
+        metavar="ARTIFACT_ID",
+        help="Verify a larger collected source against its saved SHA-256 (32 MiB each, 128 MiB combined)",
+    )
     p = subs.add_parser("apply")
     for name in ("evidence", "analysis", "review", "output"):
         p.add_argument("--" + name, type=Path, required=True)
@@ -534,7 +601,7 @@ def main(argv=None) -> None:
             evidence, analysis = read(args.evidence), read(args.analysis)
             reject_input_write(args.output, evidence)
             args.output.parent.mkdir(parents=True, exist_ok=True)
-            write(args.output, plan(evidence, analysis))
+            write(args.output, plan(evidence, analysis, args.hash_source))
             print(f"REVIEW_PLAN: {args.output.resolve()}")
         elif args.action == "apply":
             result = apply(args.evidence, args.analysis, args.review, args.output)

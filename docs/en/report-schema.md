@@ -4,7 +4,7 @@
 
 **On this page:** [Failure report](#required-sections--visual-structure) · [Passed trials](#lightweight-view-for-passed-trials) · [Batch summary](#batch-summary-job_summarymd--job_summaryjson) · [Task-ID reports](#task-id-quick-answer---task-id-task208)
 
-Reports first show `causal_assessment.level`: observed failure, candidate cause, or this-trial cause supported by an existing-evidence review. A numerical discrepancy, absence of other rule matches, or a heuristic score is not causal confirmation. Deliverable tables distinguish captured presence, absence from capture, collection faults, and unresolved states. Saved verifier records and coverage limits remain separate. Single-trial reports do not confirm capability prescriptions; see [existing-evidence review](evidence-review.md).
+The report opens with `causal_assessment.level`. A rule can identify where a trial failed while the cause remains unresolved. A supported cause requires a review of the saved evidence for a specific decision. The report distinguishes captured deliverables, missing captures, collection failures and unresolved paths. It also records what the verifier checked. Reusable guidance requires cross-task review. [Evidence review](evidence-review.md)
 
 Failure reports use four core sections in the order below. Each report heading starts at the beginning of a line as `## <N>. <Title>` and has a non-empty body, so reviewers and `scripts/validate_analysis.py` can check it. Passed trials use the separate two-section view described below.
 
@@ -28,7 +28,7 @@ Path-mode report editions, selected by the requested language and format:
 
 | File | Edition |
 | --- | --- |
-| `report.md` | Compact Chinese-English report with parallel labels, without a duplicated English Part II |
+| `report.md` | Primary report in the requested language. Bilingual mode uses parallel labels and writes a separate English edition. |
 | `report.zh.md` | Standalone Chinese report |
 | `report.en.md` | Standalone English report |
 
@@ -75,7 +75,7 @@ Present supporting evidence for candidate hypotheses and reasons for excluding a
 
 Report heading: `## 4. 改进建议` or `## 4. Recommended Actions`.
 
-Give actions for the responsible category: case, infrastructure, verifier, or agent. Include domain skill prescriptions for eligible agent capability gaps and list core missing inputs and computational outputs, omitting incidental temporary files.
+Give actions for the responsible party and identify the missing inputs or outputs needed to resolve the failure. A single trial may suggest guidance for the agent. Confirming reusable guidance requires a separate review across independent tasks.
 
 <a id="lightweight-view-for-passed-trials-通过案例精简版"></a>
 

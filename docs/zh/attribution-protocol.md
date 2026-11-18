@@ -34,27 +34,27 @@
 
 ## 2. 门控求值顺序
 
-引擎按固定优先级依次评估 9 个决策标识（`gate0`–`gate6`），返回首个命中的归因。这个顺序表达规则依赖，不代表每次失败都遵循同一条因果时间线。已评估的检查与命中规则记录在 `decision_trace` 中。
+引擎在 `decision_trace` 中记录检查过的规则，并返回首个匹配结果。若较早的运行故障可以解释后续拒绝，先处理运行故障。
 
-1. **Gate 0: 通过短路门 (`gate0_passed`)**：若 Trial 已通过验证（`verification_status == "passed"` 或 `reward >= 1.0`），则不存在需要归因的失败；引擎以 `category = "none"` 短路返回，绝不因 Job 级错误统计污染已通过的 Trial。
-2. **Gate 1a: 启动前环境基础设施 (`gate1a_infra_prestartup`)**：`agent_started == false` 且存在致命基础设施故障证据时，归因为 `infra`。
-3. **Gate 1b: 启动前静默 (`gate1b_unknown_no_evidence`)**：`agent_started == false` 且无任何日志或错误可解释原因时，保守归因为 `unknown`。
-4. **Gate 1c: 验证前 Runner / 执行基础设施 (`gate1c_runner_artifact_collection`)**：发生在 Agent 执行之后、验证之前的 Harbor 故障——`INFRA_ARTIFACT_COLLECTION_CRASH`（`Engine cp failed`）、`INFRA_RUNNER_INTERRUPTED`（日志止于 `Collecting main service artifacts`）或作为因果项的 `INFRA_AGENT_TIMEOUT`——均归因为 `infra`。上游的 Agent 超时优先于下游的产物采集崩溃；Agent 缺失的已声明交付物作为显式的伴随因素保留。此类 Trial 大多验证器从未启动，因此**不存在已评分失败**，且严禁判为 `agent` / `AGENT_PREMATURE_TERMINATION`。
-5. **Gate 2: 题目资产与配置缺陷 (`gate2_case_definition`)**：题目要求资产缺失或镜像配置损坏，归因为 `case`。
-6. **Gate 3: 评测器缺陷 (`gate3_verifier_defect`)**：评测器自身内部崩溃（`VERIFIER_RECOMPUTE_DEFECT`）或完成直接因果绑定的解析正则缺陷（`failure_binding == "direct"`），归因为 `verifier`。
-7. **Gate 4: 数值漂移与容差缺陷 (`gate4_numerical_divergence`)**：经印证的验证器复算或参考值分歧可以归因到 `agent`（`AGENT_RESULT_VALIDATION` 或 `AGENT_SCIENTIFIC_PARAMETER_SELECTION`）；瞬时轨迹发散、系综统计吻合且满足契约核对条件时，可以归因到 `verifier`（`VERIFIER_TOLERANCE_TOO_STRICT`）。
-8. **Gate 5: 正面证据不足门控 (`gate5_insufficient_positive_evidence`)**：若 Trial 失败但缺乏指向 Agent 行为的正面因果证据，保守弃判并退化至 `unknown`，防止误怪 Agent（仅有 `reward == 0` 或 `verify.log` 中的 `FAIL` 不构成正面证据）。这是 Agent 归因前的保守兜底。
-9. **Gate 6: Agent 主观决策与操作错误 (`gate6_agent_primary`)**：在满足 5 项必要条件且具备正面行为信号时归因为 `agent`。若智能体自检通过、但验证器给出了具名失败检查，则 5e 子情形使用 `self_check_gap` 亚类（`AGENT_SELF_CHECK_GAP`），并记录自检脚本覆盖了哪些具名检查、遗漏了哪些。该 Gate 必然命中，从而终结整条判定链。
+1. `gate0_review_pending` 处理已有独立复核请求、尚无数值奖励的试次。`gate0_passed` 将通过试次的类别记为 `none`。
+2. `gate1a_infra_prestartup` 检查智能体启动前的致命故障。构建日志可以区分本地工具缺失、镜像仓库拒绝访问和令牌请求失败。缺少可解释启动失败的记录时，`gate1b_unknown_no_evidence` 保留 `unknown`。
+3. `gate1c_runner_artifact_collection` 检查产物采集失败、运行器中断、智能体超时和模型服务配额耗尽。超时可能早于采集失败。验证器随后运行时，报告仍保留其拒绝记录和原始分数。归因于配额中断需要终止证据，已恢复的 429 不能单独定因。若评分因独立的验证器故障中止，另查该故障。
+4. `gate2_case_definition` 核对题目资产和运行配置。某个文件可能由镜像构建步骤从已有分片还原，审查缺件时需核对构建脚本和分片清单。
+5. `gate3_verifier_defect` 检查验证器自身崩溃，或与此次拒绝有直接联系的解析缺陷。
+6. `gate4_numerical_divergence` 核对相互印证的数值比较。若差异能追到提交数据，可形成智能体候选原因；若系综统计一致且公开约定允许，则可审查验证容差是否过严。
+7. `gate5_insufficient_positive_evidence` 在试次失败且现有记录无法指向智能体决策时返回 `unknown`。
+8. `gate6_agent_primary` 从其余证据中选出智能体错误的候选原因。具名评分拒绝优先于笼统的提前结束信号。审查 `AGENT_SELF_CHECK_GAP` 时，要将实际运行的自检及脚本版本与公开判据、终态拒绝对应起来。[自检证据](evidence-review.md#具体失败位置与自检证据)
 
 <details>
 <summary>展开门控速查表</summary>
 
 | 阶段顺序 | 对应门控 | 适用范围 / 触发条件 | 归因类别 | 绝对禁止项 |
 | :--- | :--- | :--- | :--- | :--- |
+| 评分待审 | Gate 0 | 已记录独立复核请求，尚无数值奖励 | `none` | 保留 `pending` |
 | **阶段 0: Trial 已通过** | Gate 0 | `verification_status == "passed"` 或 `reward >= 1.0` | `none`（无失败可归因） | 无失败归因 |
 | **阶段 1: 启动前环境** | Gate 1a | `agent_started == false` 且存在致命基础设施错误 | `infra` | 严禁归因 `agent` |
 | **阶段 1b: 启动前静默**| Gate 1b | `agent_started == false` 且无任何异常日志证据 | `unknown` | 严禁归因 `agent` |
-| **阶段 1c: 验证前 Runner** | Gate 1c | Agent 执行后的产物采集崩溃 / 静默中断 / Agent 超时 | `infra` | 严禁归因 `agent`；验证器未启动时严禁判为已评分的 `failed` |
+| **阶段 1c：运行器或模型服务** | Gate 1c | 采集失败、运行器中断、智能体超时或 API 配额耗尽 | `infra` | 核对验证器此后是否运行并产出分数 |
 | **阶段 2: 题目资产配置** | Gate 2 | 缺失 Prompt 资产文件或题目镜像配置损坏 | `case` | 严禁归因 `agent` |
 | **阶段 3: 评测器崩溃/解析**| Gate 3 | 评测器内部崩溃或直接绑定的解析器缺陷 | `verifier` | 严禁归因 `agent` 或判为 `unknown` |
 | **阶段 4: 数值证据** | Gate 4 | 经印证的复算分歧，或系综统计吻合而瞬时容差过严 | `agent` / `verifier` | 不凭未印证的数值差异直接归因 |

@@ -26,6 +26,59 @@ from discover_artifacts import safe_load_json
 from runtime_state import compute_runtime_state
 
 
+API_LIMIT_CODE = "INFRA_API_RATE_LIMIT"
+API_LIMIT_EXCEPTION_TYPES = {"apiusagelimiterror", "ratelimiterror"}
+SDK_API_LIMIT_ERRORS = {"api_usage_limit", "rate_limit", "rate_limit_error", "usage_limit"}
+SDK_API_LIMIT_MESSAGE = re.compile(
+    r"^API Error:\s*(?:Request rejected\s*\(429\)|429\b|(?:API )?usage limit\b|"
+    r"rate limit (?:exceeded|reached)|exceeded your current quota)",
+    re.IGNORECASE,
+)
+HARBOR_API_LIMIT_EXCEPTION = re.compile(
+    r"^harbor\.agents\.[\w.]*\.(ApiUsageLimitError|RateLimitError):", re.MULTILINE
+)
+BUILD_ERROR_LINE = re.compile(
+    r"^(?:failed to solve:|#\d+(?:\s+[\d.]+)?\s+ERROR:|Error response from daemon:)", re.I
+)
+BUILDKIT_STAGE = re.compile(r"^#(\d+)\s+(.+)")
+BUILD_DEPENDENCY_FAILURES = (
+    (
+        "registry_token_request_failed",
+        re.compile(r"failed to fetch (?:anonymous |oauth )?token", re.I),
+    ),
+    (
+        "registry_access_denied",
+        re.compile(
+            r"pull access denied|insufficient_scope|authorization failed|unauthorized:|denied: requested access",
+            re.I,
+        ),
+    ),
+    (
+        "image_not_found",
+        re.compile(
+            r"manifest unknown|no matching manifest|(?:source metadata|manifest|image).+not found\b|"
+            r"^failed to solve:\s+\S+:\s+not found\b",
+            re.I,
+        ),
+    ),
+    (
+        "missing_local_build_dependency",
+        re.compile(
+            r"could not find [\w.+-]+ (?:for |executable\b)|"
+            r"[\w.+-]+: command not found\b|fatal error:.+no such file or directory",
+            re.I,
+        ),
+    ),
+    (
+        "download_or_connection_failed",
+        re.compile(
+            r"failed to fetch|could not resolve|TLS handshake timeout|i/o timeout|connection timed out",
+            re.I,
+        ),
+    ),
+)
+
+
 INFRA_RULES: List[Tuple[str, str, str, re.Pattern[str]]] = [
     (
         "INFRA_EXTERNAL_NETWORK",
@@ -34,7 +87,7 @@ INFRA_RULES: List[Tuple[str, str, str, re.Pattern[str]]] = [
         re.compile(
             r"(?:Failed to fetch|Temporary failure resolving|Could not resolve host|Connection timed out|"
             r"unable to access|net/http: TLS handshake timeout|dial tcp .* i/o timeout|"
-            r"apt-get .* failed|lookup .* no such host|pull token for registry)",
+            r"lookup .* no such host|pull token for registry)",
             re.IGNORECASE,
         ),
     ),
@@ -49,11 +102,12 @@ INFRA_RULES: List[Tuple[str, str, str, re.Pattern[str]]] = [
         ),
     ),
     (
-        "INFRA_API_RATE_LIMIT",
+        API_LIMIT_CODE,
         "api_rate_limit",
         "agent_execution",
         re.compile(
-            r"(?:429 Too Many Requests|RateLimitError|rate_limit_error|exceeded your current quota)",
+            r"(?:429 Too Many Requests|Request rejected\s*\(429\)|RateLimitError|"
+            r"ApiUsageLimitError|rate_limit_error|exceeded your current quota)",
             re.IGNORECASE,
         ),
     ),
@@ -254,6 +308,133 @@ def read_text_head_tail(path: Path, max_bytes: int = 120000) -> str:
         return ""
 
 
+def _terminal_sdk_result(path: Path, max_log_bytes: int) -> Optional[Dict[str, Any]]:
+    terminal = None
+    for line in read_text_head_tail(path, max_log_bytes).splitlines():
+        if line == "... [TRUNCATED] ...":
+            terminal = None
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            if event.get("type") == "result":
+                terminal = event
+            elif event.get("type") in ("assistant", "user") or (
+                event.get("type") == "system" and event.get("subtype") == "init"
+            ):
+                terminal = None
+    return terminal
+
+
+def _build_dependency_excerpt(text: str, source_pointer: str) -> Dict[str, Any]:
+    """Find a BuildKit diagnostic and point to its original source location."""
+    details: Dict[str, Any] = {}
+    in_tail = False
+    priority = 0
+    selected_step = None
+    for number, line in enumerate(text.splitlines(), 1):
+        if line == "... [TRUNCATED] ...":
+            in_tail = True
+        line = line.strip()
+        step_match = BUILDKIT_STAGE.match(line)
+        step = step_match.group(1) if step_match else None
+        if step_match and selected_step is not None and priority == 1:
+            status = step_match.group(2)
+            if (step == selected_step and status.startswith("DONE")) or (
+                step != selected_step and status.startswith("ERROR:")
+            ):
+                details = {}
+                priority = 0
+        if not BUILD_ERROR_LINE.match(line) or line.lower().startswith("failed to solve: process "):
+            continue
+        line_priority = 2 if line.lower().startswith("failed to solve:") else 1
+        if line_priority < priority:
+            continue
+        for kind, pattern in BUILD_DEPENDENCY_FAILURES:
+            if pattern.search(line):
+                pointer = source_pointer
+                if source_pointer == "L1":
+                    pointer = "bounded tail excerpt" if in_tail else f"L{number}"
+                details = {
+                    "matched_text": line[:300],
+                    "source_pointer": pointer,
+                    "build_failure_kind": kind,
+                }
+                priority = line_priority
+                selected_step = step
+                break
+    return details
+
+
+def _terminal_api_limit_observation(
+    runtime: Dict[str, Any],
+    exception: Dict[str, Any],
+    traceback_text: str,
+    sdk_result: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    exception_type = str(exception.get("exception_type") or "")
+    typed = exception_type.casefold() in API_LIMIT_EXCEPTION_TYPES
+    trace_exception = (
+        HARBOR_API_LIMIT_EXCEPTION.search(
+            traceback_text.rsplit("Traceback (most recent call last):", 1)[-1]
+        )
+        if not exception_type
+        else None
+    )
+    sdk = sdk_result or {}
+    sdk_message = str(sdk.get("result") or "").strip()
+    sdk_limit = sdk.get("is_error") is True and (
+        str(sdk.get("api_error") or "").casefold() in SDK_API_LIMIT_ERRORS
+        or SDK_API_LIMIT_MESSAGE.match(sdk_message) is not None
+    )
+    if typed:
+        source_file, source_pointer = "result.json", "/exception_info/exception_type"
+        diagnostic = str(exception.get("exception_message") or "")
+    elif trace_exception:
+        source_file, source_pointer = "exception.txt", "terminal agent exception"
+        diagnostic = trace_exception.string[trace_exception.end() :]
+    elif sdk_limit:
+        source_file, source_pointer = "agent/claude-code.txt", "terminal_result"
+        diagnostic = sdk_message
+    else:
+        return None
+
+    # Keep the typed interruption distinct from incidental HTTP errors in tool logs.
+    # Do not copy API account identifiers or a shell wrapper's command into reports.
+    if sdk_limit and typed:
+        diagnostic = sdk_message
+    status_429 = re.search(r"(?:\(429\)|HTTP\s*429|429 Too Many Requests)", diagnostic, re.I)
+    if re.search(r"\bbudget (?:has been )?exceeded\b", diagnostic, re.I):
+        limit_kind, detail = "budget", "the API usage budget was exceeded"
+    elif re.search(r"\b(?:usage limit|quota)\b", diagnostic, re.I):
+        limit_kind, detail = "quota", "the API usage quota was reached"
+    else:
+        limit_kind, detail = "usage_limit", "the model API reported a usage limit"
+    causal = (
+        runtime["verification_status"] not in ("passed", "pending")
+        and sdk.get("is_error") is not False
+        and (
+            typed
+            or bool(trace_exception)
+            or exception_type in ("", "NonZeroAgentExitCodeError", "RewardFileNotFoundError")
+        )
+    )
+    return {
+        "error_id": "err:terminal_api_limit",
+        "code": API_LIMIT_CODE,
+        "subtype": "api_rate_limit",
+        "stage": "agent_execution" if runtime["agent_started"] else "agent_setup",
+        "matched_text": f"{'HTTP 429: ' if status_429 else ''}{detail}",
+        "causal_candidate": causal,
+        "transient": not causal,
+        "source_file": source_file,
+        "source_pointer": source_pointer,
+        "limit_kind": limit_kind,
+        "http_status": 429 if status_429 else None,
+    }
+
+
 def extract_runtime_errors(
     job_dir: Path,
     trial_dir: Optional[Path] = None,
@@ -321,6 +502,7 @@ def extract_runtime_errors(
             )
         )
 
+    terminal = None
     # Scoring shell output is distinct from agent startup diagnostics.
     if trial_dir:
         stdout_path = trial_dir / "verifier" / "test-stdout.txt"
@@ -345,15 +527,7 @@ def extract_runtime_errors(
                 }
             )
         # Only a terminal SDK result with is_error=true binds an SDK failure.
-        sdk_path = trial_dir / "agent" / "claude-code.txt"
-        terminal = None
-        for line in read_text_head_tail(sdk_path, max_log_bytes).splitlines():
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if isinstance(event, dict) and event.get("type") == "result":
-                terminal = event
+        terminal = _terminal_sdk_result(trial_dir / "agent" / "claude-code.txt", max_log_bytes)
         sdk_codes = {
             "autocompact_thrashing": ("INFRA_AGENT_AUTOCOMPACT_THRASHING", "autocompact_thrashing"),
             "max_output_tokens": ("INFRA_AGENT_OUTPUT_TOKEN_LIMIT", "output_token_limit"),
@@ -377,7 +551,16 @@ def extract_runtime_errors(
                 }
             )
 
+    api_limit = _terminal_api_limit_observation(
+        rt_state,
+        exc_info if isinstance(exc_info, dict) else {},
+        next((text for source, _, text in sources_to_scan if source == "exception.txt"), ""),
+        terminal,
+    )
     seen_codes_per_file = set()
+    if api_limit:
+        error_observations.append(api_limit)
+        seen_codes_per_file.add((api_limit["source_file"], API_LIMIT_CODE))
     err_counter = 1
 
     # Runner-stage collection failures are detected before the generic rules so
@@ -394,23 +577,28 @@ def extract_runtime_errors(
         for src_file, _, _ in sources_to_scan:
             seen_codes_per_file.add((src_file, "INFRA_CONTAINER_RUNTIME"))
 
+    build_excerpts = {
+        source: _build_dependency_excerpt(text, pointer)
+        for source, pointer, text in sources_to_scan
+        if not agent_started
+        and "Docker compose command failed" in text
+        and "build" in text
+        and not (source == "job.log" and trial_dir is not None)
+    }
+    terminal_build_kind = next(
+        (detail["build_failure_kind"] for detail in build_excerpts.values() if detail), None
+    )
+    local_build_failure = terminal_build_kind == "missing_local_build_dependency"
+
     for src_file, src_ptr, text in sources_to_scan:
         if not text:
             continue
-        # Special check: Docker compose build failure combined with network fetch/pull failure
-        is_docker_build_fail = "Docker compose command failed" in text and "build" in text
-        has_network_timeout_or_apt = bool(
-            re.search(
-                r"(?:apt-get|Failed to fetch|Could not resolve|timed out|pull token|sha256:.*MB\s+\d+\.\d+s)",
-                text,
-                re.IGNORECASE,
-            )
-        )
+        build_excerpt = build_excerpts.get(src_file, {})
+        # Build commands can mention apt or a registry without either one failing.
         if (
-            is_docker_build_fail
-            and has_network_timeout_or_apt
-            and (not agent_started or not exc_info)
-            and not (src_file == "job.log" and trial_dir is not None)
+            build_excerpt
+            and build_excerpt["build_failure_kind"] != "missing_local_build_dependency"
+            and not local_build_failure
         ):
             key = (src_file, "INFRA_EXTERNAL_NETWORK")
             if key not in seen_codes_per_file:
@@ -426,6 +614,7 @@ def extract_runtime_errors(
                         "transient": not has_unrecovered_runner_failure,
                         "source_file": src_file,
                         "source_pointer": src_ptr,
+                        **build_excerpt,
                     }
                 )
                 err_counter += 1
@@ -439,7 +628,11 @@ def extract_runtime_errors(
                 seen_codes_per_file.add(key)
                 snippet_start = max(0, m.start() - 60)
                 snippet_end = min(len(text), m.end() + 140)
-                snippet = text[snippet_start:snippet_end].replace("\n", " ").strip()
+                snippet = (
+                    m.group(0)
+                    if code == API_LIMIT_CODE
+                    else text[snippet_start:snippet_end].replace("\n", " ").strip()
+                )
 
                 # A post-agent collection crash proves environment build already
                 # succeeded. The harbor fallback line "artifacts compose cp
@@ -453,11 +646,9 @@ def extract_runtime_errors(
                 # Determine whether this error actually blocked execution or was recovered
                 if effective_stage == "environment_build":
                     is_causal = not agent_started or has_unrecovered_runner_failure
-                elif code in (
-                    "INFRA_AGENT_TIMEOUT",
-                    "INFRA_API_ERROR",
-                    "INFRA_API_RATE_LIMIT",
-                ):
+                elif code == API_LIMIT_CODE:
+                    is_causal = False
+                elif code in ("INFRA_AGENT_TIMEOUT", "INFRA_API_ERROR"):
                     is_causal = has_unrecovered_runner_failure or not verifier_started
                 elif code == "INFRA_VERIFIER_TIMEOUT":
                     is_causal = has_unrecovered_runner_failure
@@ -486,6 +677,8 @@ def extract_runtime_errors(
                     is_causal = False
                 if rt_state["verification_status"] == "passed":
                     is_causal = False
+                if code == "INFRA_EXTERNAL_NETWORK" and local_build_failure:
+                    is_causal = False
 
                 observation: Dict[str, Any] = {
                     "error_id": f"err:{err_counter}",
@@ -498,6 +691,11 @@ def extract_runtime_errors(
                     "source_file": src_file,
                     "source_pointer": src_ptr,
                 }
+                if code == "INFRA_CONTAINER_BUILD" or (
+                    code == "INFRA_EXTERNAL_NETWORK"
+                    and build_excerpt.get("build_failure_kind") != "missing_local_build_dependency"
+                ):
+                    observation.update(build_excerpt)
                 if effective_stage != stage:
                     observation["stage_reclassified_from"] = stage
                     observation["runner_phase"] = "post_agent_execution"

@@ -165,6 +165,59 @@ def collect_positive_agent_evidence_ids(evidence: Dict[str, Any]) -> Set[str]:
     return pos_ids
 
 
+def _reviewed_self_check_event(evidence, analysis):
+    """Allow only the cited, reviewed execution to supply positive D7 evidence."""
+    ev_refs = analysis.get("evidence_refs") or []
+    assessment = analysis.get("causal_assessment") or {}
+    decision = assessment.get("decision") or {}
+    event = decision.get("event_ref")
+    bound = set((decision.get("execution_binding") or {}).get("evidence_refs") or [])
+    # An executed check is neutral until the reviewer connects this particular
+    # script/version to a public criterion and the recorded rejection.
+    from causal_assessment import execution_refs, terminal_failure_refs
+
+    public = {
+        ref
+        for a in evidence.get("artifacts") or []
+        if a.get("scope") == "task"
+        and a.get("exists") is True
+        and (
+            a.get("artifact_id") == "art:instruction_md"
+            or Path(a.get("rel_path") or "").name.startswith("instruction.")
+            or str(a.get("rel_path") or "").startswith(
+                ("environment/assets/", "assets/", "inputs/")
+            )
+        )
+        for ref in (a.get("artifact_id"), a.get("rel_path"), f"task:{a.get('rel_path')}")
+        if ref
+    }
+    public.update(
+        c["contract_id"]
+        for c in evidence.get("contract_observations") or []
+        if c.get("prompt_requirement") == "required" and c.get("contract_id")
+    )
+    criteria = set((decision.get("basis") or {}).get("evidence_refs") or [])
+    failures = set((decision.get("outcome") or {}).get("evidence_refs") or [])
+    matched = bool(
+        assessment.get("review")
+        and event in ev_refs
+        and event in bound
+        and event in execution_refs(evidence)
+        and public.intersection(criteria)
+        and failures.intersection(terminal_failure_refs(evidence))
+        and any(
+            item.get("event_id") == event
+            and (
+                assessment.get("level") != "evidence_supported_cause"
+                or item.get("result_status") in ("passed", "partial")
+            )
+            and bound.intersection(item.get("script_event_refs") or [])
+            for item in (evidence.get("causal_anchors") or {}).get("self_check_executions") or []
+        )
+    )
+    return event if matched else None
+
+
 def validate_report_sections(report_text: str, verdict: Optional[str] = None) -> List[str]:
     errors: List[str] = []
     passed_hint = "|".join(re.escape(t) for t in accepted_titles(1, passed=True))
@@ -372,8 +425,15 @@ def validate_all(
                 )
 
     # 6. Hard Rule: Positive agent evidence required when primary_root_cause.category == 'agent'
+    reviewed_self_check = (
+        _reviewed_self_check_event(evidence, analysis)
+        if prc.get("code") == "AGENT_SELF_CHECK_GAP"
+        else None
+    )
     if cat == "agent":
         pos_agent_ids = collect_positive_agent_evidence_ids(evidence)
+        if reviewed_self_check:
+            pos_agent_ids.add(reviewed_self_check)
         if not any(r in pos_agent_ids for r in ev_refs):
             errors.append(
                 "POSITIVE_AGENT_EVIDENCE violation: primary_root_cause.category is 'agent', "
@@ -489,10 +549,15 @@ def validate_all(
             for sig in (evidence.get("behavioral_signals") or [])
         )
         has_anchor = isinstance(self_check_anchor, dict) and bool(self_check_anchor.get("event_id"))
-        if not (has_signal or has_anchor):
+        typed_review = bool(
+            (analysis.get("causal_assessment") or {}).get("review")
+            and (evidence.get("trajectory_normalization") or {}).get("self_check_extraction")
+        )
+        if not (reviewed_self_check or (not typed_review and (has_signal or has_anchor))):
             errors.append(
-                "SELF_CHECK_GAP_EVIDENCE violation: AGENT_SELF_CHECK_GAP requires a "
-                "`self_verification_executed` signal or a `causal_anchors.self_check` execution anchor."
+                "SELF_CHECK_GAP_EVIDENCE violation: bind the reviewed self-check event and its source "
+                "to a public criterion and a terminal failure; legacy evidence requires "
+                "`self_verification_executed` or a `causal_anchors.self_check` execution anchor."
             )
 
     # 12. Optional `confidence_breakdown` validation when present on primary_root_cause

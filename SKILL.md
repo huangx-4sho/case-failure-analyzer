@@ -1,6 +1,6 @@
 ---
 name: case-failure-analyzer
-description: Analyze failed scientific-computing benchmark cases from job artifacts, agent trajectories, task definitions, and verifier code; attribute failures across four peer-level categories (Agent decisions, Verifier rules, Case design, or Infrastructure environment). Output concise Chinese and/or English causal audit reports as requested, with evidence file pointers.
+description: Analyze failed scientific-computing benchmark cases from job artifacts, agent trajectories, task definitions, and verifier code; attribute failures across four peer-level categories (Agent decisions, Verifier rules, Case design, or Infrastructure environment). Locate the recorded failure, its scoring rule or runtime interruption, and the implicated agent decision when the evidence supports one. Report in the requested language with evidence pointers.
 metadata:
   short-description: Audit scientific benchmark case failures across 4 peer categories with concise reports
 ---
@@ -72,11 +72,12 @@ python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkou
 
 ### Required Answer Shape (answer order is load-bearing)
 
-The stdout verdict card is the answer. Relay it directly, in this order:
+For a quick audit, relay the stdout verdict card in the order below. When the user asks for the specific cause or a capability investigation, follow the observed rejection to the public task, effective artifact and decision. Complete the evidence review when these records support it. In the answer cite the reviewed report or name the remaining competing explanations and the particular missing record.
 
 1. **Conclusion level, candidate cause, and why it failed** — distinguish observation, rule candidate, and supported evidence review; one line: verdict, primary peer category, `subtype`, `code`, confidence, and the concrete failure reason (named failing check / deviation value, not a generic message).
 2. **Four peer categories** — the `## 1. 四大类裁决` table: `agent` / `verifier` / `case` / `infra` each with its status (`主因` / `伴随因素` / `尚未独立排除` / `已排除` / `未选为主因`) and an evidence-backed reason. A rule not firing does not independently exclude its category. Preserve unresolved alternatives.
 3. **Subcategory under the winning category** — the `## 2. 主因大类下的小分类` table: `subtype` → `code` → confidence → basis, plus contributing/candidate subcategories, named failing checks, evidence refs, and recommended actions.
+   When the primary category is `agent`, relay the trial-scoped capability diagnosis beneath its subcategory, including the status, reason and source.
 4. **Link the report** — e.g. `[task208.md](<REPORT_DIR>/task208.md)` using the `REPORT_DIR:` line printed after the card.
 
 Do not add a fifth category: `unknown` is an auxiliary "insufficient evidence" bucket, not a peer cause. Do not present a subcategory before the four-category table. If the card shows `unknown` as primary, say plainly that the evidence cannot isolate a cause and show what is missing.
@@ -135,6 +136,18 @@ For harbor jobs (`jobs/<timestamp>/<trial>/` + sibling `task.toml`, `artifacts/`
 
 Field definitions, missing-output examples, and commands: [evidence-review.md](references/evidence-review.md).
 
+### Locate the failure before assigning responsibility
+
+For each failed or interrupted trial, state the recorded stopping event, source file and line or field. Use `causal_assessment.failure_detail` in the report or `inspect --section errors`. When the grader and runner both emitted errors, explain their order and what each checked. A unique static rule match identifies the condition to inspect. Compare it with the public requirement, the effective input and an agent action before attributing responsibility. An unresolved trial should name the rejected check and the specific missing link.
+
+### Agent capability diagnosis
+
+For a failed trial attributed to `agent`, inspect the first consequential decision, the public requirement or scientific basis, the input or output actually used and the recorded failure. Use the [eight capability dimensions and their boundaries](references/taxonomy.md#agent-capability-dimensions). Report one primary dimension for the reviewed decision. Keep downstream effects and competing interpretations in the rationale. An isolated submission mismatch, timeout or hidden scoring convention can leave the dimension unassigned.
+
+When a rule leaves the cause unresolved but a saved action and its consequence identify an agent decision, use the existing `proposed_attribution` review to establish its category and diagnose that same decision.
+
+The audit reports `causal_assessment.capability.diagnosis`. A structured trace match yields a candidate; `needs_review` invites inspection of the underlying records. When diagnosing capabilities, use the [decision review](references/evidence-review.md#capability-scope) to record the dimension or document the missing evidence in a fresh review bundle. Report supported diagnoses within the reviewed trial. For a recurring mechanism, use the separate cross-task review.
+
 ### 3-Step Core Workflow
 
 1. **Run Analysis**: For a task number use the one-line Task-ID command; for an explicit path use path mode:
@@ -170,24 +183,11 @@ Request `--lang bilingual` when the user needs both languages. In path mode, `re
 - **Positive Agent Evidence Requirement**: Attributing failure to `agent` requires explicit positive deviation (`behavioral_signals`, contract violation, unrecovered trajectory scientific error). `reward == 0` or verifier `FAIL` alone is insufficient.
 - **Cross-Source Corroboration**: Review task requirements, saved verifier rules/results, actual execution, and delivered records together. A recorded numerical discrepancy does not alone identify a scientific decision or independently exclude a verifier defect. Preserve candidate status and coverage limits until the evidence review supports more.
 - **Delta Divergence Integrity**: A verifier delta (`differs from ... by <delta> beyond bound <tol>`) is a deviation, **not** the agent's delivered value. Bind `agent_reported_value` only from a structured deliverable record (`artifacts/**/*.csv|tsv|json`) whose row carries every identifier named in the verifier message; corroboration/FUD may point only to tool calls, file writes, or command outputs — never `final_response` / `agent_thought`. With no unique delivered value, abstain instead of reusing the verifier's delta.
-- **Self-check Coverage Gap**: When the agent's own verification script passes but the verifier names failing checks, emit a `self_check` causal anchor that records `checked_failed_checks` / `uncovered_failed_checks`, and attribute `agent` / `self_check_gap` / `AGENT_SELF_CHECK_GAP` in Gate 6.
+- **Self-check coverage**: Review `causal_anchors.self_check_executions` and the matching timeline source events. Cite the executed version, its own result (including partial results), the public criterion and the recorded terminal rejection. A missing check name in source is insufficient for a coverage diagnosis. Preserve the production error separately when a later self-check merely let it through. The older `self_check` anchor remains readable in saved bundles. Use the [evidence review](references/evidence-review.md) for larger cited sources and scoped cross-task review.
 - **Causal Anchor FUD**: For Agent attributions, `first_unrecovered_deviation.event_ref` must be an execution anchor (`deliverable_generation` or `algorithm_or_param_definition`), never a final-answer step.
 - **Skill Prescription Scope**: an `agent` candidate is necessary but insufficient. Per-trial `skill_prescription` remains null; proposed guidance stays under `causal_assessment.capability` until a separate cross-case review supports reusable guidance.
 - **Evidence Pointer Integrity**: All `evidence_refs` in `analysis.json` must resolve to valid observation IDs in `evidence.json`.
 
 ### References (Progressive Disclosure)
 
-Consult when refining complex attributions or checking software-specific error signatures:
-- **Protocols & Schemas**: [taxonomy.md](references/taxonomy.md) | [attribution-protocol.md](references/attribution-protocol.md) | [evidence-schema.md](references/evidence-schema.md) | [report-schema.md](references/report-schema.md) | [skill-prescription-policy.md](references/skill-prescription-policy.md) | [error-families.json](references/error-families.json)
-- **Scientific Software Knowledge Bases (`references/software/` - 11 suites / 60 error families)**:
-  - [cp2k.md](references/software/cp2k.md) (`CP2K` mixed Gaussian/plane-wave DFT & AIMD)
-  - [quantum-espresso.md](references/software/quantum-espresso.md) (`Quantum ESPRESSO` plane-wave DFT / DFPT)
-  - [vasp-abacus.md](references/software/vasp-abacus.md) (`VASP`, `ABACUS`, `GPAW`, `Siesta`, `FHI-aims` solid-state DFT)
-  - [orca-gaussian-pyscf.md](references/software/orca-gaussian-pyscf.md) (`ORCA`, `Gaussian`, `PySCF`, `Psi4`, `Q-Chem`, `NWChem` molecular quantum chemistry)
-  - [lammps.md](references/software/lammps.md) (`LAMMPS` classical & reactive MD)
-  - [gromacs-amber-openmm.md](references/software/gromacs-amber-openmm.md) (`GROMACS`, `AMBER`, `OpenMM`, `NAMD`, `CHARMM` biomolecular MD)
-  - [mlip.md](references/software/mlip.md) (`MACE`, `NequIP`, `Allegro`, `DeePMD-kit`, `CHGNet`, `SevenNet` ML interatomic potentials)
-  - [ase.md](references/software/ase.md) (`ASE` / `pymatgen` workflows & calculators)
-  - [xtb.md](references/software/xtb.md) (`xTB` / `CREST` semiempirical quantum chemistry)
-  - [rdkit.md](references/software/rdkit.md) (`RDKit` cheminformatics & conformer generation)
-  - [generic-scientific.md](references/software/generic-scientific.md) (`SciPy`, `NumPy`, `JAX`, `PyTorch`, `FEniCS`, `OpenFOAM` numerics & PDE)
+Use the [reference index](references/README.md) for causal rules, evidence schemas and scientific software notes. The [script map](scripts/README.md) lists the entry points and implementation by function.

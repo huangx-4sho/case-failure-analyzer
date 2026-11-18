@@ -67,7 +67,21 @@ A review may optionally provide `proposed_attribution` with `category`, `subtype
 
 The original analysis snapshot is retained so validation can reconstruct the change. A reviewed attribution does not alter the benchmark verdict or reward. Any retained numerical confidence is explicitly the **original rule evidence score**, not confidence in the review. Freshness checks cover the cited sources (and the trajectory source when used); growth of an unrelated shared job log does not invalidate a completed trial's review. Unchecked cited sources remain a limitation.
 
+### Failure location and self-check evidence
+
+The report, verdict card and `inspect --section errors` list the runtime interruption and the scoring rejection separately. When a message matches a single location in the scorer, the report gives the line and any condition it can identify. It also shows the submitted value when the field resolves to a unique captured file and scalar. Completeness scores retain their original scope. The per-check records are in `contract_review.failure_locations`. The field `causal_assessment.failure_detail` holds the records used in the report.
+
+To review a self-check, look up the command, script version and output in `causal_anchors.self_check_executions`. Compare the criterion it tested with the public requirement and the recorded rejection. One script can pass an interface check and fail a numerical check. If the generator made an error and the self-check missed it, record the two decisions separately.
+
+For a larger cited file, add `--hash-source art:trajectory_json` to `review plan`. Repeat the option for each artifact ID that has a collected digest. Both plan and apply read the file in chunks and verify its collected SHA-256. The additional budget is 32 MiB per selected file and 128 MiB across those files. A missing digest, changed file or unresolved alternative limits the conclusion.
+
 ## Capability scope
+
+For a failed agent trial, `review plan` offers an optional `capability_dimension`. Inspect the saved decision and select one of the [eight dimensions](taxonomy.md#agent-capability-dimensions). In the review JSON, supply `dimension`, `rationale_zh`, `rationale_en` and `evidence_refs`. Cite the decision event plus references from its basis and outcome. Use the rationale to explain the mechanism and which adjacent interpretation the evidence distinguishes. The event may be the tool call that wrote the submitted claim. Each review covers one decision.
+
+When the sources cannot distinguish the mechanism, supply `{"status":"insufficient_evidence","rationale_zh":"…","rationale_en":"…"}` with the missing evidence. Leaving the field null defers annotation. The resulting `causal_assessment.capability.diagnosis` distinguishes `needs_review`, `insufficient_evidence`, `candidate` and `supported_in_trial`. An automatic trace match can only produce a candidate. A reviewed dimension inherits the support ceiling of its bound causal decision. The field is absent on other root categories and may be absent in older reports. The parent `capability.status` separately tracks proposed reusable guidance.
+
+To review a specific dimension across tasks, include its ID as `dimension` in the cross-task request. Every supplied task must have a supported decision bearing that dimension, and the reviewer must establish a shared mechanism.
 
 One failed trial, even after review, cannot establish a reusable scientific capability deficit. Per-trial `skill_prescription` stays null; heuristic guidance is retained only as a suspected proposal.
 

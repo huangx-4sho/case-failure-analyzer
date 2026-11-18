@@ -14,6 +14,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from attribution.failure_location import locate_failures
 
 MAX_FILE_BYTES = 1_000_000
 MAX_TOTAL_BYTES = 8_000_000
@@ -101,9 +102,21 @@ class _Review:
                 self.diagnostics.append(
                     {"code": "PUBLIC_FILE_LIMIT", "omitted_count": len(paths) - MAX_FILES}
                 )
-            self.verify_path = task / "tests" / "verify.py"
+            grader = next(
+                (
+                    a.get("rel_path")
+                    for a in self.evidence.get("artifacts") or []
+                    if a.get("artifact_id") == "art:verify_py" and a.get("exists")
+                ),
+                None,
+            )
+            self.verify_path = task / (grader or "tests/verify.py")
             try:
-                if self.verify_path.stat().st_size <= MAX_FILE_BYTES:
+                if (
+                    self.verify_path.resolve().is_relative_to(task.resolve())
+                    and not self.verify_path.is_symlink()
+                    and self.verify_path.stat().st_size <= MAX_FILE_BYTES
+                ):
                     self.code = self.verify_path.read_text(encoding="utf-8")
                     self.tree = ast.parse(self.code)
                 else:
@@ -1410,6 +1423,14 @@ def audit_contract_review(evidence: dict) -> dict:
     coverage_findings = review.requirement_coverage_review()
     return {
         "schema_version": 1,
+        "failure_locations": locate_failures(
+            evidence,
+            review.tree,
+            review.parents,
+            review.verify_path,
+            review.submitted,
+            review.failures,
+        ),
         "review_items": review.items,
         "execution_scope_findings": execution_findings,
         "requirement_coverage_findings": coverage_findings,

@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from normalize_trajectory import normalize_trajectory
 from runtime_state import resolve_trajectory_path
+from trace_causal_anchors import trace_causal_anchors
 
 
 class HarnessTrajectories(unittest.TestCase):
@@ -20,6 +21,157 @@ class HarnessTrajectories(unittest.TestCase):
 
     def tools(self, result):
         return [e for e in result["events"] if e.get("tool_name")]
+
+    def normalized_checks(self, calls):
+        steps = []
+        for index, (tool, args, output) in enumerate(calls, 1):
+            call_id = str(index)
+            steps.append(
+                {
+                    "step_id": index,
+                    "tool_calls": [
+                        {"tool_call_id": call_id, "function_name": tool, "arguments": args}
+                    ],
+                    "observation": {
+                        "results": [{"source_call_id": call_id, "content": output}]
+                        if output is not None
+                        else []
+                    },
+                }
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.json"
+            path.write_text(json.dumps({"schema_version": "ATIF-v1.7", "steps": steps}))
+            trace = normalize_trajectory(path, max_obs_bytes=512)
+        anchors = trace_causal_anchors(
+            {
+                "timeline": trace["events"],
+                "trajectory_normalization": trace["normalization"],
+            }
+        )
+        self.assertNotIn("self_check", anchors)
+        self.assertFalse(
+            any(
+                s["signal_type"] == "self_verification_executed"
+                for s in trace["behavioral_signals"]
+            )
+        )
+        return anchors.get("self_check_executions", [])
+
+    def test_review_only_check_tracks_shell_writes_and_result_scope(self):
+        body = "assert shape_ok\nprint('RESULT: ALL CHECKS PASSED')\n"
+        checks = self.normalized_checks(
+            [
+                (
+                    "Bash",
+                    {"command": f"cd /work && cat > audit.py <<'PY'\n{body}PY"},
+                    "Wrote script",
+                ),
+                (
+                    "Bash",
+                    {"command": "cd /work && python3 -I audit.py | tail -30"},
+                    "PASS CLI replay\n" + "x\n" * 290 + "RESULT: ALL CHECKS PASSED\n",
+                ),
+                (
+                    "Bash",
+                    {"command": "cd /work && python3 audit.py | head -20"},
+                    "public comparison: False\npasses: False\npython -I run ok\n",
+                ),
+                ("Bash", {"command": "python3 /work/audit.py"}, "Process exited with code 0"),
+            ]
+        )
+        self.assertEqual([c["result_status"] for c in checks], ["passed", "partial", "unknown"])
+        first = checks[0]
+        self.assertEqual(first["event_id"], "trajectory:step:2:tool:0")
+        self.assertEqual(first["source_pointer"], "/steps/1/tool_calls/0")
+        self.assertEqual(first["script_path"], "/work/audit.py")
+        self.assertEqual(first["script_event_refs"], ["trajectory:step:1:tool:0"])
+        self.assertEqual(first["coverage"], "not_established")
+        self.assertTrue(first["observation_truncated"])
+        self.assertTrue(first["output_excerpted"])
+        self.assertIn("RESULT: ALL CHECKS PASSED", first["result_markers"])
+
+    def test_self_check_distinguishes_paths_edits_and_nonexecution(self):
+        source = "assert ready\nprint('ERRORS: 0')\n"
+        checks = self.normalized_checks(
+            [
+                ("Write", {"file_path": "/one/validate.py", "content": source}, "wrote"),
+                ("Write", {"file_path": "/two/validate.py", "content": source}, "wrote"),
+                ("Write", {"file_path": "/tests/validate.py", "content": source}, "wrote"),
+                ("Bash", {"command": "cd /two && python validate.py"}, "ERRORS: 0"),
+                ("Bash", {"command": "cat /two/validate.py && python -c 'print(42)'"}, "ERRORS: 0"),
+                (
+                    "Bash",
+                    {"command": "echo 'python /two/validate.py' && cat /two/validate.py"},
+                    "ERRORS: 0",
+                ),
+                (
+                    "Bash",
+                    {"command": "false && python /two/validate.py; echo ALL GOOD"},
+                    "ALL GOOD",
+                ),
+                ("Bash", {"command": "python /tests/validate.py"}, "ERRORS: 0"),
+                ("Bash", {"command": "python /one/validate.py"}, None),
+                (
+                    "Edit",
+                    {
+                        "file_path": "/one/validate.py",
+                        "old_string": "assert ready",
+                        "new_string": "assert rebuilt",
+                    },
+                    "updated",
+                ),
+                ("Bash", {"command": "python /one/validate.py"}, "ERRORS: 0"),
+                (
+                    "Write",
+                    {"file_path": "/one/validate.py", "content": "print('ERRORS: 0')\n"},
+                    "wrote",
+                ),
+                ("Bash", {"command": "python /one/validate.py"}, "ERRORS: 0"),
+                (
+                    "Bash",
+                    {"command": "echo '&&' python /two/validate.py; echo ALL GOOD"},
+                    "&& python /two/validate.py\nALL GOOD",
+                ),
+            ]
+        )
+        self.assertEqual(
+            [c["script_path"] for c in checks], ["/two/validate.py", "/one/validate.py"]
+        )
+        self.assertEqual(checks[0]["script_event_refs"], ["trajectory:step:2:tool:0"])
+        self.assertEqual(
+            checks[1]["script_event_refs"],
+            ["trajectory:step:1:tool:0", "trajectory:step:10:tool:0"],
+        )
+        self.assertEqual(checks[1]["script_source_status"], "complete")
+
+    def test_chat_self_check_retains_command_source_binding(self):
+        args = {
+            "cmd": (
+                "cat > '/work/audit script.py' <<'PY'\n"
+                "assert status == 'valid'\nprint('ALL GOOD')\nPY\n"
+                "python3 '/work/audit script.py'"
+            )
+        }
+        trace = self.normalize(
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "audit",
+                            "function": {"name": "exec_command", "arguments": json.dumps(args)},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "audit", "content": "ALL GOOD", "exit_code": 0},
+            ]
+        )
+        result = self.tools(trace)[0]["self_check_executions"][0]
+        self.assertEqual(result["script_path"], "/work/audit script.py")
+        self.assertEqual(result["script_event_refs"], [result["event_id"]])
+        self.assertEqual(result["result_status"], "passed")
+        self.assertEqual(trace["normalization"]["pointer_space"], "normalized_steps")
 
     def test_codex_rollout(self):
         result = self.normalize(

@@ -283,6 +283,69 @@ class TestAgentCorroboration(unittest.TestCase):
 class TestExtractionIntegration(unittest.TestCase):
     """Wiring through `extract_scientific_errors` incl. coexistence and fixtures."""
 
+    def test_historical_notes_and_log_inspection_do_not_create_execution_errors(self) -> None:
+        error = "SCF run NOT converged"
+        events = [
+            {"event_id": "trajectory:step:1", "event_type": "agent_thought", "observation": error},
+            {"event_id": "trajectory:step:2", "event_type": "file_read", "observation": error},
+            {
+                "event_id": "trajectory:step:3",
+                "event_type": "tool_call",
+                "exit_code": 0,
+                "command": f'grep "{error}|SCF run converged" archive/cp2k.out',
+                "observation": "SCF run converged in 13 iterations",
+            },
+            {
+                "event_id": "trajectory:step:4",
+                "event_type": "tool_call",
+                "exit_code": 0,
+                "command": 'cd /app && head -30 archive/cp2k.out; grep "SCF" archive/cp2k.out',
+                "observation": error,
+            },
+        ]
+        extraction = extract_scientific_errors(None, {"events": events})
+        self.assertEqual(extraction["scientific_observations"], [])
+
+        events.extend(
+            [
+                {
+                    "event_id": "trajectory:step:5",
+                    "event_type": "shell_error",
+                    "exit_code": 1,
+                    "command": "cd /app && mpirun cp2k.psmp -i run.inp",
+                    "observation": error,
+                },
+                {
+                    "event_id": "trajectory:step:6",
+                    "event_type": "tool_call",
+                    "exit_code": 0,
+                    "command": "cat archive/cp2k_success.out",
+                    "observation": "SCF run converged",
+                },
+            ]
+        )
+        observations = extract_scientific_errors(None, {"events": events})[
+            "scientific_observations"
+        ]
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0]["source_ref"], "trajectory:step:5")
+        self.assertFalse(observations[0]["recovered"])
+
+        events.append(
+            {
+                "event_id": "trajectory:step:7",
+                "event_type": "tool_call",
+                "exit_code": 0,
+                "command": "mpirun cp2k.psmp -i corrected.inp",
+                "observation": "SCF run converged",
+            }
+        )
+        observations = extract_scientific_errors(None, {"events": events})[
+            "scientific_observations"
+        ]
+        self.assertTrue(observations[0]["recovered"])
+        self.assertEqual(observations[0]["recovery_event_ref"], "trajectory:step:7")
+
     def test_coexistence_with_trajectory_family_extraction(self) -> None:
         fake_traj = {
             "events": [

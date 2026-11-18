@@ -66,7 +66,7 @@ Use case-failure-analyzer to audit every task under /path/to/benchmark,
 produce English reports, and update failure-report/INDEX.md.
 ```
 
-Task-ID mode returns an attribution summary in the chat and links to `failure-report/<job>/<task_id>/<task_id>.md`. See the [report schema](report-schema.md) for output files and optional skill-prescription conditions.
+Task-ID mode returns an attribution summary in the chat and links to `failure-report/<job>/<task_id>/<task_id>.md`. The output files are described in the [report schema](report-schema.md).
 
 Open `failure-report/INDEX.md` for the whole benchmark or `failure-report/<job>/INDEX.md` for one job. Use `--job run-001` with `audit` or `inspect` to select a job when a task appears in several runs. For a comparison across jobs, use `cfa.py diff task208 task208 --job-a run-001 --job-b run-002`.
 
@@ -99,8 +99,8 @@ Require or automatically discover:
 - **Deterministic Evidence Extraction + Model Causal Reasoning**: Deterministic scripts extract `evidence.json` and `candidate-hypotheses.json`; `--phase all` emits a conservative deterministic draft `analysis.json` that can be overridden and validated by an Agent/model per [attribution-protocol.md](attribution-protocol.md).
 - **Evidence-first attribution**: Never assigns a root cause from a single keyword match. Strictly separates **failure manifestation (symptom)**, **detection stage**, and **primary root cause**.
 - **Positive-evidence gate for Agent blame**: Never defaults to `agent` when other gates do not fire. Requires positive agent evidence (`behavioral_signals`, `agent_mismatch` contract violation, or agent-caused `scientific_observations`).
-- **Calibrated uncertainty**: Outputs `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`) when evidence cannot distinguish competing hypotheses.
-- **Bilingual Report Output**: Produces `report.md` (combined bilingual), `report.zh.md` (standalone Chinese), `report.en.md` (standalone English), plus `skill-prescription.md` when eligible.
+- When the records cannot distinguish competing causes, the root category is `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`). The recorded rejection is still available for review.
+- **Report languages**. `--lang bilingual` produces `report.md`, `report.zh.md`, and `report.en.md` in path mode. Task-ID mode uses `<task_id>.md` and `<task_id>.en.md`.
 
 ## Workflow
 
@@ -129,13 +129,15 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 
 Scripts: `scripts/runtime_state.py` · `scripts/extract_runtime_errors.py`
 
-Determine from `evidence.json` (`runtime.agent_started`, `runtime.verifier_started`, `runtime.execution_status`, `runtime.verification_status`, `error_observations`) whether the trial passed (`reward >= 1.0`) or whether the container/agent failed prior to startup. Job-level `stats.n_errored_trials` is never used to mark an individual passing trial as failed.
+Read `runtime.agent_started`, `runtime.verifier_started`, the execution and verification statuses, and `error_observations` together. A model-service quota can stop the agent before a verifier later scores missing deliverables. Keep the recorded score and both events. Job-wide error counts do not change a passing trial.
 
 ### 3. Reconstruct the trajectory
 
 Scripts: `scripts/normalize_trajectory.py` · `scripts/trace_causal_anchors.py`
 
 Trace chronological events across runner setup, agent steps (`ATIF-v1.7`, `.jsonl`, OpenAI/Anthropic `tool_use`/`tool_result` folding), tool calls, file writes, two-phase script output target tracking (`script_targets`), salience-preserving truncation, and verifier execution. `trace_causal_anchors.py` applies backward provenance scoring for scripts producing implicated failed artifacts and extracts `parameter_evolution` across steps.
+
+For an agent self-check, inspect `causal_anchors.self_check_executions`. Match the command that ran to the script version and its output. To attribute a coverage gap, identify a public requirement that this check missed and the rejection that followed. [Evidence review](evidence-review.md#failure-location-and-self-check-evidence)
 
 ### 4. Audit contracts and deliverables
 
@@ -163,7 +165,7 @@ Compare structured hypotheses (`H1`, `H2`, ...) with `evidence_for`, `evidence_a
 
 Scripts: `scripts/validate_analysis.py` · `scripts/render_report.py`
 
-Validate `evidence.json`, `analysis.json`, and `report.md`, then render `report.md`, `report.zh.md`, `report.en.md`, and optional `skill-prescription.md`.
+Validate `evidence.json`, `analysis.json`, and the Markdown report. The per-trial audit keeps `skill_prescription` null. Use `cfa.py review capability` to review proposed reusable guidance across independent tasks. [Existing-evidence review](evidence-review.md#capability-scope)
 
 ## Attribution Constraints (Hard Rules)
 
@@ -176,7 +178,7 @@ Validate `evidence.json`, `analysis.json`, and `report.md`, then render `report.
 4. **Positive evidence is required for `agent` attribution.** `reward == 0` or `FAIL` in `verify.log` alone is NOT positive agent evidence.
 5. **A static verifier hazard must be causally bound (`failure_binding == "direct"`).**
 6. **Use `unknown` when evidence cannot distinguish competing hypotheses.**
-7. **Generate `skill-prescription.md` ONLY for reusable, generalizable agent capability gaps.**
+7. **Require a separate cross-case review to support reusable guidance for an agent capability gap.** [Skill prescription policy](skill-prescription-policy.md)
 
 ## Scientific software error signatures
 

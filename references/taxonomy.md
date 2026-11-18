@@ -74,7 +74,7 @@ The evaluated agent makes an unrecovered scientific, planning, or coding error w
 | `AGENT_PLANNING`<br>`planning` | **Workflow sequencing and state management.** Incorrect order of calculation stages, failure to freeze an earlier geometry (triggering unintended relaxation), or incorrect links to prior outputs (`outdir`/`prefix`). |
 | `AGENT_TOOL_USE`<br>`tool_use` | **Tool calls and generated scripts.** Syntax errors in generated inputs or parsers, missing cell parameters such as `celldm(1)`, or writing the wrong file. |
 | `AGENT_RESULT_VALIDATION`<br>`result_validation` | **Post-processing and result validation.** Incorrect unit conversion or per-atom normalization, or writing derived quantities to `results.json` without checking physical consistency. |
-| `AGENT_SELF_CHECK_GAP`<br>`self_check_gap` | **Incomplete self-check coverage.** A self-check passes but omits named verifier criteria or independent recomputation; for example, `verify_outputs.py` checks internal consistency without recomputing `spin_selection` / `energy_parameters`. |
+| `AGENT_SELF_CHECK_GAP`<br>`self_check_gap` | An executed self-check missed a public requirement tied to the rejection. For example, `verify_outputs.py` checked internal consistency but omitted the required recomputation of `spin_selection` or `energy_parameters`. |
 | `AGENT_PATH_OR_DEPENDENCY_DISCOVERY`<br>`path_or_dependency_discovery` | **Path and dependency discovery.** Failure to locate preinstalled binaries, pseudopotentials, force-field parameters, or checkpoints in known container paths. |
 | `AGENT_ERROR_DIAGNOSIS`<br>`error_diagnosis` | **Scientific error diagnosis.** The simulator provides an explicit diagnostic, but the agent misidentifies its physical cause and makes ineffective changes. |
 | `AGENT_RECOVERY`<br>`recovery` | **Recovery strategy.** Repeating the same failed command without changes, or entering an unproductive retry loop. |
@@ -106,7 +106,7 @@ The failure belongs to the underlying runtime platform or execution infrastructu
 | `INFRA_CONTAINER_RUNTIME`<br>`container_runtime` | **Container runtime.** Unexpected container crash, hung background daemon, or failed mount. |
 | `INFRA_EXTERNAL_NETWORK`<br>`external_network` | **External network.** Network restrictions prevent `apt`, `pip`, or external model downloads during build or initialization. |
 | `INFRA_API_ERROR`<br>`api_error` | **LLM API gateway.** The LLM gateway returns HTTP 5xx/502/504 or resets the connection. |
-| `INFRA_API_RATE_LIMIT`<br>`api_rate_limit` | **API rate limit.** The model API request rate exceeds quota (HTTP 429). |
+| `INFRA_API_RATE_LIMIT`<br>`api_rate_limit` | The model service cut off requests at a rate or usage limit. Look for a terminal record from the trial, such as an HTTP 429 followed by SDK termination. A recovered request can be recorded separately. |
 | `INFRA_OOM`<br>`oom` | **Out of memory.** The container or calculation process triggers the OOM killer (`SIGKILL` / exit 137). |
 | `INFRA_DISK`<br>`disk` | **Disk exhaustion.** The container exhausts its storage allocation (`No space left on device`). |
 | `INFRA_AGENT_TIMEOUT`<br>`agent_timeout` | **Agent timeout.** Agent reasoning and tool interactions exceed the total time budget. |
@@ -161,3 +161,20 @@ Harbor collects the declared deliverables (`task.toml` → `artifacts`) with `do
 `Verifier / Case contract mismatch` is a review group spanning case/verifier, not a fifth peer cause. Its tags are `semantic_rejection`, `hidden_format_requirement`, and `definition_ambiguity`. Static findings must bind the actual rejected rule, submitted representation, and public material; they remain review targets, not automatic verifier blame or a pass override.
 
 Mathematically different quantities (such as a maximum force component versus a maximum per-atom vector norm), unfinished public requirements, and replay scripts that omit outputs need separate analysis. They are not all overly strict formatting.
+
+## Agent capability dimensions
+
+Use one primary dimension for the decision under review in a failed `agent` trial. Follow the effective input, output or submitted claim back to the first decision that explains the scoped failure. Cite a separate self-check as a contributing event when warranted. The primary root code and the dimension describe different properties of the same trial.
+
+| Dimension | Evidence that distinguishes it from adjacent dimensions |
+|---|---|
+| `observable_definition` | The implemented observable, reference state or stopping quantity differs from the public definition. A maximum Cartesian component in place of a maximum per-atom force norm changes the quantity before the convergence test. |
+| `physical_model` | The executed model changes the system, charge/spin state, interactions, boundary conditions or permitted physical approximation. Identify the supplied and applied models. |
+| `numerical_adequacy` | With model and observable fixed, link a chosen cutoff, grid, timestep, convergence criterion or sampling design to an unmet accuracy or precision requirement. An inherited coarse grid or a convergence warning alone leaves agency unresolved. |
+| `workflow_state` | Trace a required producer, consumer and execution scope. Check which geometry, restart, path or job state actually reached the next step. Resolve submission versus isolated replay requirements first. |
+| `execution_recovery` | Locate the agent-controlled command, diagnostic and subsequent attempted recovery. Check the effective inputs and whether a later attempt recovered. Identify who ran the failing process. |
+| `postprocessing_provenance` | Given the specified quantity, trace the source column, conversion, reference or aggregation through to the delivered field. An intermediate energy offset written into a final state-energy column fits here. |
+| `independent_validation` | Locate the executed self-check or an actual target-conditioned validation choice. Compare its criterion with a public requirement and the missed discrepancy. Record whether the check concerned schema coverage, scientific validity or validation independence. |
+| `conclusion_calibration` | Compare a submitted claim or uncertainty interval with what the available evidence identifies. Examples include claiming unconverged phonons from grids at different stages, or narrowing admissible covariance matrices when reporting uncertainty bounds. |
+
+A wrong number can originate in the observable, its numerical approximation or its extraction. Distinguish them by the changed operation. For an ambiguous public requirement, a grader expecting its own convention gives no independent evidence of an agent error. Keep the competing explanation in the review. See [decision review and levels of support](evidence-review.md#capability-scope).

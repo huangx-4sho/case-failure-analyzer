@@ -72,6 +72,56 @@ class TestContractAudit(unittest.TestCase):
             self.assertTrue(record["impact"], "diagnostic must state its causal impact")
             self.assertLessEqual(len(record["error_message"]), 420)
 
+    def test_build_restored_assets_require_the_manifest_and_all_parts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task = Path(tmp)
+            environment = task / "environment"
+            assets = environment / "assets"
+            runtime = assets / "_runtime"
+            runtime.mkdir(parents=True)
+            (task / "instruction.md").write_text(
+                "Read `/app/environment/assets/series.traj` and `assets/unlisted.xyz`."
+            )
+            (runtime / "assets.json").write_text(
+                json.dumps(
+                    {
+                        "assets": [
+                            {
+                                "path": "assets/series.traj",
+                                "parts": [
+                                    {"path": "assets/series.traj.gz.000", "bytes": 3},
+                                    {"path": "assets/series.traj.gz.001", "bytes": 4},
+                                ],
+                            }
+                        ]
+                    }
+                )
+            )
+            (runtime / "restore.py").write_text('MANIFEST = "assets.json"\n')
+            (assets / "series.traj.gz.000").write_bytes(b"one")
+            fragment = assets / "series.traj.gz.001"
+            fragment.write_bytes(b"next")
+            dockerfile = environment / "Dockerfile"
+            copies = (
+                "COPY assets/_runtime/assets.json assets/_runtime/restore.py /app/environment/\n"
+            )
+            build = "RUN mkdir -p /tmp && \\\n    python3 /app/environment/restore.py\n"
+
+            def missing():
+                return {
+                    item["item"]
+                    for item in audit_contract(task, None)["contract_observations"]
+                    if item["alignment"] == "case_defect"
+                }
+
+            dockerfile.write_text(copies + build)
+            self.assertEqual(missing(), {"asset:unlisted.xyz"})
+            fragment.write_bytes(b"bad")
+            self.assertEqual(missing(), {"asset:series.traj", "asset:unlisted.xyz"})
+            fragment.write_bytes(b"next")
+            dockerfile.write_text(copies)
+            self.assertEqual(missing(), {"asset:series.traj", "asset:unlisted.xyz"})
+
     def test_clean_verify_py_records_no_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = Path(tmp) / "tasks" / "clean-verifier"

@@ -97,7 +97,7 @@ STATUS_KEYS = (
 )
 MESSAGE_KEYS = ("message", "reason", "detail", "scope", "submission_criteria_status")
 NAME_KEYS = ("name", "criterion", "check", "id", "key")
-DETAIL_KEYS = ("detail", "summary", "actual", "message", "description", "reason")
+DETAIL_KEYS = ("detail", "summary", "message", "description", "reason", "error", "actual")
 
 _ENV_RUNTIME_RE = re.compile(
     r"\b(?:ENV_INVALID|FileNotFoundError|Traceback|Exception|Crash)\b|missing/damaged",
@@ -276,7 +276,7 @@ def _normalize_check(
 ) -> Optional[Dict[str, Any]]:
     ok = _as_bool(
         _first_value(
-            item, ("ok", "passed", "status", "result", "state", "numeric_answer", "verdict")
+            item, ("ok", "passed", "pass", "status", "result", "state", "numeric_answer", "verdict")
         )
     )
     if name is None:
@@ -306,7 +306,9 @@ def _normalize_check(
     return rec
 
 
-def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str, Any]]) -> None:
+def _collect_from_mapping(
+    data: Dict[str, Any], rel: str, checks: List[Dict[str, Any]], pointer: str = "$"
+) -> None:
     """Flatten one JSON object's check-like structures into `checks`."""
     initial_len = len(checks)
     layers = data.get("layers")
@@ -314,19 +316,30 @@ def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str,
         for layer, items in layers.items():
             if not isinstance(items, list):
                 continue
-            for item in items:
+            for index, item in enumerate(items):
                 if isinstance(item, dict):
                     rec = _normalize_check(item, layer=str(layer), source=rel)
                     if rec:
+                        rec["source_pointer"] = f"{pointer}.layers.{layer}[{index}]"
                         checks.append(rec)
 
     criteria = data.get("criteria")
     if isinstance(criteria, list):
-        for item in criteria:
+        for index, item in enumerate(criteria):
             if not isinstance(item, dict):
                 continue
             rec = _normalize_check(item, layer=str(item.get("level") or "criteria"), source=rel)
             if rec:
+                rec["source_pointer"] = f"{pointer}.criteria[{index}]"
+                checks.append(rec)
+
+    rubric = data.get("completeness_rubric")
+    if isinstance(rubric, list) and data.get("reward_scope") == "evidence_completeness_only":
+        for index, item in enumerate(rubric):
+            if isinstance(item, dict):
+                rec = _normalize_check(item, layer="evidence_completeness", source=rel)
+                rec["source_pointer"] = f"{pointer}.completeness_rubric[{index}]"
+                rec["reward_scope"] = "evidence_completeness_only"
                 checks.append(rec)
 
     flat = data.get("checks")
@@ -365,30 +378,31 @@ def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str,
                             }
                         )
     elif isinstance(flat, list):
-        for item in flat:
+        for index, item in enumerate(flat):
             if isinstance(item, dict):
                 rec = _normalize_check(item, layer=str(item.get("level") or "checks"), source=rel)
                 if rec:
+                    rec["source_pointer"] = f"{pointer}.checks[{index}]"
                     checks.append(rec)
 
     # Some graders expose a bare `failed_checks` / `errors` list of names.
-    for key in ("failed_checks", "failures", "errors", "problems"):
+    named = {c["name"] for c in checks[initial_len:] if c.get("ok") is False}
+    for key in ("failed_checks", "failed", "failures", "errors", "problems"):
         values = data.get(key)
         if not isinstance(values, list):
             continue
         for index, item in enumerate(values):
             if isinstance(item, str) and item.strip():
+                if item in named:
+                    continue
                 checks.append(
                     {
                         "layer": "reported_failures",
                         "name": _text(item.split(":", 1)[0] if key == "problems" else item, 160),
                         "ok": False,
                         "detail": _text(item) if key == "problems" else "",
-                        **(
-                            {"source_pointer": f"$.problems[{index}]", "original_detail": item}
-                            if key == "problems"
-                            else {}
-                        ),
+                        "source_pointer": f"{pointer}.{key}[{index}]",
+                        **({"original_detail": item} if key == "problems" else {}),
                         "core": False,
                         "source": rel,
                     }
@@ -411,10 +425,14 @@ def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str,
             if detail:
                 name_match = re.match(r"^([A-Za-z0-9_.-]+)", detail)
                 check_name = name_match.group(1) if name_match else "diagnostic_check"
+                message_key = next(
+                    k for k in ("detail", "reason", "message", "error") if data.get(k)
+                )
                 layer = rel.split(".")[0].split("/")[-1] or "diagnostic"
                 checks.append(
                     {
                         "layer": layer,
+                        "source_pointer": f"{pointer}.{message_key}",
                         "name": check_name,
                         "ok": False,
                         "detail": detail,
@@ -424,22 +442,25 @@ def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str,
                 )
 
 
-def _walk_checks(data: Any, rel: str, checks: List[Dict[str, Any]], depth: int = 0) -> None:
+def _walk_checks(
+    data: Any, rel: str, checks: List[Dict[str, Any]], depth: int = 0, pointer: str = "$"
+) -> None:
     """Recurse into embedded reports (e.g. `scientific_report`), bounded."""
     if depth > 4:
         return
     if isinstance(data, dict):
-        _collect_from_mapping(data, rel, checks)
+        _collect_from_mapping(data, rel, checks, pointer)
         for key in (
             "scientific_report",
             "native_report",
             "core_report",
             "report",
             "verifier_report",
+            "diagnostics",
         ):
             nested = data.get(key)
             if isinstance(nested, dict):
-                _walk_checks(nested, rel, checks, depth + 1)
+                _walk_checks(nested, rel, checks, depth + 1, f"{pointer}.{key}")
 
 
 def _dedupe_checks(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -447,7 +468,12 @@ def _dedupe_checks(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     best: Dict[Tuple[str, str], Dict[str, Any]] = {}
     order: List[Tuple[str, str]] = []
     for rec in checks:
-        key = (rec["layer"], rec["name"])
+        key = (
+            rec["layer"],
+            rec.get("original_detail")
+            if rec["layer"] == "reported_failures" and rec.get("original_detail")
+            else rec["name"],
+        )
         if key not in best:
             best[key] = rec
             order.append(key)
@@ -696,7 +722,7 @@ def build_verifier_report(
     ]
 
     checks: List[Dict[str, Any]] = []
-    for rel, doc in docs:
+    for rel, doc in sorted(docs, key=lambda pair: pair[0] != primary_rel):
         if role(rel) == "historical":
             continue  # a preserved pre-regrade copy, not the current verdict
         _walk_checks(doc, rel, checks)
@@ -810,6 +836,16 @@ def build_verifier_report(
         "messages": fields["messages"],
         "source_files": [{"rel_path": rel, "role": role(rel)} for rel, _ in docs],
         "primary_report": primary_rel or None,
+        "first_message_location": next(
+            (
+                {"source": rel, "pointer": f"$.{key}"}
+                for rel, doc in sorted(docs, key=lambda pair: pair[0] != primary_rel)
+                if role(rel) != "historical" and fields["messages"]
+                for key in MESSAGE_KEYS
+                if isinstance(doc.get(key), str) and _text(doc[key], 300) == fields["messages"][0]
+            ),
+            None,
+        ),
         "skipped_files": skipped,
         "checks": checks,
         "failed_checks": failed,

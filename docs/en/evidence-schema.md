@@ -382,6 +382,10 @@ The following is a partial field illustration, not a captured run.
 | `evidence.deliverable_audit` | Declarations, mappings, capture states, scan coverage, and explicit saved missing-output statements; no inference of non-production |
 | `evidence.trajectory_normalization` | Format, coverage, diagnostics, and source-pointer space |
 | `analysis.causal_assessment.level` | `not_applicable`, `observed_failure`, `candidate_cause`, or `evidence_supported_cause` |
+| `contract_review.failure_locations` | Recorded failed checks or log excerpts, their source locations, and a matching scorer condition or submitted field when it can be identified uniquely |
+| `causal_assessment.failure_detail` | The runtime interruption and scoring rejection selected for the report. Either or both can be present |
+| `causal_anchors.self_check_executions` | Actual agent self-check commands, their script sources and observed results. A partial result can include both passing and failing subtests |
+| `causal_assessment.capability.diagnosis` | The dimension, decision evidence and support level for a failed trial attributed to the agent |
 | `causal_assessment.existing_verification` | Saved checks/numerical records, declared coverage and limits; `new_calculation_performed` is false |
 | `causal_assessment.decision` | Specific decision, execution, effective inputs/outputs, applicable basis, terminal observation, and reasoning |
 | `causal_assessment.alternatives` | Status, rationale, and evidence for alternatives; unresolved items remain explicit |

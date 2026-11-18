@@ -462,6 +462,12 @@ class EvidenceOnlyReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             bundles = []
+            annotation = {
+                "dimension": "observable_definition",
+                "rationale_zh": "执行采用的指标定义与其依据不同。",
+                "rationale_en": "The effective metric definition conflicts with the applicable rule.",
+                "evidence_refs": ["exec:1", "rule:1", "ver:1"],
+            }
             for number in (1, 2):
                 ev, an = fixture()
                 ev["case_id"] = an["case_id"] = f"task-{number}"
@@ -469,6 +475,8 @@ class EvidenceOnlyReviewTests(unittest.TestCase):
                 source.write_text(f"Saved independent task input {number}")
                 ev["artifacts"][0]["abs_path"] = str(source)
                 review = complete_review(ev, an)
+                if number == 1:
+                    review["capability_dimension"] = annotation
                 result = reviewed_analysis(ev, an, review)
                 bundle = root / f"bundle-{number}"
                 bundle.mkdir()
@@ -508,6 +516,25 @@ class EvidenceOnlyReviewTests(unittest.TestCase):
             with patch("validate_analysis.validate_all", return_value=(True, [])):
                 result = capability(path, root / "capability.json")
             self.assertEqual(result["status"], "supported_in_reviewed_cases")
+
+            request["dimension"] = annotation["dimension"]
+            write(path, request)
+            with (
+                patch("validate_analysis.validate_all", return_value=(True, [])),
+                self.assertRaisesRegex(ValueError, "supported in every reviewed task"),
+            ):
+                capability(path, root / "mismatched-dimension.json")
+
+            bundle = Path(bundles[-1])
+            ev, an = read(bundle / "evidence.json"), read(bundle / "original-analysis.json")
+            review = read(bundle / "review.json")
+            review["capability_dimension"] = annotation
+            write(bundle / "review.json", review)
+            write(bundle / "analysis.json", reviewed_analysis(ev, an, review))
+            with patch("validate_analysis.validate_all", return_value=(True, [])):
+                result = capability(path, root / "same-dimension.json")
+            self.assertEqual(result["dimension"], annotation["dimension"])
+
             request["generality_review"]["no_answer_substitution"] = {"confirmed": True}
             write(path, request)
             with (

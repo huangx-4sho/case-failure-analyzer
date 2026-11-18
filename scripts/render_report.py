@@ -25,6 +25,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from render_batch import render_job_summary_markdown
 from causal_assessment import render_assessment
+from attribution.capabilities import render_diagnosis
 from report_style import (
     category_label,
     cause_narrative,
@@ -1064,6 +1065,8 @@ def _render_chinese_bilingual_core(
 
     # 2. 失败证据链
     lines.append(f"## {section_title(2, lang)}\n")
+    if diagnosis := render_diagnosis(analysis, lang):
+        lines.extend([diagnosis, ""])
     lines.extend(render_scientific_contract_review(evidence, lang=lang))
     lines.extend(
         render_contract_review(
@@ -1362,6 +1365,8 @@ def _render_english_edition(
 
     # 2. Failure Evidence Chain
     lines.append(f"## {section_title(2, 'en')}\n")
+    if diagnosis := render_diagnosis(analysis, "en"):
+        lines.extend([diagnosis, ""])
     lines.extend(render_scientific_contract_review(evidence, lang="en"))
     lines.extend(
         render_contract_review(

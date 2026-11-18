@@ -65,7 +65,7 @@ python3 scripts/export_skill.py --dest "$HOME/.claude/skills/case-failure-analyz
 生成中文报告并更新 failure-report/INDEX.md。
 ```
 
-任务 ID 模式会在聊天中给出归因摘要，并链接到 `failure-report/<job>/<task_id>/<task_id>.md`。报告文件和可选技能处方的条件见[报告规范](report-schema.md)。
+任务 ID 模式会在聊天中给出归因摘要，并链接到 `failure-report/<job>/<task_id>/<task_id>.md`。各输出文件的用途见[报告规范](report-schema.md)。
 
 总索引在 `failure-report/INDEX.md`，每个作业也有自己的 `failure-report/<job>/INDEX.md`。同一任务出现在多个作业时，可在 `audit` 或 `inspect` 中用 `--job run-001` 指定作业。跨作业比较可用 `cfa.py diff task208 task208 --job-a run-001 --job-b run-002`。
 
@@ -102,8 +102,8 @@ python3 scripts/export_skill.py --dest "$HOME/.claude/skills/case-failure-analyz
 - **确定性取证 + 模型因果推理**：确定性脚本负责生成客观 `evidence.json` 与候选假设 `candidate-hypotheses.json`；默认 `--phase all` 会输出保守的确定性草稿 `analysis.json`，可由 Agent/模型依据 [attribution-protocol.md](attribution-protocol.md) 覆盖式改写并核验。
 - **证据优先归因**：严禁仅凭单一关键词直接定性根因；严格区分**直接失败现象 (`failure_manifestation`)**、**暴露阶段 (`detection_stage`)** 与**根本原因 (`primary_root_cause`)**。
 - **指责 Agent 必须具备正面证据**：禁止采用“排除其他 Gate 后默认归因 Agent”的兜底逻辑。归因 `agent` 必须引用明确的正面证据（如 `behavioral_signals`、`agent_mismatch` 契约违约、或 Agent 操作引发的 `scientific_observations`）。
-- **校准的不确定性**：当现有证据无法区分竞争假设时，诚实输出 `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`)。
-- **中英双语报告产出**：默认生成合订本 `report.md`、纯中文版 `report.zh.md` 与纯英文版 `report.en.md`（当满足条件生成 `skill-prescription.md` 时同样包含双语对照）。
+- 如现有记录无法区分责任，主根因记为 `unknown`（`UNKNOWN_INSUFFICIENT_EVIDENCE`）。评分拒绝和现有证据仍可查阅。
+- **报告语言**。使用 `--lang bilingual` 时，路径模式生成 `report.md`、`report.zh.md` 和 `report.en.md`，任务 ID 模式生成 `<task_id>.md` 和 `<task_id>.en.md`。
 
 <a id="核心工作流-workflow"></a>
 
@@ -133,13 +133,15 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 
 脚本：`scripts/runtime_state.py` · `scripts/extract_runtime_errors.py`
 
-基于单 Trial 证据判定 `agent_started`、`verifier_started`、`execution_status`、`verification_status` 与 `verdict`。若 `reward >= 1.0` 则直接判定为 `passed`，绝不因 Job 级汇总统计 `stats.n_errored_trials > 0` 误判通过的 Trial。
+对照 `runtime.agent_started`、`runtime.verifier_started`、执行与验证状态和 `error_observations`。模型服务可能先因配额耗尽而中断，评分器随后仍会对缺少的交付物打分。两项事件和原始分数分别保留。单个试次通过后，作业级错误数不影响它的结论。
 
 ### 3. 重建轨迹与因果锚点
 
 脚本：`scripts/normalize_trajectory.py` · `scripts/trace_causal_anchors.py`
 
 将 `ATIF-v1.7`、`.jsonl` 及 OpenAI/Anthropic `tool_use`/`tool_result` 消息流跨步折叠标准化为时间线事件与行为信号（`behavioral_signals`），结合保留中段高显著性错误/指标行的截断策略与两阶段脚本输出目标图（`script_targets`）推断交付物写出路径（仍需核对已采集文件）；`trace_causal_anchors.py` 对关联失败产物的脚本执行/写入事件给予反向溯源加权，并提取关键科学参数的 `parameter_evolution` 演化轨迹。
+
+审查自检时，在 `causal_anchors.self_check_executions` 中找到实际运行的命令、脚本版本和输出。要认定漏检，还需指出该自检漏过了哪条公开要求，以及哪条评分记录确认了后果。[自检证据](evidence-review.md#具体失败位置与自检证据)
 
 ### 4. 核对契约与交付物
 
@@ -167,7 +169,7 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 
 脚本：`scripts/validate_analysis.py` · `scripts/render_report.py`
 
-通过 `validate_analysis.py` 强制校验 Schema、竞争假设、首次偏离点、Agent 正面证据及 4 个核心报告章节非空正文，最后输出 `report.md`、`report.zh.md`、`report.en.md` 及可选的 `skill-prescription.md`。
+校验 `evidence.json`、`analysis.json` 与 Markdown 报告。单次试次审计中的 `skill_prescription` 为 `null`。使用 `cfa.py review capability` 对照独立任务的证据，复核建议的指引能否复用。[已有证据审查](evidence-review.md#能力判断)
 
 <a id="归因硬性约束-attribution-hard-rules"></a>
 
@@ -182,7 +184,7 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 4. **归因 `agent` 必须具备正面证据**：仅有 `reward=0` 或 `verify.log` 报错不构成 Agent 正面证据。
 5. **静态解析 Hazard 必须完成因果绑定 (`failure_binding == "direct"`)**：若 `verify.log` 仅在参考值中打印 `1.23D+03` 而 Agent 实际输出了错误数值 `9.99E+02`，严禁误判为 Verifier 正则缺陷；反之，若 Verifier 因自身临时文件缺失（如 `FileNotFoundError: /tmp/verify_tmp/refs.json`）崩溃，必须归因 `verifier` (`VERIFIER_RECOMPUTE_DEFECT`)。
 6. **证据不足或竞争假设无法区分时必须输出 `unknown`**。
-7. **仅针对可复用的 Agent 科学/工程能力缺口生成 `skill-prescription.md`**：严禁为绕过 Infra 故障或 Verifier 缺陷而生成领域 Skill。
+7. **可复用的 Agent 能力改进指引需经过独立的跨任务复核。** [技能处方规则](skill-prescription-policy.md)
 
 ## 科学软件错误签名
 

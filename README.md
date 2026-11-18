@@ -2,7 +2,9 @@
 
 English · [简体中文](README.zh.md)
 
-CFA is a portable skill for analyzing failed scientific-computing benchmarks across agent clients. It reads logs, agent trajectories, task instructions, verifier code, and deliverables, then attributes failures to agent decisions, verifier rules, task design, or infrastructure. Reports cite the evidence; insufficient evidence yields an unknown result.
+Case Failure Analyzer (CFA) reads the records of a scientific benchmark trial to find where it stopped or which check rejected the submission. If the records support a cause, CFA attributes it to an agent decision, the verifier, the task design, or the runtime environment. A report can identify the exact rejected field while leaving responsibility open.
+
+For an agent failure, a reviewer can trace the decision to one of eight capabilities, such as physical modelling, post-processing, or independent validation. [Agent capability dimensions](docs/en/taxonomy.md#agent-capability-dimensions)
 
 ![Analysis workflow: collect, cross-check, attribute, review](docs/images/cfa-workflow.en.svg)
 
@@ -36,12 +38,16 @@ Replace the example path with a benchmark checkout containing `jobs/` and `tasks
 
 ## Output
 
-Task-ID mode writes to `<benchmark>/failure-report/<job>/<task_id>/` and returns an attribution summary in the terminal or chat. Follow this path to review the results:
+A task-ID audit writes its reports to `<benchmark>/failure-report/<job>/<task_id>/` and prints a verdict card. Read the card for the candidate cause. Use `inspect --section errors` to see the recorded interruption or rejection, its source and, when available, the matching scorer condition and submitted value.
 
 ![Report reading path: summary, full report, and evidence](docs/images/cfa-reports.en.svg)
+
+In two CompChemWorld batches, CFA located a recorded interruption or scoring rejection in all 126 failed or errored trials. Its rules identified a candidate cause in 95 of them. [Validation results and worked examples](docs/en/compchemworld-validation.md)
 
 ## Documentation
 
 [Installation and invocation](docs/en/guide.md#installation-and-invocation) · [Taxonomy](docs/en/taxonomy.md) · [Attribution rules](docs/en/attribution-protocol.md)
 
 [Evidence fields](docs/en/evidence-schema.md) · [Report format](docs/en/report-schema.md) · [Skill prescriptions](docs/en/skill-prescription-policy.md) · [Evidence review](docs/en/evidence-review.md) · [Skill definition](SKILL.md)
+
+[Script map](scripts/README.md) · [Portable reference index](references/README.md)

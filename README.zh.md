@@ -2,7 +2,9 @@
 
 [English](README.md) · 简体中文
 
-CFA 是一个可由不同 agent 调用的科学计算基准失败分析 skill。它读取运行日志、智能体轨迹、任务说明、验证器和交付物，从智能体、验证器、题目设计及运行环境四类原因中进行归因，生成带证据引用的报告。证据不足时保留未知结论。
+Case Failure Analyzer（CFA）读取科学计算基准的试次记录，定位运行在哪一步中断，或哪项检查拒绝了提交。证据充分时，报告会指出原因来自智能体决策、验证器、题目设计还是运行环境。有些试次能定位到出错的字段，但现有材料仍不足以判断责任。
+
+对归因于智能体的失败，还可以审查具体决策涉及的能力，例如物理建模、后处理或独立验证。[八个能力维度](docs/zh/taxonomy.md#agent-capability-dimensions) · [案例试标](docs/zh/agent-capability-pilot.md)
 
 ![分析流程：读取材料、核对证据、规则归因与报告复核](docs/images/cfa-workflow.zh.svg)
 
@@ -35,12 +37,16 @@ python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang zh
 
 ## 输出
 
-任务 ID 模式默认写入 `<benchmark>/failure-report/<job>/<task_id>/`，并在终端或聊天中返回归因摘要。可按下面的顺序阅读结果：
+按任务号审计时，报告写入 `<benchmark>/failure-report/<job>/<task_id>/`，终端或聊天中会显示归因摘要。用 `inspect --section errors` 可查看运行中断或评分拒绝的原始记录。如果能唯一匹配，报告还会列出评分条件和提交值。
 
 ![报告阅读路径：摘要、完整报告与原始证据](docs/images/cfa-reports.zh.svg)
+
+在 CompChemWorld 两批共 196 个试次中，126 个失败或异常试次都能定位到中断或评分拒绝，其中 95 个有规则支持的候选根因。[验收结果与案例](docs/zh/compchemworld-validation.md)
 
 ## 文档
 
 [安装与调用](docs/zh/guide.md#安装与调用) · [根因分类](docs/zh/taxonomy.md) · [归因规则](docs/zh/attribution-protocol.md)
 
 [证据字段](docs/zh/evidence-schema.md) · [报告格式](docs/zh/report-schema.md) · [技能处方](docs/zh/skill-prescription-policy.md) · [已有证据审查](docs/zh/evidence-review.md) · [技能定义](SKILL.md)
+
+[脚本职责](scripts/README.md) · [随技能导出的参考索引](references/README.md)

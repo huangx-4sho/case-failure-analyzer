@@ -10,6 +10,9 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from attribution.capabilities import static_diagnosis
+from attribution.failure_location import failure_detail, render_failure_detail
+
 SCHEMA = "cfa-causal-assessment-v1"
 LEVELS = {"not_applicable", "observed_failure", "candidate_cause", "evidence_supported_cause"}
 ALTERNATIVES = (
@@ -395,6 +398,14 @@ def assess_static(evidence: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[st
             "independent_cases": [],
         },
     }
+    if prc.get("category") == "agent" and analysis.get("verdict") == "failed":
+        analysis["causal_assessment"]["capability"]["diagnosis"] = static_diagnosis(
+            evidence, analysis, execution_refs(evidence)
+        )
+    if analysis.get("verdict") not in ("passed", "pending") and "failure_locations" in (
+        evidence.get("contract_review") or {}
+    ):
+        analysis["causal_assessment"]["failure_detail"] = failure_detail(evidence, analysis)
     analysis["skill_prescription"] = None
     return analysis
 
@@ -643,7 +654,20 @@ def validate_assessment(
         errors.append("saved verification or deliverable summary differs from evidence")
     if a.get("contract_review") != evidence.get("contract_review"):
         errors.append("contract review differs from saved evidence")
+    if "failure_detail" in a and a["failure_detail"] != failure_detail(evidence, analysis):
+        errors.append("failure detail differs from the saved runtime or scoring record")
     cap = a.get("capability") or {}
+    if "diagnosis" in cap:
+        if (analysis.get("primary_root_cause") or {}).get("category") != "agent" or analysis.get(
+            "verdict"
+        ) != "failed":
+            errors.append("capability diagnosis requires a failed agent attribution")
+        elif not a.get("review") and cap["diagnosis"] != static_diagnosis(
+            evidence, analysis, execution_refs(evidence)
+        ):
+            errors.append(
+                "unreviewed capability diagnosis differs from the saved decision evidence"
+            )
     if (
         cap.get("status") not in ("not_assessed", "suspected")
         or cap.get("independent_cases")
@@ -689,6 +713,9 @@ def render_assessment(analysis: Dict[str, Any], lang: str = "zh") -> str:
         int(en)
     ]
     result = f"> **{'Conclusion level' if en else '结论等级'}**: {label}\n"
+    location = render_failure_detail(a, lang)
+    if location:
+        result += location + "\n"
     unresolved = [
         x.get("category") for x in a.get("alternatives") or [] if x.get("status") == "unresolved"
     ]

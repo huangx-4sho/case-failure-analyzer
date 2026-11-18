@@ -239,6 +239,7 @@ SUBTYPE_LABELS = {
     "path_or_dependency_discovery": ("依赖/路径探索不足", "Dependency discovery"),
     "premature_termination": ("过早终止", "Premature termination"),
     "agent_timeout": ("Agent 超时", "Agent timeout"),
+    "api_rate_limit": ("模型服务配额或限流", "Model service quota or rate limit"),
     "tolerance_too_strict": ("容差过严", "Tolerance too strict"),
     "regex_or_parser_defect": ("解析/正则缺陷", "Parser or regex defect"),
     "namelist_slash_truncation": ("输入文件截断", "Input file truncation"),
@@ -309,9 +310,13 @@ SUBTYPE_PHRASES = {
         "Runner 异常中断，试次未进入验证",
         "the runner was interrupted, so the trial never reached verification",
     ),
+    ("infra", "api_rate_limit"): (
+        "模型服务的配额或限流中断了请求",
+        "the model service stopped requests at a quota or rate limit",
+    ),
     ("infra", "agent_timeout"): (
-        "Agent 在时限内未完成，试次未进入验证",
-        "the agent did not finish within the time limit, so the trial never reached verification",
+        "Agent 执行达到时限",
+        "agent execution reached the time limit",
     ),
     ("infra", "container_runtime"): (
         "容器运行时异常中断",

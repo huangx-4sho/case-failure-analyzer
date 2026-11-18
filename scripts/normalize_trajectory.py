@@ -17,6 +17,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from self_check_execution import SelfCheckTracker
+
 
 SUPPORTED_SCHEMAS = {"ATIF-v1.7", "ATIF-v1.6", "ATIF-v1.5"}
 
@@ -954,6 +956,8 @@ def normalize_trajectory(
     written_files: List[str] = []
     read_files: List[str] = []
     script_targets: Dict[str, List[str]] = {}
+    self_checks = SelfCheckTracker()
+    raw.setdefault("normalization", {})["self_check_extraction"] = 1
 
     all_results: Dict[str, str] = {}
     for recorded_step in steps:
@@ -1074,7 +1078,7 @@ def normalize_trajectory(
                 if diagnostic not in warnings:
                     warnings.append(diagnostic)
             ev_type, cmd_or_path = classify_tool_event(fn_name, args, has_error)
-            trunc_obs, obs_sha, _ = truncate_with_head_tail(obs_text, max_obs_bytes)
+            trunc_obs, obs_sha, obs_truncated = truncate_with_head_tail(obs_text, max_obs_bytes)
             ev_id = f"trajectory:step:{step_id}:tool:{t_idx}"
             tc_ptr = f"{step_ptr}/tool_calls/{t_idx}"
 
@@ -1120,21 +1124,6 @@ def normalize_trajectory(
                             "signal_id": f"sig:dep_search:{step_id}:{t_idx}",
                             "signal_type": "dependency_search_attempted",
                             "description": f"Agent searched for binaries or data files: {norm_cmd[:120]}",
-                            "event_ref": ev_id,
-                            "source_pointer": tc_ptr,
-                        }
-                    )
-
-                if (
-                    SELF_CHECK_SCRIPT_RE.search(norm_cmd)
-                    and SELF_CHECK_RUN_RE.search(norm_cmd)
-                    and not has_error
-                ):
-                    signals.append(
-                        {
-                            "signal_id": f"sig:self_check:{step_id}:{t_idx}",
-                            "signal_type": "self_verification_executed",
-                            "description": f"Agent ran a self-check script: {norm_cmd[:120]}",
                             "event_ref": ev_id,
                             "source_pointer": tc_ptr,
                         }
@@ -1334,26 +1323,30 @@ def normalize_trajectory(
                 if cmd_or_path.endswith("results.json") and results_json_written:
                     results_json_verified_after_write = True
 
-            events.append(
-                {
-                    "event_id": ev_id,
-                    "timestamp": ts,
-                    "actor": "agent",
-                    "event_type": ev_type,
-                    "tool_name": fn_name,
-                    "command": cmd_or_path,
-                    "arguments": args,
-                    "tool_call_id": tc_id,
-                    "result_recorded": result_recorded,
-                    "tool_succeeded": mutation_succeeded,
-                    "observation": trunc_obs,
-                    "observation_sha256": obs_sha,
-                    "exit_code": exit_code,
-                    "source_file": str(trajectory_path),
-                    "source_pointer": tc_ptr,
-                    **({"code_payload": code_payload} if code_payload else {}),
-                }
+            event = {
+                "event_id": ev_id,
+                "timestamp": ts,
+                "actor": "agent",
+                "event_type": ev_type,
+                "tool_name": fn_name,
+                "command": cmd_or_path,
+                "arguments": args,
+                "tool_call_id": tc_id,
+                "result_recorded": result_recorded,
+                "tool_succeeded": mutation_succeeded,
+                "observation": trunc_obs,
+                "observation_sha256": obs_sha,
+                "exit_code": exit_code,
+                "source_file": str(trajectory_path),
+                "source_pointer": tc_ptr,
+                **({"code_payload": code_payload} if code_payload else {}),
+            }
+            observed_checks = self_checks.observe(
+                event, obs_text, obs_truncated, _extract_script_write_targets
             )
+            if observed_checks:
+                event["self_check_executions"] = observed_checks
+            events.append(event)
 
     # Post-trajectory aggregate behavioral signals
     if ran_simulation and not inspected_sim_log:
