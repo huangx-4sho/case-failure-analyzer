@@ -1409,7 +1409,7 @@ def compute_batch_statistics(summary_rows: List[Dict[str, Any]]) -> Dict[str, An
     }
 
 
-def main() -> None:
+def main(*, refresh_index: bool = True) -> None:
     parser = argparse.ArgumentParser(
         description="Analyze scientific-computing benchmark case failures (case failure analyzer)."
     )
@@ -1441,7 +1441,7 @@ def main() -> None:
         required=False,
         type=Path,
         default=None,
-        help="Override the default <task>/failure-report output directory",
+        help="Override the default failure-report/<job>/<task> output directory",
     )
     parser.add_argument(
         "--task", required=False, type=Path, default=None, help="Task definition directory path"
@@ -1453,8 +1453,8 @@ def main() -> None:
         type=Path,
         default=None,
         help=(
-            "Output directory. Optional in --task-id mode (defaults to the task's "
-            "failure-report/ folder); required otherwise."
+            "Output directory. Optional in --task-id mode (defaults to "
+            "<benchmark>/failure-report/<job scope>/<task>/); required otherwise."
         ),
     )
     parser.add_argument(
@@ -1519,7 +1519,10 @@ def main() -> None:
         for candidate_root in roots:
             try:
                 task_ref = resolve_task_ref(
-                    args.task_id, candidate_root, report_dir_override=args.report_dir
+                    args.task_id,
+                    candidate_root,
+                    report_dir_override=args.report_dir,
+                    job=str(args.job) if args.job is not None else None,
                 )
                 break
             except TaskRefError as exc:
@@ -1576,7 +1579,7 @@ def main() -> None:
             print(f"ERROR: --task path exists and is not a directory: {args.task}", file=sys.stderr)
             sys.exit(2)
 
-    # The default landing (`<bench>/failure-report/<task>`) is outside every
+    # The default landing (`<bench>/failure-report/<job scope>/<task>`) is outside every
     # input. An explicit `--report-dir` may still target a `failure-report`
     # folder inside a case directory; that exact folder is the only sanctioned
     # output inside an input tree.
@@ -1716,7 +1719,7 @@ def main() -> None:
             publish_staging_to_output(
                 staging_dir, args.output, is_multi_trial=False, manifest_key=manifest_key
             )
-            if task_ref is not None:
+            if task_ref is not None and refresh_index:
                 from render_index import update_failure_report_index
 
                 try:
@@ -1848,7 +1851,7 @@ def main() -> None:
                         encoding="utf-8",
                     )
             publish_staging_to_output(staging_dir, args.output, is_multi_trial=True)
-            if task_ref is not None:
+            if task_ref is not None and refresh_index:
                 from render_index import update_failure_report_index
 
                 try:

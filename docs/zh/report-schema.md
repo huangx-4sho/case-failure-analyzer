@@ -139,24 +139,26 @@
 
 以任务引用调用本技能（例如 `$case-failure-analyzer task208`）时会启用任务号模式。`scripts/task_ref.py` 会把该引用解析为最新匹配的 trial、其 job 目录，以及包含 `task.toml` 的任务定义目录。`--jobs-root`（或 `$CFA_JOBS_ROOT`，随后依次为当前目录及其父目录）限定搜索范围；数字匹配为精确匹配，因此 `task208` 绝不会解析成 `task2080`。
 
-**输出落点**：报告统一落到 `<bench_root>/failure-report/<task_id>/`。`bench_root` 由解析出的 trial 路径推导（`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`；扁平 `<bench>/jobs/...` → `<bench>`）。bench 级目录下包含一个全局看板，以及每个已分析任务一个子目录：
+**输出落点**：报告统一落到 `<bench_root>/failure-report/<job>/<task_id>/`。`bench_root` 由解析出的 trial 路径推导（`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`；扁平 `<bench>/jobs/...` → `<bench>`）。bench 级目录下包含一个全局看板，各 job 各有一个目录，目录内按任务编号存放报告：
 
 ```text
 <bench_root>/failure-report/
 ├── INDEX.md                          # 全局看板：三态评测统计、占未通过比例归一化、自然排序、置信度指标与直达链接
-├── task207/
-│   ├── task207.md                    # 主归因报告（干净 Markdown）
-│   ├── task207.en.md                 # 仅 --lang bilingual 时生成的英文版
-│   ├── summary.md                    # 根因速览卡片（与 stdout 完全一致）
-│   ├── data/
-│   │   ├── evidence.json
-│   │   ├── analysis.json
-│   │   ├── summary.json
-│   │   └── candidate-hypotheses.json
-│   ├── trials/<trial_name>/          # 多试次轻量归档（仅保留结论）
-│   └── .cfa_manifest.json
-└── task208/
-    └── ...
+└── <job>/
+    ├── INDEX.md
+    ├── task207/
+    │   ├── task207.md                    # 主归因报告（干净 Markdown）
+    │   ├── task207.en.md                 # 仅 --lang bilingual 时生成的英文版
+    │   ├── summary.md                    # 根因速览卡片（与 stdout 完全一致）
+    │   ├── data/
+    │   │   ├── evidence.json
+    │   │   ├── analysis.json
+    │   │   ├── summary.json
+    │   │   └── candidate-hypotheses.json
+    │   ├── trials/<trial_name>/          # 多试次轻量归档（仅保留结论）
+    │   └── .cfa_manifest.json
+    └── task208/
+        └── ...
 ```
 
 该任务目录位于所有已声明输入根（job 目录、任务定义、trial 目录）之外，`scripts/staging.py` 的隔离检查仍会拒绝与输入相同、位于输入内或作为输入父目录的输出。每个任务通过自己文件夹内的 `.cfa_manifest.json` 发布，因此重跑某一任务不会触碰其他任务的目录或用户自建文件。`--report-dir` 覆盖精确的落点文件夹，`--no-verdict-stdout` 则抑制打印出来的回答。`cfa index` 以原子方式重建 `INDEX.md`。
@@ -190,7 +192,7 @@
 - **一目了然错误矩阵** (`cfa inspect <task_id> --section errors`)：以终端友好的 Markdown 表格呈现裁决、主因大类、验证器可诊断性及每一项具名失败检查（`[<layer>] <name>`、`failure_kind`、`detail`，以及产物对比或复算散度数值）。传入 `--raw` 输出原生 JSON 字典。
 - **置信度收据与因子明细** (`cfa inspect <task_id> --section confidence`)：清晰展示启发式置信度、证据强度、动态分值标尺（`points / denominator`）、带正负符号的证据因子明细、提升置信度所需补充证据，以及竞争假设得分。传入 `--raw` 输出结构化收据 JSON。
 - **规整化证据人读摘要** (`cfa inspect <task_id> --section evidence`)：提供紧凑的人类可读运行状态摘要、失败检查计数、因果锚点、科学观测、行为信号计数及核心证据引用，无需向终端倾倒 200KB+ 的全量 JSON。传入 `--raw` 导出原始 `evidence.json`。
-- **全量用例自动发现与批量审计** (`cfa audit --all --jobs-root <bench_root>`)：自动扫描基准仓库（兼顾 Harbor 多套件布局与扁平布局），按自然数序依序审计各用例最新试次并输出单行进度状态，最终生成 `<bench_root>/failure-report/INDEX.md`。
+- **全量用例自动发现与批量审计** (`cfa audit --all --jobs-root <bench_root>`)：自动扫描基准仓库（兼顾 Harbor 多套件布局与扁平布局），在各 job 内按任务编号审计每个任务的最新试次并输出单行进度状态，最终生成 `<bench_root>/failure-report/INDEX.md`。
 
 ### 结论卡 (`summary.md` / stdout)
 

@@ -286,9 +286,9 @@ class TestCfaCli(unittest.TestCase):
                 rc = cfa.main(["audit", "--all", "--jobs-root", str(bench), "--no-verdict-stdout"])
             self.assertEqual(rc, 0)
             out = f.getvalue()
-            self.assertIn("Auditing task98...", out)
-            self.assertIn("Auditing task194...", out)
-            self.assertIn("Batch audit complete (2 tasks)", out)
+            self.assertIn("Auditing job1/task98...", out)
+            self.assertIn("Auditing job1/task194...", out)
+            self.assertIn("Batch audit complete (2 job/task pairs)", out)
 
             # Check INDEX.md was rendered
             index_path = bench / REPORT_DIR_NAME / "INDEX.md"

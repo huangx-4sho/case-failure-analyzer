@@ -6,7 +6,7 @@ Turns a short task reference such as `task208`, `208`, `task 208`, or a full
 trial name `task 208__jaekojA` into the concrete harbor directories needed by
 `analyze_case.py`: the trial directory, its job directory, and the task
 definition directory (`task.toml`). It also derives the default report landing
-directory `<task definition dir>/failure-report`.
+directory `<benchmark>/failure-report/<job scope>/<task ID>`.
 
 The resolver is deliberately read-only and conservative:
 
@@ -62,9 +62,13 @@ class TaskRef:
     job_dir: Path
     task_def_dir: Optional[Path]
     bench_root: Path  # benchmark checkout holding the case folders
-    report_root: Path  # <bench_root>/failure-report (one subfolder per task)
-    report_dir: Path  # <bench_root>/failure-report/<task_id>
+    report_root: Path  # <bench_root>/failure-report (global index)
+    report_dir: Path  # <report_root>/<job scope>/<task_id> (unless overridden)
     candidates: List[Path]
+
+    @property
+    def job_report_root(self) -> Path:
+        return self.report_root / job_report_key(self.job_dir, self.bench_root)
 
 
 def _natural_sort_key(s: str) -> tuple:
@@ -268,10 +272,20 @@ def derive_bench_root(jobs_root: Path, trial_dir: Path, case_root: Path) -> Path
     return (case.parent if _count_task_defs(case) >= 2 else case).resolve()
 
 
+def job_report_key(job_dir: Path, bench_root: Path) -> str:
+    """Use stable suite-qualified keys when jobs live below a suite folder."""
+    job_dir, bench_root = Path(job_dir).resolve(), Path(bench_root).resolve()
+    suite = job_dir.parent.parent
+    if job_dir.parent.name == "jobs" and suite != bench_root:
+        return f"{suite.name}--{job_dir.name}"
+    return job_dir.name
+
+
 def resolve_task_ref(
     raw: str,
     jobs_root: Path,
     report_dir_override: Optional[Path] = None,
+    job: Optional[str] = None,
 ) -> TaskRef:
     """
     Resolve `raw` under `jobs_root` into a `TaskRef`.
@@ -315,6 +329,12 @@ def resolve_task_ref(
                     continue
                 if path.resolve() not in trials:
                     trials.append(path.resolve())
+
+    if job is not None:
+        selector = str(job)
+        trials = [
+            p for p in trials if p.parent.name == selector or str(p.parent.resolve()) == selector
+        ]
 
     if not trials:
         raise TaskRefError(
@@ -362,9 +382,9 @@ def resolve_task_ref(
         # An explicit --report-dir is used verbatim as the report folder.
         report_dir = Path(report_dir_override).resolve()
     else:
-        # One folder per task keeps `failure-report/` browsable: the bench level
-        # shows task folders only, never a flat pile of per-trial artifacts.
-        report_dir = (report_root / task_id).resolve()
+        # Isolate task reports within their job so later jobs cannot replace
+        # a previous evaluation of the same task.
+        report_dir = (report_root / job_report_key(job_dir, bench_root) / task_id).resolve()
 
     return TaskRef(
         raw=raw,
@@ -379,3 +399,16 @@ def resolve_task_ref(
         report_dir=report_dir,
         candidates=ranked,
     )
+
+
+def discover_job_task_refs(jobs_root: Path) -> List[TaskRef]:
+    """Select the latest trial separately for every (job directory, task ID)."""
+    root = Path(jobs_root).resolve()
+    pairs = set()
+    for path, _depth in _walk_dirs(root, max_depth=8):
+        if _is_trial_dir(path) and _TRIAL_DIR_RE.match(path.name):
+            pairs.add((str(path.parent.resolve()), normalize_task_ref(path.name)))
+    return [
+        resolve_task_ref(task_id, root, job=job)
+        for job, task_id in sorted(pairs, key=lambda pair: (pair[0], _natural_sort_key(pair[1])))
+    ]

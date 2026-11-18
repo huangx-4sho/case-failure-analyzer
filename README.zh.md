@@ -35,7 +35,7 @@ python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang zh
 
 ## 输出
 
-任务 ID 模式默认写入 `<benchmark>/failure-report/<task_id>/`，并在终端或聊天中返回归因摘要。可按下面的顺序阅读结果：
+任务 ID 模式默认写入 `<benchmark>/failure-report/<job>/<task_id>/`，并在终端或聊天中返回归因摘要。可按下面的顺序阅读结果：
 
 ![报告阅读路径：摘要、完整报告与原始证据](docs/images/cfa-reports.zh.svg)
 

@@ -32,27 +32,29 @@ python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkou
 - **Choose report language explicitly**: use `--lang bilingual` when both languages are requested, `--lang en` for English, and `--lang zh` for Chinese. The example above uses Chinese only; `report.md` is not an English filename. Verify the generated edition before linking it.
 - `--jobs-root` is optional: it falls back to `$CFA_JOBS_ROOT`, then the current directory, then its parent. Pass it explicitly when the benchmark checkout is elsewhere.
 - The resolver finds the newest trial for that task and the task definition folder (`task.toml`). `--report-dir <path>` overrides the output location; `--no-verdict-stdout` suppresses the printed answer.
-- **Output landing**: reports land in `<bench_root>/failure-report/<task_id>/`, with an auto-updated global board `<bench_root>/failure-report/INDEX.md`:
+- **Output landing**: reports land in `<bench_root>/failure-report/<job>/<task_id>/`, with an auto-updated global board `<bench_root>/failure-report/INDEX.md`:
 
   ```text
   failure-report/
   ├── INDEX.md                          # 全局看板（三态评测统计、占未通过比例归一化、自然排序、置信度指标与直达链接）
-  ├── task207/
-  │   ├── task207.md                    # 主归因报告（干净 Markdown，单语模式无重复 .zh.md）
-  │   ├── summary.md                    # 根因速览卡片与关键因果链锚点（与 stdout 完全一致）
-  │   └── data/                         # 机器数据下沉，保持顶层整洁
-  │       ├── evidence.json             # 规整化证据、轨迹事件流、验证器日志
-  │       ├── analysis.json             # 结构化归因结论与判定门控
-  │       ├── summary.json              # 结构化速览卡片元数据
-  │       └── candidate-hypotheses.json # 候选假设及证据支持度
-  └── task208/
-      ├── task208.md
-      ├── summary.md
-      └── data/
-          ├── evidence.json
-          ├── analysis.json
-          ├── summary.json
-          └── candidate-hypotheses.json
+  └── <job>/
+      ├── INDEX.md
+      ├── task207/
+      │   ├── task207.md                    # 主归因报告（干净 Markdown，单语模式无重复 .zh.md）
+      │   ├── summary.md                    # 根因速览卡片与关键因果链锚点（与 stdout 完全一致）
+      │   └── data/                         # 机器数据下沉，保持顶层整洁
+      │       ├── evidence.json             # 规整化证据、轨迹事件流、验证器日志
+      │       ├── analysis.json             # 结构化归因结论与判定门控
+      │       ├── summary.json              # 结构化速览卡片元数据
+      │       └── candidate-hypotheses.json # 候选假设及证据支持度
+      └── task208/
+          ├── task208.md
+          ├── summary.md
+          └── data/
+              ├── evidence.json
+              ├── analysis.json
+              ├── summary.json
+              └── candidate-hypotheses.json
   ```
 
   - **顶层保持 Clean Markdown**：仅保留主报告 `{task_id}.md`、速览卡片 `summary.md`（跨案例技能指导单独输出）；
@@ -104,7 +106,7 @@ Entrypoint: `python3 scripts/analyze_case.py`
   - `analysis.json`: Structured attribution (`failure-analysis-v1`) with root cause code, failure stage, and evidence pointers.
   - `report.md` (bilingual), `report.zh.md` (Chinese), `report.en.md` (English): High-signal audit reports with evidence file pointers (lightweight 2-section view < 30 lines for passed trials).
   - `skill_prescription`: Per-trial value remains null. Proposed guidance is stored under `causal_assessment.capability`; the separate cross-case `review capability` output can contain scoped, reviewed guidance.
-- **Task-ID artifacts**: `<bench_root>/failure-report/<task_id>/` holds clean top-level Markdown (`<task_id>.md` and `summary.md`) plus all machine JSON under `data/` (see Task-ID Quick Answer). The verdict card printed to stdout is `summary.md`.
+- **Task-ID artifacts**: `<bench_root>/failure-report/<job>/<task_id>/` holds clean top-level Markdown (`<task_id>.md` and `summary.md`) plus all machine JSON under `data/` (see Task-ID Quick Answer). The verdict card printed to stdout is `summary.md`.
 - **Multi-Trial Batch Board**:
   - `job_summary.md`: Markdown summary dashboard table showing verdicts, categories, root causes, and failure stages across all trials.
   - `job_summary.json`: Batch aggregated statistics and per-trial summary records.
@@ -140,7 +142,7 @@ Field definitions, missing-output examples, and commands: [evidence-review.md](r
    python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout>
    # or via analyze_case:
    python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkout>
-   python3 scripts/analyze_case.py --job jobs/<job_name> --task tasks/<task_name> --output <output-dir>/<case_id>
+   python3 scripts/analyze_case.py --job jobs/<job_name>/<trial_name> --task tasks/<task_name> --output failure-report/<job_name>/<task_id>
    ```
 2. **Answer / Review Reports**: In Task-ID mode, relay the stdout verdict card as the answer (see Required Answer Shape). Otherwise inspect `report.md` (or `job_summary.md` for batch jobs), then referenced evidence files via file pointers.
 3. **Validate & Refine (Optional Model-in-the-Loop)**: When modifying hypotheses or refining attributions, edit `analysis.json` and validate machine-checkable hard rules:

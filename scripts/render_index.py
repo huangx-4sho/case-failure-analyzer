@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from runtime_state import score_was_produced
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
@@ -52,101 +53,85 @@ def natural_sort_key(s: Any) -> tuple:
     return tuple(key)
 
 
+def _read_metadata(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
-    """Load metadata for a task folder from summary.json or analysis.json."""
-    if not task_dir.is_dir():
+    """Read modern, migrated flat, and evidence-only task report directories."""
+    if not task_dir.is_dir() or task_dir.is_symlink():
         return None
 
-    # Detect auxiliary markdown reports/prescriptions
-    rep_file = None
-    if (task_dir / f"{task_dir.name}.md").is_file():
-        rep_file = f"{task_dir.name}.md"
-    elif (task_dir / "report.md").is_file():
-        rep_file = "report.md"
+    def first_file(names):
+        return next((name for name in names if (task_dir / name).is_file()), None)
 
-    sum_file = None
-    if (task_dir / "summary.md").is_file():
-        sum_file = "summary.md"
-    elif (task_dir / f"{task_dir.name}.summary.md").is_file():
-        sum_file = f"{task_dir.name}.summary.md"
-
-    rx_file = None
-    if (task_dir / "skill-prescription.md").is_file():
-        rx_file = "skill-prescription.md"
-    elif (task_dir / f"{task_dir.name}.prescription.md").is_file():
-        rx_file = f"{task_dir.name}.prescription.md"
-
-    # Search paths for summary card or analysis
-    summary_candidates = [
-        task_dir / "data" / "summary.json",
-        task_dir / "summary.json",
-        task_dir / f"{task_dir.name}.summary.json",
-    ]
-    for sc in summary_candidates:
-        if sc.is_file():
-            try:
-                card = json.loads(sc.read_text(encoding="utf-8"))
-                if isinstance(card, dict):
-                    prc = card.get("primary_root_cause") or {}
-                    return {
-                        "task_id": card.get("task_id") or task_dir.name,
-                        "verdict": card.get("verdict") or "unknown",
-                        "scored": score_was_produced(card),
-                        "category": prc.get("category")
-                        or ("none" if card.get("verdict") == "passed" else "unknown"),
-                        "subtype": prc.get("subtype") or "—",
-                        "code": prc.get("code") or "—",
-                        "confidence": prc.get("confidence"),
-                        "failure_reason": card.get("failure_reason") or "—",
-                        "has_data_dir": (task_dir / "data").is_dir(),
-                        "has_report": rep_file is not None,
-                        "report_file": rep_file,
-                        "has_summary": sum_file is not None,
-                        "summary_file": sum_file,
-                        "has_prescription": rx_file is not None,
-                        "prescription_file": rx_file,
-                    }
-            except Exception:
-                pass
-
-    # Fallback: check analysis.json
-    analysis_candidates = [
-        task_dir / "data" / "analysis.json",
-        task_dir / "analysis.json",
-        task_dir / f"{task_dir.name}.analysis.json",
-    ]
-    for ac in analysis_candidates:
-        if ac.is_file():
-            try:
-                an = json.loads(ac.read_text(encoding="utf-8"))
-                if isinstance(an, dict):
-                    prc = an.get("primary_root_cause") or {}
-                    return {
-                        "task_id": an.get("case_id") or task_dir.name,
-                        "verdict": an.get("verdict") or "unknown",
-                        "category": prc.get("category")
-                        or ("none" if an.get("verdict") == "passed" else "unknown"),
-                        "subtype": prc.get("subtype") or "—",
-                        "code": prc.get("code") or "—",
-                        "confidence": prc.get("confidence"),
-                        "failure_reason": prc.get("summary") or "—",
-                        "has_data_dir": (task_dir / "data").is_dir(),
-                        "has_report": rep_file is not None,
-                        "report_file": rep_file,
-                        "has_summary": sum_file is not None,
-                        "summary_file": sum_file,
-                        "has_prescription": rx_file is not None,
-                        "prescription_file": rx_file,
-                    }
-            except Exception:
-                pass
-
-    return None
+    summary_path = first_file(
+        ["data/summary.json", "summary.json", f"{task_dir.name}.summary.json"]
+    )
+    analysis_path = first_file(
+        ["data/analysis.json", "analysis.json", f"{task_dir.name}.analysis.json"]
+    )
+    evidence_path = first_file(
+        ["data/evidence.json", "evidence.json", f"{task_dir.name}.evidence.json"]
+    )
+    card = _read_metadata(task_dir / summary_path) if summary_path else {}
+    analysis = _read_metadata(task_dir / analysis_path) if analysis_path else {}
+    evidence = _read_metadata(task_dir / evidence_path) if evidence_path else {}
+    if not card and not analysis and not evidence:
+        return None
+    payload = card or analysis
+    runtime = evidence.get("runtime") or {}
+    prc = payload.get("primary_root_cause") or {}
+    verdict = payload.get("verdict")
+    if not verdict:
+        status = runtime.get("verification_status")
+        verdict = status if status in ("passed", "failed", "pending", "errored") else "unknown"
+    # Explicit unscored runtime data must override historical passed/failed labels.
+    scored = score_was_produced(runtime) if runtime else score_was_produced(payload)
+    report_file = first_file([f"{task_dir.name}.md", "report.md", "report.zh.md", "report.en.md"])
+    summary_file = first_file(["summary.md", f"{task_dir.name}.summary.md"])
+    prescription_file = first_file(["skill-prescription.md", f"{task_dir.name}.prescription.md"])
+    deep_review_file = first_file(["deep-review.md"])
+    return {
+        "task_id": card.get("task_id") or task_dir.name,
+        "job_name": Path(str(evidence.get("job_dir"))).name if evidence.get("job_dir") else "—",
+        "trial_name": payload.get("trial_name") or evidence.get("trial_name"),
+        "verdict": verdict,
+        "scored": scored,
+        "category": prc.get("category")
+        or ("none" if verdict in ("passed", "pending") else "unknown"),
+        "subtype": prc.get("subtype") or "—",
+        "code": prc.get("code") or "—",
+        "confidence": prc.get("confidence"),
+        "failure_reason": payload.get("failure_reason")
+        or prc.get("summary")
+        or "仅采集证据，尚未审查归因 / Collected evidence; attribution not reviewed",
+        "has_data_dir": (task_dir / "data").is_dir(),
+        "evidence_file": evidence_path,
+        "analysis_file": analysis_path,
+        "has_report": report_file is not None,
+        "report_file": report_file,
+        "has_summary": summary_file is not None,
+        "summary_file": summary_file,
+        "has_prescription": prescription_file is not None,
+        "prescription_file": prescription_file,
+        "deep_review_file": deep_review_file,
+    }
 
 
 def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[str] = None) -> str:
     """Render the full index markdown text."""
-    cases_sorted = sorted(cases, key=lambda c: natural_sort_key(c.get("task_id", "")))
+    cases_sorted = sorted(
+        cases,
+        key=lambda c: (
+            natural_sort_key(c.get("job_name", "")),
+            natural_sort_key(c.get("task_id", "")),
+        ),
+    )
     total = len(cases_sorted)
     passed = sum(1 for c in cases_sorted if c.get("verdict") == "passed" and score_was_produced(c))
     failed = sum(1 for c in cases_sorted if c.get("verdict") == "failed" and score_was_produced(c))
@@ -198,8 +183,8 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
     lines += [
         "## 2. 评测用例清单 (Case Manifest)",
         "",
-        "| Task ID | Verdict | Primary Category | Subtype / Code | Conf | Failure Reason | Links |",
-        "|---|---|---|---|---|---|---|",
+        "| Job | Task ID | Verdict | Primary Category | Subtype / Code | Conf | Failure Reason | Links |",
+        "|---|---|---|---|---|---|---|---|",
     ]
 
     for c in cases_sorted:
@@ -238,25 +223,56 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
 
         # Links
         links = []
+        directory = str(c.get("report_dir") or tid)
+
+        def target(name, directory=directory):
+            return quote(f"{directory}/{name}", safe="/._-")
+
         if c.get("has_summary"):
             sum_target = c.get("summary_file") or "summary.md"
-            links.append(f"[速览]({tid}/{sum_target})")
+            links.append(f"[速览]({target(sum_target)})")
         if c.get("has_report"):
             rep_target = c.get("report_file") or f"{tid}.md"
-            links.append(f"[报告]({tid}/{rep_target})")
+            links.append(f"[报告]({target(rep_target)})")
         if c.get("has_prescription"):
             rx_target = c.get("prescription_file") or "skill-prescription.md"
-            links.append(f"[处方]({tid}/{rx_target})")
+            links.append(f"[处方]({target(rx_target)})")
         if c.get("has_data_dir"):
-            links.append(f"[数据]({tid}/data/)")
+            links.append(f"[数据]({target('data/')})")
+        elif c.get("evidence_file"):
+            links.append(f"[证据]({target(c['evidence_file'])})")
+        if c.get("analysis_file") and not c.get("has_data_dir"):
+            links.append(f"[归因数据]({target(c['analysis_file'])})")
+        if c.get("deep_review_file"):
+            links.append(f"[复核]({target(c['deep_review_file'])})")
         links_str = " · ".join(links) if links else "—"
+        job = str(c.get("job_name") or "—").replace("|", "\\|")
+        job_display = (
+            f"[`{job}`]({quote(c['job_index'], safe='/._-')})" if c.get("job_index") else f"`{job}`"
+        )
 
         lines.append(
-            f"| **`{tid}`** | `{v}` | `{cat}` | {sub_display} | {conf_str} | {reason} | {links_str} |"
+            f"| {job_display} | **`{tid}`** | `{v}` | `{cat}` | {sub_display} | {conf_str} | {reason} | {links_str} |"
         )
 
     lines.append("")
     return "\n".join(lines)
+
+
+def _write_index(root: Path, content: str) -> Path:
+    """Atomically replace a board while its report-directory lock is held."""
+    target = root / "INDEX.md"
+    fd, raw_path = tempfile.mkstemp(prefix=".index_tmp_", suffix=".md", dir=str(root))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(raw_path, target)
+    finally:
+        if os.path.exists(raw_path):
+            os.unlink(raw_path)
+    return target
 
 
 def update_failure_report_index(report_root: Path) -> Path:
@@ -267,34 +283,38 @@ def update_failure_report_index(report_root: Path) -> Path:
 
     with acquire_publish_lock(report_root):
         cases: List[Dict[str, Any]] = []
-        for entry in report_root.iterdir():
-            if not entry.is_dir() or entry.name.startswith("."):
+        jobs: Dict[Path, List[Dict[str, Any]]] = {}
+        for entry in sorted(report_root.iterdir()):
+            if not entry.is_dir() or entry.is_symlink() or entry.name.startswith("."):
                 continue
             meta = _load_task_metadata(entry)
             if meta is not None:
+                meta["report_dir"] = entry.relative_to(report_root).as_posix()
                 cases.append(meta)
+                continue
+            # Exactly one job layer; never descend into task trial archives.
+            for task in sorted(entry.iterdir()):
+                if task.name.startswith(".") or task.name in ("data", "trials"):
+                    continue
+                meta = _load_task_metadata(task)
+                if meta is None:
+                    continue
+                meta.update(
+                    job_name=entry.name,
+                    report_dir=task.relative_to(report_root).as_posix(),
+                    job_index=(entry.relative_to(report_root) / "INDEX.md").as_posix(),
+                )
+                cases.append(meta)
+                jobs.setdefault(entry, []).append(
+                    {**meta, "report_dir": task.name, "job_index": None}
+                )
+        for job_root, job_cases in jobs.items():
+            with acquire_publish_lock(job_root):
+                _write_index(job_root, render_index_markdown(job_cases))
 
         md_content = render_index_markdown(cases)
 
-        # Write to temporary file in the same directory for atomic os.replace
-        target_path = report_root / "INDEX.md"
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            prefix=".index_tmp_",
-            suffix=".md",
-            dir=str(report_root),
-        )
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                f.write(md_content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path_str, target_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path_str)
-            except OSError:
-                pass
-            raise
+        target_path = _write_index(report_root, md_content)
 
     return target_path
 

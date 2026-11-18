@@ -129,8 +129,10 @@ class TaskRefResolutionTests(unittest.TestCase):
         self.assertEqual(ref.task_def_dir.name, "task 208")
         self.assertEqual(ref.bench_root, self.root.resolve())
         self.assertEqual(ref.report_root, self.root.resolve() / REPORT_DIR_NAME)
-        self.assertEqual(ref.report_dir, ref.report_root / "task208")
-        self.assertEqual(ref.report_dir.parent, ref.report_root)
+        self.assertEqual(
+            ref.report_dir, ref.report_root / "32-qeq-electrostatics--job1" / "task208"
+        )
+        self.assertEqual(ref.report_dir.parent, ref.job_report_root)
 
     def test_flat_layout_lands_report_at_bench_root(self) -> None:
         task = self.root / "task 208"
@@ -142,14 +144,14 @@ class TaskRefResolutionTests(unittest.TestCase):
         (trial / "result.json").write_text("{}", encoding="utf-8")
         ref = resolve_task_ref("task208", self.root)
         self.assertEqual(ref.bench_root, self.root.resolve())
-        self.assertEqual(ref.report_dir, self.root.resolve() / REPORT_DIR_NAME / "task208")
+        self.assertEqual(ref.report_dir, self.root.resolve() / REPORT_DIR_NAME / "job1" / "task208")
 
     def test_jobs_root_pointing_at_jobs_tree(self) -> None:
         _make_harbor_tree(self.root)
         case = self.root / "32-qeq-electrostatics"
         ref = resolve_task_ref("task208", case / "jobs")
         self.assertEqual(ref.bench_root, case.resolve())
-        self.assertEqual(ref.report_dir, case.resolve() / REPORT_DIR_NAME / "task208")
+        self.assertEqual(ref.report_dir, case.resolve() / REPORT_DIR_NAME / "job1" / "task208")
 
     def test_no_partial_numeric_match(self) -> None:
         _make_harbor_tree(self.root, number="2080")
@@ -477,7 +479,8 @@ class TaskIdCliTests(unittest.TestCase):
         self.assertIn("[evidence.json](<data/evidence.json>)", report)
         self.assertIn("[analysis.json](<data/analysis.json>)", report)
         self.assertEqual(out.name, "task208")
-        self.assertEqual(out.parent.name, REPORT_DIR_NAME)
+        self.assertEqual(out.parent.name, "job1")
+        self.assertEqual(out.parent.parent.name, REPORT_DIR_NAME)
         expected_top = {
             "task208.md",
             "summary.md",

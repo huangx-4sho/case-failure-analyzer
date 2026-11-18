@@ -53,9 +53,9 @@ python3 scripts/export_skill.py --dest "$HOME/.claude/skills/case-failure-analyz
 也可以直接给作业和题目目录：
 
 ```text
-使用 case-failure-analyzer 分析 /path/to/benchmark/jobs/run-001，
+使用 case-failure-analyzer 分析试次 /path/to/benchmark/jobs/run-001/task208__abc，
 题目目录为 /path/to/benchmark/tasks/task208，
-报告写入 /path/to/benchmark/failure-analysis/run-001。
+报告写入 /path/to/benchmark/failure-report/run-001/task208。
 ```
 
 智能体可根据自然语言请求匹配技能；显式点名便于确认使用哪个工作流。批量分析可以写：
@@ -65,7 +65,9 @@ python3 scripts/export_skill.py --dest "$HOME/.claude/skills/case-failure-analyz
 生成中文报告并更新 failure-report/INDEX.md。
 ```
 
-任务 ID 模式会在聊天中给出归因摘要，并链接到 `failure-report/<task_id>/<task_id>.md`。报告文件和可选技能处方的条件见[报告规范](report-schema.md)。
+任务 ID 模式会在聊天中给出归因摘要，并链接到 `failure-report/<job>/<task_id>/<task_id>.md`。报告文件和可选技能处方的条件见[报告规范](report-schema.md)。
+
+总索引在 `failure-report/INDEX.md`，每个作业也有自己的 `failure-report/<job>/INDEX.md`。同一任务出现在多个作业时，可在 `audit` 或 `inspect` 中用 `--job run-001` 指定作业。跨作业比较可用 `cfa.py diff task208 task208 --job-a run-001 --job-b run-002`。
 
 ![报告阅读路径：摘要、完整报告与原始证据](../images/cfa-reports.zh.svg)
 
@@ -120,9 +122,9 @@ python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --jobs-root "$BENCH_ROOT" --
 python3 "$SKILL_DIR/scripts/cfa.py" diff task207 task208 --jobs-root "$BENCH_ROOT"
 # 或按显式目录路径运行：
 python3 "$SKILL_DIR/scripts/analyze_case.py" \
-  --job "$BENCH_ROOT/jobs/run-001" \
+  --job "$BENCH_ROOT/jobs/run-001/task208__abc" \
   --task "$BENCH_ROOT/tasks/task208" \
-  --output "$BENCH_ROOT/failure-analysis/run-001"
+  --output "$BENCH_ROOT/failure-report/run-001/task208"
 ```
 
 `cfa.py inspect` 支持 `--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data`（默认自动脱敏，支持 `--raw` 与 `--no-redact`）；`cfa.py diff <target_a> [<target_b>] [--trials <t1> <t2>]` 读取已有审计报告，对比两个任务或同一任务两个试次的裁决、主因、失败检查与因果锚点差异。自动选择的“最近两次”按 `trials/` 归档报告文件的修改时间排序；轻量归档缺少的证据不会自动补齐。

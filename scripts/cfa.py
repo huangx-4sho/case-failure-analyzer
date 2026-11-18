@@ -26,7 +26,12 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from render_index import update_failure_report_index
 from report_style import render_deliverable_audit
-from task_ref import REPORT_DIR_NAME, discover_all_task_ids, normalize_task_ref, resolve_task_ref
+from task_ref import (
+    REPORT_DIR_NAME,
+    discover_job_task_refs,
+    normalize_task_ref,
+    resolve_task_ref,
+)
 
 
 _KEY_PATTERNS = [
@@ -58,6 +63,9 @@ def cmd_audit(argv: List[str]) -> int:
         jobs_root: Optional[Path] = None
         i = 0
         while i < len(argv):
+            if argv[i].startswith("--jobs-root="):
+                jobs_root = Path(argv[i].split("=", 1)[1]).resolve()
+                break
             if argv[i] == "--jobs-root" and i + 1 < len(argv):
                 jobs_root = Path(argv[i + 1]).resolve()
                 break
@@ -75,8 +83,8 @@ def cmd_audit(argv: List[str]) -> int:
             )
             return 2
 
-        task_ids = discover_all_task_ids(jobs_root)
-        if not task_ids:
+        task_refs = discover_job_task_refs(jobs_root)
+        if not task_refs:
             print(f"No tasks discovered under '{jobs_root}'.", file=sys.stderr)
             return 0
 
@@ -103,17 +111,60 @@ def cmd_audit(argv: List[str]) -> int:
         if "--jobs-root" not in shared_args:
             shared_args.extend(["--jobs-root", str(jobs_root)])
 
-        total = len(task_ids)
+        # In batch mode an explicit destination is a batch root; each job/task
+        # still has its own leaf so repeated task IDs cannot overwrite.
+        batch_output = None
+        explicit_output = False
+        job_selector = None
+        filtered_args = []
+        i = 0
+        while i < len(shared_args):
+            current = shared_args[i]
+            equals = current.split("=", 1) if "=" in current else None
+            scoped_flags = ("--output", "--report-dir", "--job")
+            if current in scoped_flags or (equals and equals[0] in scoped_flags):
+                if equals:
+                    flag, value = equals
+                    consumed = 1
+                elif i + 1 < len(shared_args):
+                    flag, value = shared_args[i : i + 2]
+                    consumed = 2
+                else:
+                    print(f"ERROR: {current} requires a path", file=sys.stderr)
+                    return 2
+                if flag == "--job":
+                    job_selector = value
+                elif flag == "--output":
+                    batch_output = Path(value).resolve()
+                    explicit_output = True
+                elif not explicit_output:
+                    batch_output = Path(value).resolve()
+                i += consumed
+            else:
+                filtered_args.append(shared_args[i])
+                i += 1
+        shared_args = filtered_args
+        if job_selector:
+            task_refs = [
+                ref
+                for ref in task_refs
+                if ref.job_dir.name == job_selector or str(ref.job_dir) == job_selector
+            ]
+        total = len(task_refs)
         any_failed = False
-        report_root: Optional[Path] = None
+        report_roots = set()
 
-        for idx, tid in enumerate(task_ids, start=1):
-            print(f"[{idx}/{total}] Auditing {tid}...")
-            task_argv = ["--task-id", tid] + shared_args
+        for idx, ref in enumerate(task_refs, start=1):
+            tid = ref.task_id
+            print(f"[{idx}/{total}] Auditing {ref.job_dir.name}/{tid}...")
+            task_argv = ["--task-id", tid, "--job", str(ref.job_dir)] + shared_args
+            if batch_output is not None:
+                task_argv.extend(["--output", str(batch_output / ref.job_report_root.name / tid)])
+            report_roots.add(batch_output or ref.report_root)
             orig_argv = sys.argv
             sys.argv = [sys.argv[0]] + task_argv
             try:
-                analyze_case.main()
+                analyze_case.main(refresh_index=False)
             except SystemExit as exc:
                 rc = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
                 if rc != 0:
@@ -125,24 +176,9 @@ def cmd_audit(argv: List[str]) -> int:
             finally:
                 sys.argv = orig_argv
 
-            if report_root is None:
-                try:
-                    ref = resolve_task_ref(tid, jobs_root)
-                    report_root = ref.report_root
-                except Exception:
-                    pass
-
-        if report_root is None:
-            cand = jobs_root / REPORT_DIR_NAME
-            if cand.is_dir():
-                report_root = cand
-            elif (jobs_root.parent / REPORT_DIR_NAME).is_dir():
-                report_root = jobs_root.parent / REPORT_DIR_NAME
-            else:
-                report_root = jobs_root / REPORT_DIR_NAME
-
-        index_file = update_failure_report_index(report_root)
-        print(f"\nBatch audit complete ({total} tasks). Global index: {index_file}")
+        for report_root in sorted(report_roots):
+            index_file = update_failure_report_index(report_root)
+            print(f"\nBatch audit complete ({total} job/task pairs). Global index: {index_file}")
         return 1 if any_failed else 0
 
     # Map positional task_id (e.g. `cfa audit task208`) to `--task-id task208`
@@ -888,46 +924,37 @@ def _find_benchmark_roots(explicit_root: Optional[Path] = None) -> List[Path]:
 
 def cmd_inspect(args: argparse.Namespace) -> int:
     """Strictly read-only inspection of a case's verdict card or evidence."""
-    task_ref = None
-    report_dir = None
-    report_basename = args.task_id
-    task_id = args.task_id
-    last_error = None
-
-    if args.report_dir and Path(args.report_dir).is_dir():
-        report_dir = Path(args.report_dir).resolve()
-    else:
-        roots = _find_benchmark_roots(args.jobs_root)
-        if not roots:
-            print(
-                f"ERROR: could not locate benchmark jobs or failure-report root from '{Path.cwd()}'. "
-                "Please specify --jobs-root or run within a benchmark repository.",
-                file=sys.stderr,
-            )
-            return 2
-        for r in roots:
-            try:
-                task_ref = resolve_task_ref(args.task_id, r, report_dir_override=args.report_dir)
-                report_dir = task_ref.report_dir
-                report_basename = task_ref.report_basename
-                task_id = task_ref.task_id
-                break
-            except Exception as exc:
-                last_error = exc
-            cand = r / REPORT_DIR_NAME / args.task_id
-            if cand.is_dir():
-                report_dir = cand
-                break
-
-    if report_dir is None or not report_dir.is_dir():
-        if last_error:
-            print(f"ERROR: could not resolve task '{args.task_id}': {last_error}", file=sys.stderr)
+    task_id = _safe_normalize_task_id(args.task_id) or args.task_id
+    report_basename = task_id
+    try:
+        # An explicit inspection directory is an exact override, including old
+        # flat directories; it must never fall through to a different job.
+        if args.report_dir is not None:
+            report_dir = Path(args.report_dir).resolve()
+            if not report_dir.is_dir():
+                raise ValueError(f"report directory does not exist: {report_dir}")
+            if getattr(args, "trial", None):
+                report_dir = _select_saved_trial(report_dir, args.trial)
         else:
-            print(
-                f"ERROR: report directory not found for '{args.task_id}'. Run 'cfa audit {args.task_id}' first.",
-                file=sys.stderr,
+            report_dir, report_label = _resolve_saved_report(
+                args.task_id,
+                jobs_root=args.jobs_root,
+                job=getattr(args, "job", None),
+                trial=getattr(args, "trial", None),
             )
+            if "/" not in report_label:
+                report_basename = report_label
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+
+    for candidate_name in (args.task_id, report_basename, task_id, report_dir.name):
+        if any(
+            (report_dir / f"{candidate_name}.{kind}").is_file()
+            for kind in ("summary.json", "evidence.json", "analysis.json", "summary.md", "md")
+        ):
+            report_basename = candidate_name
+            break
 
     # Locate summary or report file
     section = args.section
@@ -978,6 +1005,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             [
                 report_dir / f"{report_basename}.md",
                 report_dir / "report.md",
+                report_dir / "deep-review.md",
             ]
         )
         if rep_file:
@@ -1187,103 +1215,262 @@ def _safe_normalize_task_id(raw: str) -> Optional[str]:
         return None
 
 
+def _report_has_contents(path: Path) -> bool:
+    return (
+        _is_audited_report_dir(path)
+        or (path / "trials").is_dir()
+        or (path / "summary.md").is_file()
+        or (path / "report.md").is_file()
+    )
+
+
+def _saved_report_roots(root: Path) -> List[Path]:
+    """Discover report roots without requiring surviving raw job/trial files."""
+    root = root.resolve()
+    if root.name == REPORT_DIR_NAME:
+        return [root]
+    if root.parent.name == REPORT_DIR_NAME:
+        return [root]
+    if root.name == "jobs" or root.parent.name == "jobs":
+        for ancestor in list(root.parents)[:3]:
+            sibling = ancestor / REPORT_DIR_NAME
+            if sibling.is_dir():
+                return [sibling]
+    found = []
+    stack = [(root, 0)]
+    skipped = {
+        ".git",
+        ".venv",
+        "node_modules",
+        "__pycache__",
+        "artifacts",
+        "agent",
+        "verifier",
+        "environment",
+        "tasks",
+        "jobs",
+    }
+    while stack:
+        current, depth = stack.pop()
+        try:
+            children = sorted(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir() or child.is_symlink() or child.name in skipped:
+                continue
+            if child.name == REPORT_DIR_NAME:
+                found.append(child)
+            elif depth < 4:
+                stack.append((child, depth + 1))
+    return sorted(set(found))
+
+
+def _select_saved_trial(report_dir: Path, trial: str) -> Path:
+    name = Path(trial).name
+    if report_dir.name == name and _report_has_contents(report_dir):
+        return report_dir.resolve()
+    candidate = report_dir / "trials" / name
+    if _report_has_contents(candidate):
+        return candidate.resolve()
+    # A single-trial report can be the landing page itself. Identity comes
+    # from saved evidence, not the continued existence of its raw trial path.
+    evidence = _load_report_bundle(report_dir).get("evidence") or {}
+    saved_name = evidence.get("trial_name") or Path(str(evidence.get("trial_dir") or "")).name
+    if saved_name == name and _report_has_contents(report_dir):
+        return report_dir.resolve()
+    raise ValueError(f"trial '{name}' has no saved audited report under '{report_dir}'")
+
+
+def _flat_report_basenames(path: Path, normalized: str, preferred: List[str]) -> List[str]:
+    names = list(preferred)
+    for kind in ("analysis", "evidence", "summary"):
+        for file in sorted(path.glob(f"*.{kind}.json")):
+            basename = file.name[: -len(f".{kind}.json")]
+            if _safe_normalize_task_id(basename) == normalized and basename not in names:
+                names.append(basename)
+    return names
+
+
+def _saved_job_name(path: Path, report_root: Path, basename: str) -> Optional[str]:
+    if path.parent != report_root and path.parent.parent == report_root:
+        return path.parent.name
+    if report_root.parent.name == REPORT_DIR_NAME:
+        return report_root.name
+    evidence = _load_report_bundle(path, basename_hint=basename).get("evidence") or {}
+    job_dir = evidence.get("job_dir")
+    return Path(str(job_dir)).name if job_dir else None
+
+
+def _saved_job_matches(
+    selector: str, scoped_name: Optional[str], path: Path, basename: str
+) -> bool:
+    if selector == scoped_name:
+        return True
+    evidence = _load_report_bundle(path, basename_hint=basename).get("evidence") or {}
+    saved = evidence.get("job_dir")
+    if "/" in selector:
+        return bool(saved and Path(str(saved)).resolve() == Path(selector).resolve())
+    if saved and Path(str(saved)).name == selector:
+        return True
+    return bool(scoped_name and scoped_name.endswith("--" + selector))
+
+
+def _resolve_saved_report(
+    target: str,
+    jobs_root: Optional[Path] = None,
+    report_dir: Optional[Path] = None,
+    job: Optional[str] = None,
+    trial: Optional[str] = None,
+) -> Tuple[Path, str]:
+    """Resolve job-scoped and legacy reports, rejecting cross-job ambiguity."""
+    direct = Path(target)
+    if direct.is_dir() and _report_has_contents(direct):
+        selected = _select_saved_trial(direct.resolve(), trial) if trial else direct.resolve()
+        return selected, selected.name
+    normalized = _safe_normalize_task_id(target)
+    if not normalized:
+        raise ValueError(f"could not parse task or audited report target '{target}'")
+    selected_trial = trial or (target if "__" in target else None)
+    selected_job = str(job) if job else None
+    if selected_job is None and jobs_root is not None and Path(jobs_root).parent.name == "jobs":
+        selected_job = str(Path(jobs_root).resolve())
+    names = list(dict.fromkeys([target, normalized]))
+    roots = _find_benchmark_roots(jobs_root)
+    report_roots = []
+    if report_dir is not None:
+        scope = Path(report_dir).resolve()
+        if not scope.is_dir():
+            raise ValueError(f"report directory does not exist: {scope}")
+        # Preserve existing diff overrides: the supplied directory may be the
+        # exact task landing page or a container of task/trial reports.
+        if _report_has_contents(scope) and not any((scope / name).is_dir() for name in names):
+            selected = _select_saved_trial(scope, selected_trial) if selected_trial else scope
+            return selected, Path(selected_trial).name if selected_trial else normalized
+        report_roots = [scope]
+    else:
+        for root in roots:
+            report_roots.extend(_saved_report_roots(root))
+            # Raw-task resolution is only a discovery fallback for suite/job
+            # root inputs. It does not choose between saved job reports.
+            if not report_roots:
+                try:
+                    ref = resolve_task_ref(target, root)
+                    report_roots.append(ref.report_root)
+                except ValueError:
+                    pass
+    candidates = {}
+    scoped_candidates = set()
+    for report_root in sorted(set(report_roots)):
+        paths = []
+        flat_names = _flat_report_basenames(report_root, normalized, names)
+        # Flat files share one report directory and require an exact basename.
+        for name in flat_names:
+            if any(
+                (report_root / f"{name}.{kind}").is_file()
+                for kind in ("analysis.json", "evidence.json", "summary.json", "summary.md", "md")
+            ):
+                paths.append(report_root)
+        try:
+            children = sorted(report_root.iterdir())
+        except OSError:
+            children = []
+        for child in children:
+            if not child.is_dir() or child.name == "trials":
+                continue
+            if _safe_normalize_task_id(child.name) == normalized and _report_has_contents(child):
+                paths.append(child)
+            # New layout: failure-report/<job>/<task>/.
+            for name in names:
+                candidate = child / name
+                if _report_has_contents(candidate):
+                    paths.append(candidate)
+            try:
+                nested = list(child.iterdir())
+            except OSError:
+                nested = []
+            for candidate in nested:
+                if (
+                    candidate.is_dir()
+                    and _safe_normalize_task_id(candidate.name) == normalized
+                    and _report_has_contents(candidate)
+                ):
+                    paths.append(candidate)
+        for path in paths:
+            basename = normalized
+            if path == report_root:
+                basename = next(
+                    (
+                        name
+                        for name in flat_names
+                        if any(
+                            (path / f"{name}.{kind}").is_file()
+                            for kind in ("analysis.json", "evidence.json", "summary.json")
+                        )
+                    ),
+                    normalized,
+                )
+            job_name = _saved_job_name(path, report_root, basename)
+            if selected_job and not _saved_job_matches(selected_job, job_name, path, basename):
+                continue
+            try:
+                selected = (
+                    _select_saved_trial(path, selected_trial) if selected_trial else path.resolve()
+                )
+            except ValueError:
+                continue
+            label = (
+                Path(selected_trial).name
+                if selected_trial
+                else (
+                    f"{job_name}/{normalized}"
+                    if job_name and path.parent != report_root
+                    else basename
+                )
+            )
+            candidates[selected] = label
+            if (
+                path.parent != report_root and path.parent.parent == report_root
+            ) or report_root.parent.name == REPORT_DIR_NAME:
+                scoped_candidates.add(selected)
+    # Job-scoped landings supersede legacy unscoped copies. Explicit report
+    # directories above still select an old report exactly when requested.
+    if scoped_candidates:
+        candidates = {
+            path: label for path, label in candidates.items() if path in scoped_candidates
+        }
+    if len(candidates) == 1:
+        return next(iter(candidates.items()))
+    if len(candidates) > 1:
+        options = ", ".join(str(path) for path in sorted(candidates))
+        raise ValueError(
+            f"multiple saved reports match '{target}': {options}. Select --job (or --job-a/--job-b for diff), --trial, or an explicit report directory."
+        )
+    qualifier = f" in job '{selected_job}'" if selected_job else ""
+    if selected_trial:
+        qualifier += f" for trial '{Path(selected_trial).name}'"
+    raise ValueError(
+        f"could not resolve saved report for '{target}'{qualifier}. Run 'cfa audit {target}' first or supply the exact --report-dir."
+    )
+
+
 def _resolve_diff_target(
     target: str,
     jobs_root: Optional[Path] = None,
     report_dir: Optional[Path] = None,
+    job: Optional[str] = None,
+    trial: Optional[str] = None,
 ) -> Tuple[Path, str]:
-    """Resolve a diff target (path, task ID, or trial ref) to (report_dir, label)."""
-    cand_path = Path(target)
-    if cand_path.is_dir() and _is_audited_report_dir(cand_path):
-        resolved = cand_path.resolve()
-        return resolved, resolved.name
-
-    norm_id = _safe_normalize_task_id(target)
-
-    if report_dir is not None:
-        rdir = Path(report_dir).resolve()
-        for name in (target, norm_id):
-            if not name:
-                continue
-            sub = rdir / name
-            if _is_audited_report_dir(sub):
-                return sub.resolve(), name
-            trial_sub = rdir / "trials" / name
-            if _is_audited_report_dir(trial_sub):
-                return trial_sub.resolve(), name
-
-    roots = _find_benchmark_roots(jobs_root)
-    last_error: Optional[Exception] = None
-    for root in roots:
-        try:
-            ref = resolve_task_ref(target, root)
-            if "__" in target:
-                trial_rep = ref.report_dir / "trials" / ref.trial_dir.name
-                if _is_audited_report_dir(trial_rep):
-                    return trial_rep.resolve(), ref.trial_dir.name
-            if _is_audited_report_dir(ref.report_dir):
-                return ref.report_dir.resolve(), ref.task_id
-        except Exception as exc:
-            last_error = exc
-
-        for name in (target, norm_id):
-            if not name:
-                continue
-            cand = root / REPORT_DIR_NAME / name
-            if _is_audited_report_dir(cand):
-                return cand.resolve(), name
-
-    if last_error is not None:
-        raise ValueError(f"could not resolve audited report for '{target}': {last_error}")
-    raise ValueError(
-        f"could not resolve audited report directory for '{target}'. Run 'cfa audit {target}' first."
-    )
+    return _resolve_saved_report(target, jobs_root, report_dir, job, trial)
 
 
 def _resolve_base_report_dir(
     target: str,
     jobs_root: Optional[Path] = None,
     report_dir: Optional[Path] = None,
+    job: Optional[str] = None,
 ) -> Tuple[Path, str]:
-    """Resolve a task's base report directory (containing a `trials/` folder)."""
-    norm_id = _safe_normalize_task_id(target)
-    if report_dir is not None:
-        rdir = Path(report_dir).resolve()
-        if (rdir / "trials").is_dir() or _is_audited_report_dir(rdir):
-            return rdir, norm_id or target
-        for name in (target, norm_id):
-            if name and ((rdir / name / "trials").is_dir() or _is_audited_report_dir(rdir / name)):
-                return (rdir / name).resolve(), name
-        return rdir, norm_id or target
-
-    cand_path = Path(target)
-    if cand_path.is_dir() and (
-        (cand_path / "trials").is_dir() or _is_audited_report_dir(cand_path)
-    ):
-        resolved = cand_path.resolve()
-        return resolved, resolved.name
-
-    roots = _find_benchmark_roots(jobs_root)
-    last_error: Optional[Exception] = None
-    for root in roots:
-        try:
-            ref = resolve_task_ref(target, root)
-            if (ref.report_dir / "trials").is_dir() or _is_audited_report_dir(ref.report_dir):
-                return ref.report_dir.resolve(), ref.task_id
-        except Exception as exc:
-            last_error = exc
-        for name in (target, norm_id):
-            if not name:
-                continue
-            cand = root / REPORT_DIR_NAME / name
-            if (cand / "trials").is_dir() or _is_audited_report_dir(cand):
-                return cand.resolve(), name
-
-    if last_error is not None:
-        raise ValueError(f"could not resolve report directory for '{target}': {last_error}")
-    raise ValueError(
-        f"could not resolve report directory for '{target}'. Run 'cfa audit {target}' first."
-    )
+    return _resolve_saved_report(target, jobs_root, report_dir, job)
 
 
 def _trial_report_mtime(trial_dir: Path) -> Tuple[float, str]:
@@ -1732,17 +1919,37 @@ def cmd_diff(args: argparse.Namespace) -> int:
         )
         return 2
 
+    if args.target_b is None and any(
+        getattr(args, name, None) for name in ("job_a", "job_b", "trial_a", "trial_b")
+    ):
+        print(
+            "ERROR: side-specific job/trial selectors require positional <target_b>; use --job and --trials for one task.",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         if args.target_b is not None:
             dir_a, label_a = _resolve_diff_target(
-                args.target_a, jobs_root=args.jobs_root, report_dir=args.report_dir
+                args.target_a,
+                jobs_root=args.jobs_root,
+                report_dir=args.report_dir,
+                job=getattr(args, "job_a", None) or getattr(args, "job", None),
+                trial=getattr(args, "trial_a", None),
             )
             dir_b, label_b = _resolve_diff_target(
-                args.target_b, jobs_root=args.jobs_root, report_dir=args.report_dir
+                args.target_b,
+                jobs_root=args.jobs_root,
+                report_dir=args.report_dir,
+                job=getattr(args, "job_b", None) or getattr(args, "job", None),
+                trial=getattr(args, "trial_b", None),
             )
         else:
             base_dir, base_label = _resolve_base_report_dir(
-                args.target_a, jobs_root=args.jobs_root, report_dir=args.report_dir
+                args.target_a,
+                jobs_root=args.jobs_root,
+                report_dir=args.report_dir,
+                job=getattr(args, "job", None),
             )
             trials_root = base_dir / "trials"
             if args.trials:
@@ -1860,6 +2067,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--report-dir", type=Path, default=None, help="Report directory override"
     )
     inspect_parser.add_argument(
+        "--job", default=None, help="Select the saved report job by name or path"
+    )
+    inspect_parser.add_argument("--trial", default=None, help="Select an exact saved trial name")
+    inspect_parser.add_argument(
         "--no-redact", action="store_true", help="Disable automatic sensitive token masking"
     )
 
@@ -1884,6 +2095,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     diff_parser.add_argument("--jobs-root", type=Path, default=None, help="Benchmark checkout root")
     diff_parser.add_argument(
         "--report-dir", type=Path, default=None, help="Report directory override"
+    )
+    diff_parser.add_argument(
+        "--job", default=None, help="Select one saved report job for both targets"
+    )
+    diff_parser.add_argument("--job-a", default=None, help="Select the saved job for target A")
+    diff_parser.add_argument("--job-b", default=None, help="Select the saved job for target B")
+    diff_parser.add_argument(
+        "--trial-a", default=None, help="Select the exact saved trial for target A"
+    )
+    diff_parser.add_argument(
+        "--trial-b", default=None, help="Select the exact saved trial for target B"
     )
     diff_parser.add_argument("--raw", action="store_true", help="Output structured JSON diff")
     diff_parser.add_argument(

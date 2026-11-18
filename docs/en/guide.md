@@ -54,9 +54,9 @@ Use case-failure-analyzer to analyze trial "task 208__jaekojA" in
 You can also provide explicit job and task directories:
 
 ```text
-Use case-failure-analyzer to audit /path/to/benchmark/jobs/run-001,
+Use case-failure-analyzer to audit trial /path/to/benchmark/jobs/run-001/task208__abc,
 with task definitions at /path/to/benchmark/tasks/task208.
-Write reports to /path/to/benchmark/failure-analysis/run-001.
+Write reports to /path/to/benchmark/failure-report/run-001/task208.
 ```
 
 An agent can match a natural-language request to the skill. Explicit invocation makes the intended workflow clear. For a batch audit:
@@ -66,7 +66,9 @@ Use case-failure-analyzer to audit every task under /path/to/benchmark,
 produce English reports, and update failure-report/INDEX.md.
 ```
 
-Task-ID mode returns an attribution summary in the chat and links to `failure-report/<task_id>/<task_id>.md`. See the [report schema](report-schema.md) for output files and optional skill-prescription conditions.
+Task-ID mode returns an attribution summary in the chat and links to `failure-report/<job>/<task_id>/<task_id>.md`. See the [report schema](report-schema.md) for output files and optional skill-prescription conditions.
+
+Open `failure-report/INDEX.md` for the whole benchmark or `failure-report/<job>/INDEX.md` for one job. Use `--job run-001` with `audit` or `inspect` to select a job when a task appears in several runs. For a comparison across jobs, use `cfa.py diff task208 task208 --job-a run-001 --job-b run-002`.
 
 ![Report reading path: summary, full report, and evidence](../images/cfa-reports.en.svg)
 
@@ -115,9 +117,9 @@ python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --jobs-root "$BENCH_ROOT" --
 python3 "$SKILL_DIR/scripts/cfa.py" diff task207 task208 --jobs-root "$BENCH_ROOT"
 # Or by explicit job/task directory:
 python3 "$SKILL_DIR/scripts/analyze_case.py" \
-  --job "$BENCH_ROOT/jobs/run-001" \
+  --job "$BENCH_ROOT/jobs/run-001/task208__abc" \
   --task "$BENCH_ROOT/tasks/task208" \
-  --output "$BENCH_ROOT/failure-analysis/run-001"
+  --output "$BENCH_ROOT/failure-report/run-001/task208"
 ```
 
 `cfa.py inspect` supports `--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data` (with `--raw` and automatic redaction unless `--no-redact` is passed), and `cfa.py diff <target_a> [<target_b>] [--trials <t1> <t2>]` compares verdicts, root causes, failed checks, and causal anchors across two tasks or two trials of the same task.

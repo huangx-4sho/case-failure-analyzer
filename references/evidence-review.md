@@ -40,7 +40,7 @@ Generate an unfilled review record from a task-ID report:
 
 ```bash
 SKILL_DIR="/path/to/skills/case-failure-analyzer"
-REPORT_DIR="/path/to/benchmark/failure-report/task208"
+REPORT_DIR="/path/to/benchmark/failure-report/example-job/task208"
 python3 "$SKILL_DIR/scripts/cfa.py" review plan \
   --evidence "$REPORT_DIR/data/evidence.json" \
   --analysis "$REPORT_DIR/data/analysis.json" \

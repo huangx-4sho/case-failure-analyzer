@@ -123,24 +123,26 @@ When `evidence.verifier_report` is present, Section 2 includes the normalized ve
 
 Invoking the skill with a task reference (e.g. `$case-failure-analyzer task208`) uses task-ID mode. `scripts/task_ref.py` resolves the reference to the newest matching trial, its job directory, and the task definition directory containing `task.toml`. `--jobs-root` (or `$CFA_JOBS_ROOT`, then the current directory and its parent) bounds the search; numeric matching is exact, so `task208` never resolves to `task2080`.
 
-**Output landing**: reports land in `<bench_root>/failure-report/<task_id>/`, next to the benchmark's case folders. `bench_root` is derived from the resolved trial (`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`; flat `<bench>/jobs/...` → `<bench>`). The bench-level folder holds one global board and one subfolder per analyzed task:
+**Output landing**: reports land in `<bench_root>/failure-report/<job>/<task_id>/`, next to the benchmark's case folders. `bench_root` is derived from the resolved trial (`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`; flat `<bench>/jobs/...` → `<bench>`). The bench-level folder holds a global index and a directory for each job, with one subfolder per analyzed task:
 
 ```text
 <bench_root>/failure-report/
 ├── INDEX.md                          # Global board: three-state stats, normalized category distribution, natural-sorted manifest
-├── task207/
-│   ├── task207.md                    # Main causal audit (clean Markdown)
-│   ├── task207.en.md                 # English edition only when --lang bilingual
-│   ├── summary.md                    # Verdict card, identical to stdout
-│   ├── data/
-│   │   ├── evidence.json
-│   │   ├── analysis.json
-│   │   ├── summary.json
-│   │   └── candidate-hypotheses.json
-│   ├── trials/<trial_name>/          # Multi-trial archive (lightweight conclusions)
-│   └── .cfa_manifest.json
-└── task208/
-    └── ...
+└── <job>/
+    ├── INDEX.md
+    ├── task207/
+    │   ├── task207.md                    # Main causal audit (clean Markdown)
+    │   ├── task207.en.md                 # English edition only when --lang bilingual
+    │   ├── summary.md                    # Verdict card, identical to stdout
+    │   ├── data/
+    │   │   ├── evidence.json
+    │   │   ├── analysis.json
+    │   │   ├── summary.json
+    │   │   └── candidate-hypotheses.json
+    │   ├── trials/<trial_name>/          # Multi-trial archive (lightweight conclusions)
+    │   └── .cfa_manifest.json
+    └── task208/
+        └── ...
 ```
 
 The per-task folder sits outside every declared input root (job directory, task definition, trial directory), so the isolation check in `scripts/staging.py` still rejects output equal to / inside / a parent of an input. Each task publishes through its own `.cfa_manifest.json`, so re-analysing one task never touches another task's folder or unmanaged user files. `--report-dir` overrides the exact landing folder, `--no-verdict-stdout` suppresses the printed answer. `cfa index` rebuilds `INDEX.md` atomically.
@@ -174,7 +176,7 @@ The bench-level global board aggregates root-cause attributions across all analy
 - **At-a-Glance Error Matrix** (`cfa inspect <task_id> --section errors`): Terminal-friendly Markdown summary of verdict, primary root cause, verifier diagnosability, and every named failed check (`[<layer>] <name>`, `failure_kind`, `detail`, plus artifact comparison or recompute divergence deltas). Add `--raw` for unformatted JSON.
 - **Confidence Breakdown Receipt** (`cfa inspect <task_id> --section confidence`): Pretty-prints heuristic confidence, evidence strength, dynamic `points / denominator` scale, signed `+`/`-` evidence factors, and `missing_to_raise` items needed to elevate confidence, alongside competing hypotheses scores. Add `--raw` for structured JSON.
 - **Resolved Evidence Summary** (`cfa inspect <task_id> --section evidence`): Concise human-readable digest of runtime execution state, failed checks count, causal anchors, scientific observations, behavioral signals count, and core evidence refs without dumping raw JSON. Add `--raw` to dump the original `evidence.json`.
-- **Batch Discovery & Audit** (`cfa audit --all --jobs-root <bench_root>`): Automatically scans the benchmark checkout (supporting both Harbor multi-suite and flat layouts), natural-sorts discovered tasks, audits each newest trial with 1-line progress reporting, and updates `<bench_root>/failure-report/INDEX.md`.
+- **Batch Discovery & Audit** (`cfa audit --all --jobs-root <bench_root>`): Automatically scans the benchmark checkout (supporting both Harbor multi-suite and flat layouts), natural-sorts discovered tasks, audits the latest trial of each task in each job with one line of progress per audit, and updates `<bench_root>/failure-report/INDEX.md`.
 
 ### Verdict Card (`summary.md` / stdout)
 

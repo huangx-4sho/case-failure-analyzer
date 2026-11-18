@@ -36,7 +36,7 @@ Replace the example path with a benchmark checkout containing `jobs/` and `tasks
 
 ## Output
 
-Task-ID mode writes to `<benchmark>/failure-report/<task_id>/` and returns an attribution summary in the terminal or chat. Follow this path to review the results:
+Task-ID mode writes to `<benchmark>/failure-report/<job>/<task_id>/` and returns an attribution summary in the terminal or chat. Follow this path to review the results:
 
 ![Report reading path: summary, full report, and evidence](docs/images/cfa-reports.en.svg)
 
