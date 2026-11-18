@@ -211,13 +211,14 @@ STAGE_LABELS_EN = {
 #: fragment used when the report needs prose instead of an enum value.
 SUBTYPE_LABELS = {
     "trusted_asset_hash_mismatch": ("评分依赖哈希不一致", "Scoring dependency hash mismatch"),
-    "reference_lfs_pointer": ("评分参考仍为 LFS 指针", "Scoring reference is an LFS pointer"),
+    "reference_lfs_pointer": ("评分依赖仍为 LFS 指针", "Scoring input is an LFS pointer"),
     "verifier_interpreter_missing": ("评分解释器缺失", "Missing scoring interpreter"),
     "autocompact_thrashing": ("上下文压缩循环", "Context compaction thrashing"),
     "output_token_limit": ("输出 token 限额终止", "Output-token limit termination"),
     "semantic_rejection": ("语义误拒复核", "Semantic rejection review"),
     "hidden_format_requirement": ("未公开格式要求复核", "Hidden-format review"),
     "definition_ambiguity": ("定义歧义复核", "Definition review"),
+    "representation_shape_disagreement": ("分组结构差异复核", "Group-shape review"),
     "result_validation": ("结果未复核", "Result not validated"),
     "self_check_gap": ("自检覆盖不足", "Self-verification coverage gap"),
     "task_understanding": ("任务理解偏差", "Task misunderstood"),
@@ -355,6 +356,7 @@ CONFIDENCE_KIND_LABELS = {
 
 VERDICT_LABELS = {
     "passed": ("通过", "Passed"),
+    "pending": ("待人工复核（未评分）", "Review required (unscored)"),
     "failed": ("未通过", "Failed"),
     "errored": ("执行异常", "Errored"),
     "unknown": ("未评分", "Unknown"),
@@ -1679,6 +1681,7 @@ def render_contract_review(
         "semantic_rejection": ("语义误拒复核", "Semantic rejection review"),
         "hidden_format_requirement": ("隐藏格式要求复核", "Hidden-format review"),
         "definition_ambiguity": ("定义歧义复核", "Definition review"),
+        "representation_shape_disagreement": ("分组结构差异复核", "Group-shape review"),
     }
 
     def pointer(record):
@@ -1725,9 +1728,26 @@ def render_contract_review(
                 ("  - Submission: " if en else "  - 提交定位：")
                 + ", ".join(f"`{pointer(x)}` `{x.get('pointer') or '$'}`" for x in actual[:2])
             )
+        if item.get("subtype") == "group_object_vs_direct_list":
+            groups = [
+                f"`{entry['key']}`: {entry['count']}"
+                for record in actual
+                for entry in record.get("nested_sample_lists") or []
+            ]
+            if groups:
+                lines.append(
+                    ("  - Nested records: " if en else "  - 嵌套样本数：") + ", ".join(groups)
+                )
+            public = item.get("public_requirement_evidence") or []
+            if public:
+                lines.append(
+                    ("  - Public requirement: " if en else "  - 公开要求：")
+                    + f"`{pointer(public[0])}` "
+                    + clean_prose(source_quotation(public[0].get("excerpt"), lang), 340)
+                )
         lines.append(
             ("  - Uncertainty: " if en else "  - 尚待确认：")
-            + report_text(item.get("uncertainty"), lang)
+            + localized_field(item, "uncertainty", lang)
         )
     for item in replay[:4]:
         filename = str(item.get("filename") or "deliverable")

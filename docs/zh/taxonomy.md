@@ -127,7 +127,7 @@ flowchart TD
 | `VERIFIER_HIDDEN_CONTRACT`<br>`hidden_contract` | **验证器隐藏未公开私有契约**。验证器校验了题干从未声明的内部中间文件、特定列顺序或非标私有字段 |
 | `VERIFIER_RECOMPUTE_DEFECT`<br>`recompute_defect` | **验证器自身重算崩溃**。验证器独立重算脚本因自身临时目录配置缺失、路径未转义或缺失环境依赖而抛出异常崩溃 |
 | `VERIFIER_TRUSTED_ASSET_HASH_MISMATCH`<br>`trusted_asset_hash_mismatch` | **可信评分资料哈希不一致。** 与实际评分拒绝直接关联，不通过跳过校验处理。 |
-| `VERIFIER_REFERENCE_LFS_POINTER`<br>`reference_lfs_pointer` | **参考文件仍为 LFS 指针。** 现有日志报告读取失败，文件头也证实缺少预期载荷。 |
+| `VERIFIER_REFERENCE_LFS_POINTER`<br>`reference_lfs_pointer` | **评分依赖文件仍为 LFS 指针。** 核对评分器读取或哈希校验失败时点名的文件，以及本地指针的内容。历史运行读取的文件版本仍可能需要确认。 |
 
 ### 2.5 辅助类别：未知与证据缺失 (`unknown`)
 

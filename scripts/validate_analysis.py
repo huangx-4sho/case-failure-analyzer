@@ -60,7 +60,7 @@ REQUIRED_ANALYSIS_KEYS = {
 }
 
 VALID_CATEGORIES = {"infra", "case", "agent", "verifier", "unknown", "none"}
-VALID_VERDICTS = {"passed", "failed", "errored", "unknown"}
+VALID_VERDICTS = {"passed", "failed", "errored", "unknown", "pending"}
 
 from report_style import accepted_titles
 
@@ -171,12 +171,16 @@ def validate_report_sections(report_text: str, verdict: Optional[str] = None) ->
     is_passed = (verdict == "passed") or bool(
         re.search(rf"(?m)^##\s+1\.\s+(?:{passed_hint})", report_text)
     )
-    section_count = 2 if is_passed else 4
+    is_pending = verdict == "pending"
+    section_count = 2 if is_passed or is_pending else 4
 
     for num in range(1, section_count + 1):
-        titles = accepted_titles(num, passed=is_passed)
+        if is_pending:
+            titles = ("复核状态", "Review status") if num == 1 else ("已保存证据", "Saved evidence")
+        else:
+            titles = accepted_titles(num, passed=is_passed)
         alternation = "|".join(re.escape(t) for t in titles)
-        header_pat = re.compile(rf"(?m)^##\s+{num}\.\s+(?:{alternation})(?:\s.*)?$")
+        header_pat = re.compile(rf"(?m)^##\s+{num}\.\s+(?:{alternation})(?:[ \t].*)?$")
         m = header_pat.search(report_text)
         canonical = titles[0]
         if not m:
@@ -228,7 +232,7 @@ def validate_all(
         errors.append(f"Invalid primary_root_cause.category: {cat!r}")
     elif verdict in ("failed", "errored") and cat == "none":
         errors.append("Failed/errored analysis cannot have primary_root_cause.category='none'")
-    elif verdict == "passed" and cat != "none":
+    elif verdict in ("passed", "pending") and cat != "none":
         errors.append(f"Passed analysis must have primary_root_cause.category='none', got {cat!r}")
 
     conf = prc.get("confidence")

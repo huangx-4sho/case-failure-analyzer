@@ -179,6 +179,12 @@ class _Review:
                 first, second = node.value.elts
                 if isinstance(first, ast.Constant) and first.value is False:
                     message = second
+            if (
+                isinstance(node, ast.Return)
+                and isinstance(node.value, ast.List)
+                and len(node.value.elts) == 1
+            ):
+                message = node.value.elts[0]
             if message is None:
                 continue
             pieces = message.values if isinstance(message, ast.JoinedStr) else [message]
@@ -308,7 +314,150 @@ class _Review:
             if predicate(value)
         ]
 
+    def review_group_list_shape(self):
+        """Bind a rejected helper argument to the exact submitted group shape."""
+        failure_text = "\n".join(text for _, text in self.failures)
+        for site in self.sites:
+            node, guard = site
+            if not isinstance(guard, ast.If):
+                continue
+            scope = self.scope(node)
+            if not isinstance(scope, ast.FunctionDef):
+                continue
+            list_args = {
+                check.args[0].id
+                for check in ast.walk(guard.test)
+                if isinstance(check, ast.Call)
+                and _name(check.func) == "isinstance"
+                and isinstance(self.parents.get(check), ast.UnaryOp)
+                and isinstance(self.parents[check].op, ast.Not)
+                and len(check.args) == 2
+                and isinstance(check.args[0], ast.Name)
+                and isinstance(check.args[1], ast.Name)
+                and check.args[1].id == "list"
+            }
+            for index, arg in enumerate(scope.args.args):
+                if arg.arg not in list_args:
+                    continue
+                for call in ast.walk(self.tree):
+                    if (
+                        not isinstance(call, ast.Call)
+                        or _name(call.func) != scope.name
+                        or len(call.args) <= index
+                    ):
+                        continue
+                    lookup = call.args[index]
+                    if not (
+                        isinstance(lookup, ast.Call)
+                        and isinstance(lookup.func, ast.Attribute)
+                        and lookup.func.attr == "get"
+                        and isinstance(lookup.func.value, ast.Name)
+                    ):
+                        continue
+                    receiver = lookup.func.value.id
+                    caller = self.scope(call)
+                    assignments = [
+                        a
+                        for a in ast.walk(caller)
+                        if isinstance(a, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == receiver for t in a.targets)
+                        and isinstance(a.value, ast.Call)
+                        and isinstance(a.value.func, ast.Attribute)
+                        and a.value.func.attr == "get"
+                        and a.value.args
+                        and isinstance(a.value.args[0], ast.Constant)
+                        and isinstance(a.value.args[0].value, str)
+                    ]
+                    for assignment in assignments:
+                        field = assignment.value.args[0].value
+                        message_parts = (
+                            _strings(node.value) if isinstance(node, ast.Return) else _strings(node)
+                        )
+                        suffix = next(
+                            (
+                                part
+                                for part in message_parts
+                                if part.startswith(":") and len(part) >= 18
+                            ),
+                            "",
+                        )
+                        if not suffix:
+                            continue
+                        groups = set(
+                            re.findall(
+                                re.escape(field) + r"\[([^]\n]+)\]" + re.escape(suffix),
+                                failure_text,
+                            )
+                        )
+                        for group in sorted(groups):
+                            actual = []
+                            nested_keys = set()
+                            for path, pointer, mapping, _ in self.fields(field):
+                                value = mapping.get(group) if isinstance(mapping, dict) else None
+                                if not isinstance(value, dict):
+                                    continue
+                                lists = [
+                                    {
+                                        "key": key,
+                                        "count": len(items),
+                                        "record_fields": sorted(
+                                            set().union(
+                                                *(
+                                                    set(item)
+                                                    for item in items
+                                                    if isinstance(item, dict)
+                                                )
+                                            )
+                                        ),
+                                    }
+                                    for key, items in value.items()
+                                    if isinstance(items, list)
+                                    and items
+                                    and all(
+                                        isinstance(item, dict) and {"mol", "err"}.issubset(item)
+                                        for item in items
+                                    )
+                                ]
+                                if not lists:
+                                    continue
+                                nested_keys.update(item["key"] for item in lists)
+                                actual.append(
+                                    {
+                                        "path": str(path),
+                                        "pointer": f"{pointer}[{json.dumps(group)}]",
+                                        "value_type": "object",
+                                        "object_keys": list(value),
+                                        "nested_sample_lists": lists,
+                                        "value": value,
+                                    }
+                                )
+                            if not actual:
+                                continue
+                            self.add(
+                                "representation_shape_disagreement",
+                                "group_object_vs_direct_list",
+                                f"{field}[{group}]",
+                                site,
+                                [guard, assignment, call],
+                                actual,
+                                f"Verifier requires a direct list at {field}[{group}]; the submitted group is an object containing sample records under {', '.join(sorted(nested_keys))}.",
+                                "Nested records are present, so this rejection does not establish missing molecular data. The public requirement's group/source layout and acceptance of nesting require review; sample identities, numerical correctness and later checks remain unverified.",
+                                terms=[field, "per-molecule", "group"],
+                            )
+                            item = self.items[-1]
+                            item["summary_zh"] = (
+                                f"评分器要求 {field}[{group}] 直接为列表；提交的是对象，样本记录位于 {', '.join(sorted(nested_keys))} 子列表。"
+                            )
+                            item["uncertainty_zh"] = (
+                                "嵌套样本记录确实存在，此拒绝不能单独证明分子数据缺失。公开要求如何组织分组与来源、是否接受嵌套仍需复核；样本身份、数值正确性与后续检查均未验证。"
+                            )
+                            item["expected_representation"] = {
+                                "type": "list",
+                                "access": ast.get_source_segment(self.code, lookup),
+                            }
+
     def review(self):
+        self.review_group_list_shape()
         for site in self.sites:
             call, guard = site
             scope = self.scope(call)

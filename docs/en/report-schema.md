@@ -12,6 +12,8 @@ Failure reports use four core sections in the order below. Each report heading s
 
 Scoring coverage counts produced scores rather than verifier launches. Reports retain original metric names and runtime exceptions, and separately display scoring-contract review, replay scope, and scientific-definition findings in the evidence section.
 
+An unscored verifier request for semantic review yields `pending`. Read the saved review criteria before interpreting the trial. For an unresolved cause, the confidence receipt shows the net evidence points and the zero floor. A contract review can also withhold attribution and assign zero. A reviewed report retains its original rule score and states the review conclusion separately.
+
 ## Required Sections & Visual Structure
 
 Present the verdict, primary category → subtype (`CODE`), stages, and confidence in a compact Markdown property table. Follow it with the failure manifestation and attribution mechanism. These are different claims: one describes where verification failed; the other explains the proposed cause.
@@ -38,7 +40,7 @@ Report heading: `## 1. 归因结论` or `## 1. Root Cause Verdict`.
 
 | Item | Required content |
 | --- | --- |
-| Verdict | `failed`, `passed`, or `errored`, including execution status, verification status, and reward |
+| Verdict | `failed`, `passed`, `pending`, or `errored`, including execution status, verification status, and reward |
 | Primary cause | Category → subtype (`CODE`) |
 | Stages | Failure stage → detection stage |
 | Confidence | Score, assessment method, and evidence strength |

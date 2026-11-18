@@ -28,12 +28,14 @@ from .gates import (
     gate6_agent_primary as _gate6,
 )
 from .gates.gate1c_runner_collection import gate1c_runner_artifact_collection as _gate1c
+from .gates.gate0_review_pending import gate0_review_pending
 from .schema import make_attribution
 from .trace import DecisionTrace
 from causal_assessment import assess_static
 
 #: Evaluation order. Gate ids are stable identifiers used by the decision trace.
 GATE_ORDER: Tuple[str, ...] = (
+    "gate0_review_pending",
     "gate0_passed",
     "gate1a_infra_prestartup",
     "gate1b_unknown_no_evidence",
@@ -46,6 +48,7 @@ GATE_ORDER: Tuple[str, ...] = (
 )
 
 GATES: Tuple[Callable[[AttributionContext], Optional[Dict[str, Any]]], ...] = (
+    gate0_review_pending,
     _gate0.gate0_passed,
     _gate1.gate1a_infra_prestartup,
     _gate1.gate1b_unknown_no_evidence,

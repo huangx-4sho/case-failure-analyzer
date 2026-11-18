@@ -372,18 +372,23 @@ def _collect_from_mapping(data: Dict[str, Any], rel: str, checks: List[Dict[str,
                     checks.append(rec)
 
     # Some graders expose a bare `failed_checks` / `errors` list of names.
-    for key in ("failed_checks", "failures", "errors"):
+    for key in ("failed_checks", "failures", "errors", "problems"):
         values = data.get(key)
         if not isinstance(values, list):
             continue
-        for item in values:
+        for index, item in enumerate(values):
             if isinstance(item, str) and item.strip():
                 checks.append(
                     {
                         "layer": "reported_failures",
-                        "name": _text(item, 160),
+                        "name": _text(item.split(":", 1)[0] if key == "problems" else item, 160),
                         "ok": False,
-                        "detail": "",
+                        "detail": _text(item) if key == "problems" else "",
+                        **(
+                            {"source_pointer": f"$.problems[{index}]", "original_detail": item}
+                            if key == "problems"
+                            else {}
+                        ),
                         "core": False,
                         "source": rel,
                     }
@@ -786,6 +791,8 @@ def build_verifier_report(
             families.add("criteria")
         if isinstance(doc.get("checks"), dict):
             families.add("checks")
+        if isinstance(doc.get("problems"), list):
+            families.add("problems")
         if any(k in doc for k in ("scientific_status", "failure_origin", "core_failures")):
             families.add("envelope")
 

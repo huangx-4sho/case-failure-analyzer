@@ -129,7 +129,7 @@ The verification scripts (`verify.py`, `test.sh`), scoring rules, or scoring dep
 | `VERIFIER_HIDDEN_CONTRACT`<br>`hidden_contract` | **Undisclosed private contract.** The verifier checks intermediate files, column order, or private fields never declared in the task. |
 | `VERIFIER_RECOMPUTE_DEFECT`<br>`recompute_defect` | **Verifier recomputation crash.** Independent recomputation crashes because of missing temporary-directory configuration, unescaped paths, or missing environment dependencies. |
 | `VERIFIER_TRUSTED_ASSET_HASH_MISMATCH`<br>`trusted_asset_hash_mismatch` | **Trusted scoring asset hash mismatch.** Bound to an actual scoring rejection; do not resolve it by bypassing validation. |
-| `VERIFIER_REFERENCE_LFS_POINTER`<br>`reference_lfs_pointer` | **Reference file is an LFS pointer.** Saved read failures and the reference header establish the missing payload. |
+| `VERIFIER_REFERENCE_LFS_POINTER`<br>`reference_lfs_pointer` | **Packaged scoring input is an LFS pointer.** Match the input named in a saved read or hash failure to a local pointer. Historical file identity may still need review. |
 
 <a id="25-辅助类别未知与证据缺失-unknown"></a>
 

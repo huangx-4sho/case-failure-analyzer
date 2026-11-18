@@ -57,6 +57,7 @@ def _scoring_coverage(
     return {
         "scored": scored,
         "not_scored": max(0, total_trials - scored),
+        "pending_review": int(verdict_counts.get("pending", 0)),
         "scored_passed": scored_passed,
         "scored_failed": max(0, scored - scored_passed),
         "scored_pass_rate": (scored_passed / scored * 100.0) if scored > 0 else 0.0,
@@ -71,7 +72,8 @@ def _render_coverage_block(
     overall_pass_rate: float,
 ) -> List[str]:
     """Three-state scoring coverage subsection (additive under Section 1)."""
-    ns = cov["not_scored"]
+    pending = cov.get("pending_review", 0)
+    ns = max(0, cov["not_scored"] - pending)
     sp = cov["scored_passed"]
     sf = cov["scored_failed"]
     sr = cov["scored_pass_rate"]
@@ -82,6 +84,7 @@ def _render_coverage_block(
             "| 状态 | 数量 | 说明 |\n|---|:---:|---|\n",
             f"| 已评分·通过 (Scored Passed) | `{sp}` | 已产出分数且通过 |\n",
             f"| 已评分·失败 (Scored Failed) | `{sf}` | 已产出分数但未通过 |\n",
+            f"| 待复核 (Pending Review) | `{pending}` | 已请求独立复核，尚无评分 |\n",
             f"| 未评分 (Not Scored) | `{ns}` | 未产出有效分数（可能在验证器启动前或评分过程中中止） |\n",
             f"| **可评分通过率 (Scored Pass Rate)** | **{sr:.1f}%** | 通过 / (通过 + 已评分失败) |\n\n",
             f"> **口径说明**: 全量通过率 **{overall_pass_rate:.1f}%** = 通过 / 总 Trial 数；"
@@ -94,6 +97,7 @@ def _render_coverage_block(
             "| State | Count | Meaning |\n|---|:---:|---|\n",
             f"| Scored Passed | `{sp}` | Score recorded; passed |\n",
             f"| Scored Failed | `{sf}` | Score recorded; not passed |\n",
+            f"| Pending Review | `{pending}` | Independent review requested; no score |\n",
             f"| Not Scored | `{ns}` | No valid score produced (before verification or during scoring) |\n",
             f"| **Scored Pass Rate** | **{sr:.1f}%** | Passed / (Passed + Scored Failed) |\n\n",
             f"> **Rate definitions**: overall pass rate **{overall_pass_rate:.1f}%** = "
@@ -106,6 +110,7 @@ def _render_coverage_block(
             "| 状态 (State) | 数量 (Count) | 说明 (Meaning) |\n|---|:---:|---|\n",
             f"| 已评分·通过 (Scored Passed) | `{sp}` | 已产出分数且通过 / score recorded; passed |\n",
             f"| 已评分·失败 (Scored Failed) | `{sf}` | 已产出分数但未通过 / score recorded; not passed |\n",
+            f"| 待复核 (Pending Review) | `{pending}` | 已请求独立复核，尚无评分 |\n",
             f"| 未评分 (Not Scored) | `{ns}` | 未产出有效分数（可能在验证器启动前或评分过程中中止） / no valid score produced |\n",
             f"| **可评分通过率 (Scored Pass Rate)** | **{sr:.1f}%** | 通过 / (通过 + 已评分失败) |\n\n",
             f"> **口径说明 (Rate definitions)**: 全量通过率 / Overall **{overall_pass_rate:.1f}%** "

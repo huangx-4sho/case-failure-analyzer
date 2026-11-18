@@ -41,6 +41,30 @@ class VerifierReportNormalizationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_problems_list_preserves_field_diagnostic_and_source_pointer(self):
+        message = "samples[EAD|basis|primary]: per-item samples missing"
+        _write(
+            self.trial,
+            "verification.json",
+            {
+                "status": "FAIL",
+                "reward": 0.0,
+                "checks_passed": ["deliverables present"],
+                "problems": [message],
+            },
+        )
+        report = build_verifier_report(self.trial)
+        self.assertEqual(report["verdict"], "fail")
+        self.assertEqual(report["reward"], 0.0)
+        self.assertEqual(report["schema_family"], "problems")
+        self.assertEqual(len(report["failed_checks"]), 1)
+        check = report["failed_checks"][0]
+        self.assertEqual(check["name"], "samples[EAD|basis|primary]")
+        self.assertEqual(check["detail"], message)
+        self.assertEqual(check["original_detail"], message)
+        self.assertEqual(check["source_pointer"], "$.problems[0]")
+        self.assertEqual(check["source"], "verification.json")
+
     def test_no_verifier_directory_returns_none(self) -> None:
         self.assertIsNone(build_verifier_report(self.trial))
         self.assertIsNone(build_verifier_report(None))

@@ -101,8 +101,8 @@ def proposed_attribution_errors(review: dict, analysis: dict) -> List[str]:
         errors.append("proposed_attribution category conflicts with decision.kind")
     if category == "agent" and kind not in ("scientific", "parameter", "execution", "delivery"):
         errors.append("proposed agent attribution requires an agent execution decision")
-    if analysis.get("verdict") == "passed":
-        errors.append("cannot propose a failure cause for a passed trial")
+    if analysis.get("verdict") in ("passed", "pending"):
+        errors.append("cannot propose a failure cause for a passed or pending trial")
     return errors
 
 
@@ -354,7 +354,7 @@ def assess_static(evidence: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[st
     analysis["causal_assessment"] = {
         "schema_version": SCHEMA,
         "level": "not_applicable"
-        if analysis.get("verdict") == "passed"
+        if analysis.get("verdict") in ("passed", "pending")
         else "observed_failure"
         if prc.get("category", "unknown") == "unknown"
         else "candidate_cause",
@@ -635,7 +635,7 @@ def validate_assessment(
     )
     if a.get("level") not in LEVELS:
         errors.append("invalid conclusion level")
-    if (analysis.get("verdict") == "passed") != (a.get("level") == "not_applicable"):
+    if (analysis.get("verdict") in ("passed", "pending")) != (a.get("level") == "not_applicable"):
         errors.append("passed status and conclusion level disagree")
     if a.get("existing_verification") != existing_verification(evidence) or a.get(
         "deliverable_audit"
@@ -679,6 +679,11 @@ def render_assessment(analysis: Dict[str, Any], lang: str = "zh") -> str:
             "This-trial cause supported by existing evidence and structured review",
         ),
     }
+    if analysis.get("verdict") == "pending":
+        labels["not_applicable"] = (
+            "待独立复核，暂无失败归因",
+            "Pending independent review; no failure attribution",
+        )
     en = lang == "en"
     label = labels.get(a.get("level"), ("旧版归因，尚未审查", "Legacy attribution; unreviewed"))[
         int(en)

@@ -11,6 +11,8 @@ Provides a single source of truth for per-trial execution state, stage gates
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import re
 import math
 from typing import Any, Dict, List, Optional
 
@@ -139,6 +141,50 @@ def _safe_int(val: Any) -> int:
         return 0
 
 
+def _review_receipts(trial_dir):
+    """Only top-level saved verifier status, never nested review criteria.
+
+    Canonical verification.json takes precedence over stale transport stdout.
+    """
+    receipts = []
+    if not trial_dir:
+        return receipts
+    for rel in ("verifier/verification.json", "verifier/test-stdout.txt"):
+        path = trial_dir / rel
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(8 * 1024 * 1024 + 1)
+        except OSError:
+            continue
+        if len(raw) > 8 * 1024 * 1024:
+            continue
+        text = raw.decode("utf-8", errors="replace").strip()
+        try:
+            report = json.loads(text)
+        except ValueError:
+            report = None
+        status = report.get("status") if isinstance(report, dict) else None
+        final_statuses = {"FAIL", "FAILED", "PASS", "PASSED", "ERROR", "ENV_INVALID"}
+        if (
+            rel == "verifier/verification.json"
+            and isinstance(status, str)
+            and status.upper() in final_statuses
+        ):
+            return []
+        if status == "REVIEW_REQUIRED" or re.match(r"^REVIEW_REQUIRED(?:\s*:|$)", text):
+            receipts.append(
+                {
+                    "source_file": rel,
+                    "source_pointer": "/status" if isinstance(report, dict) else "L1",
+                    "status": "REVIEW_REQUIRED",
+                    "reason": str(report.get("reason") or report.get("error") or "")
+                    if isinstance(report, dict)
+                    else text[:500],
+                }
+            )
+    return receipts
+
+
 def compute_runtime_state(
     job_result: Optional[Dict[str, Any]],
     trial_result: Optional[Dict[str, Any]],
@@ -222,7 +268,14 @@ def compute_runtime_state(
         exc_info is not None or exception_txt_exists or job_abort_without_trial_dir
     )
 
+    review_receipts = _review_receipts(trial_dir)
+    pending_review = bool(review_receipts and reward_val is None)
+    verifier_started = verifier_started or bool(review_receipts)
     state_conflicts: List[str] = []
+    if review_receipts and reward_val is not None:
+        state_conflicts.append(
+            "REVIEW_REQUIRED receipt conflicts with a numeric reward; preserve the recorded scored outcome for review."
+        )
     if reward_val is not None and reward_val >= 1.0 and has_trial_exception:
         state_conflicts.append(
             "Trial has reward >= 1.0 (passed verification) alongside a trial exception record."
@@ -233,7 +286,9 @@ def compute_runtime_state(
         )
 
     # Verification status strictly reflects trial verification outcome
-    if reward_val is not None and reward_val >= 1.0:
+    if pending_review:
+        verification_status = "pending"
+    elif reward_val is not None and reward_val >= 1.0:
         verification_status = "passed"
     elif reward_val is not None and reward_val < 1.0:
         verification_status = "failed"
@@ -245,7 +300,15 @@ def compute_runtime_state(
         verification_status = "not_run"
 
     # Execution status reflects runner/agent execution lifecycle for THIS trial only
-    if verification_status == "passed":
+    if pending_review:
+        agent_exception = isinstance(exc_info, dict) and exc_info.get("exception_type") not in (
+            None,
+            "RewardFileNotFoundError",
+        )
+        execution_status = "errored" if agent_exception else "completed"
+        verdict = "pending"
+        exit_status = "pending"
+    elif verification_status == "passed":
         execution_status = "completed"
         verdict = "passed"
         exit_status = "completed"
@@ -299,6 +362,8 @@ def compute_runtime_state(
         "agent_started": agent_started,
         "verifier_started": verifier_started,
         "score_produced": reward_val is not None,
+        "review_required": bool(review_receipts),
+        "review_receipts": review_receipts,
         "has_trial_exception": has_trial_exception,
         "state_conflicts": state_conflicts,
         "stages": {

@@ -26,6 +26,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from ..context import AttributionContext
+from .gate5_insufficient import unresolved_attribution
 
 
 def _readable_failure_text(
@@ -114,6 +115,11 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     algo_anchor = causal_anchors.get("algorithm_or_param_definition")
     deliv_anchor = causal_anchors.get("deliverable_generation")
     self_check_anchor = causal_anchors.get("self_check") or {}
+    bound_self_check_gap = bool(
+        self_check_anchor.get("event_id")
+        and self_check_anchor.get("uncovered_failed_checks")
+        and any(s.get("signal_type") == "self_verification_executed" for s in signals)
+    )
     for ref_key in ("event_id", "script_event_ref"):
         ref = self_check_anchor.get(ref_key)
         if ref and ref not in ev_refs:
@@ -304,7 +310,15 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             fud_ref = remote_exit["event_ref"]
         skill_prescription = None
     # Subcase 5e: Inaccurate output / calculation error backed by behavioral signals
-    elif (unverified_output_sigs or signals) and (fail_text or failure_excerpt):
+    elif (
+        unverified_output_sigs
+        or any(
+            signal.get("signal_type")
+            not in ("dependency_search_attempted", "self_verification_executed")
+            for signal in signals
+        )
+        or bound_self_check_gap
+    ) and (fail_text or failure_excerpt):
         subcase_id = "5e"
         combined_fail_text = f"{fail_text}\n{failure_excerpt}"
         report_failed_checks = [
@@ -324,41 +338,23 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         skill_prescription = None
         contributing_factors = []
 
-        if any(s.get("signal_type") == "self_verification_executed" for s in ctx.signals):
+        if bound_self_check_gap:
             subtype = "self_check_gap"
             code = "AGENT_SELF_CHECK_GAP"
-            has_anchor = bool(self_check_anchor.get("event_id"))
-            uncovered = list(self_check_anchor.get("uncovered_failed_checks") or [])
-            covered = list(self_check_anchor.get("checked_failed_checks") or [])
+            uncovered = self_check_anchor["uncovered_failed_checks"]
+            covered = self_check_anchor.get("checked_failed_checks") or []
             script = self_check_anchor.get("script_path") or "the self-check script"
-            check_event = self_check_anchor.get("event_id") or "self-check execution"
-            passed = bool(self_check_anchor.get("self_check_passed"))
-            if has_anchor:
-                prefix = (
-                    f"Agent ran self-verification at `{check_event}` and reported success"
-                    if passed
-                    else f"Agent ran self-verification at `{check_event}` without a pass marker"
-                )
-                if uncovered:
-                    gap_sentence = (
-                        f"its script `{script}` omits verifier-required checks: "
-                        f"{', '.join(uncovered)}"
-                        + (f" (covered: {', '.join(covered)})" if covered else "")
-                    )
-                else:
-                    gap_sentence = (
-                        f"its script `{script}` did not reproduce the verifier's "
-                        f"independent recomputation criteria"
-                    )
-            else:
-                prefix = "Agent ran self-verification"
-                gap_sentence = (
-                    "no self-check script source was captured, so its criteria cannot be "
-                    "confirmed against the verifier's named failed checks"
-                )
+            check_event = self_check_anchor["event_id"]
+            status = (
+                "and reported success"
+                if self_check_anchor.get("self_check_passed")
+                else "without a pass marker"
+            )
             summary = (
-                f"{prefix}, but {gap_sentence}; "
-                f"verifier rejected submitted outputs: {failure_excerpt}"
+                f"Agent ran self-verification at `{check_event}` {status}, but its script `{script}` "
+                f"omits verifier-required checks: {', '.join(uncovered)}"
+                + (f" (covered: {', '.join(covered)})" if covered else "")
+                + f"; verifier rejected submitted outputs: {failure_excerpt}"
             )
             guidance = [
                 "Include all task specification criteria and independent ground-truth checks in pre-submission validation."
@@ -656,10 +652,11 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     else:
         ctx.trace.record(
             gate_id="gate6_agent_primary",
-            matched=False,
-            reason="no positive agent causal evidence matches subcases 5a-5e",
+            matched=True,
+            subcase_id="unresolved",
+            reason="candidate leads do not establish a specific agent cause",
         )
-        return None
+        return unresolved_attribution(ctx)
 
     # Check if multiple failed checks share identical summary/detail (coupled calculation)
     loc = ctx.check_localization

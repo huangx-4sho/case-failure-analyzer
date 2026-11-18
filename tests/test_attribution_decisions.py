@@ -181,6 +181,16 @@ def _agent_event(**kw: Any) -> Dict[str, Any]:
 
 DECISION_TABLE: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = [
     (
+        "explicit unscored review request",
+        {"runtime": _runtime(verdict="pending", verification_status="pending", reward=None)},
+        {
+            "gate_id": "gate0_review_pending",
+            "category": "none",
+            "code": "REVIEW_REQUIRED",
+            "verdict": "pending",
+        },
+    ),
+    (
         "gate0 via verification_status",
         _evidence(runtime=_runtime(verification_status="passed")),
         {
@@ -1744,11 +1754,8 @@ class TestConfidenceUpgradeWiring(unittest.TestCase):
             timeline=[_agent_event(event_id="trajectory:step:70")],
         )
         an = run_attribution_engine(ev, {"candidate_hypotheses": []})
-        summary = an["primary_root_cause"]["summary"]
-        self.assertEqual(an["primary_root_cause"]["code"], "AGENT_SELF_CHECK_GAP")
-        self.assertIn("no self-check script source was captured", summary)
-        self.assertNotIn("it passed", summary)
-        self.assertNotIn("omits verifier-required checks", summary)
+        self.assertEqual(an["primary_root_cause"]["code"], "UNKNOWN_INSUFFICIENT_EVIDENCE")
+        self.assertEqual(an["first_unrecovered_deviation"]["status"], "not_identified")
 
     def test_gate6_self_check_gap_respects_missing_pass_marker(self) -> None:
         ev = _evidence(

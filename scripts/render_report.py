@@ -939,6 +939,20 @@ def _failure_callout(manifestation: str, attribution: str, lang: str) -> str:
     )
 
 
+def _zero_score_note(primary: dict, lang: str) -> str:
+    if primary.get("category") != "unknown" or primary.get("confidence") != 0:
+        return ""
+    receipt = primary.get("confidence_breakdown") or {}
+    raw = receipt.get("raw_points")
+    if isinstance(raw, (float, int)) and raw < 0:
+        return (
+            f" · net evidence points {raw}, floored at zero"
+            if lang == "en"
+            else f" · 证据净分 {raw}，按下限记 0"
+        )
+    return " · cause unresolved" if lang == "en" else " · 具体错因待核实"
+
+
 def _confidence_details(row: str, lang: str) -> str:
     """Keep the full scoring receipt available without widening the verdict table."""
     title = {
@@ -1016,7 +1030,7 @@ def _render_chinese_bilingual_core(
             f"| **评测结论 (Verdict)** | `{verdict}` · 执行 `{exec_status}` · 验证 `{verification}` · reward `{reward}` |\n"
             f"| **主因 (Primary cause)** | `{cat}` {cat_zh} → {subtype_zh} `{subtype}` · `{code}` |\n"
             f"| **阶段 (Stages)** | 发生 {stage_label(f_stage, 'zh')} → 检出 {stage_label(d_stage, 'zh')} |\n"
-            f"| **置信度 (Confidence)** | {badge} **{conf_val:.2f}** · {conf_kind_label} · 证据强度 {strength_label} |\n"
+            f"| **置信度 (Confidence)** | {badge} **{conf_val:.2f}** · {conf_kind_label} · 证据强度 {strength_label}{_zero_score_note(prc, 'zh')} |\n"
         )
     else:
         lines.append(
@@ -1025,7 +1039,7 @@ def _render_chinese_bilingual_core(
             f"| **评测结论** | `{verdict}` · 执行 `{exec_status}` · 验证 `{verification}` · reward `{reward}` |\n"
             f"| **主因** | `{cat}` {cat_zh} → {subtype_zh} `{subtype}` · `{code}` |\n"
             f"| **阶段** | 发生 {stage_label(f_stage, 'zh')} → 检出 {stage_label(d_stage, 'zh')} |\n"
-            f"| **置信度** | {badge} **{conf_val:.2f}** · {conf_kind_label} · 证据强度 {strength_label} |\n"
+            f"| **置信度** | {badge} **{conf_val:.2f}** · {conf_kind_label} · 证据强度 {strength_label}{_zero_score_note(prc, 'zh')} |\n"
         )
     cb_row = format_confidence_breakdown(
         prc.get("confidence_breakdown"), conf_val, lang="bilingual" if include_en_labels else "zh"
@@ -1331,7 +1345,7 @@ def _render_english_edition(
         f"| **Verdict** | `{verdict}` · execution `{exec_status}` · verification `{runtime.get('verification_status', 'unknown')}` · reward `{runtime.get('reward')}` |\n"
         f"| **Primary cause** | `{cat}` {cat_en} → {subtype_label(subtype, 'en')} `{subtype}` · `{code}` |\n"
         f"| **Stages** | occurred at {stage_label(f_stage, 'en')} → detected at {stage_label(d_stage, 'en')} |\n"
-        f"| **Confidence** | {badge} **{conf_val:.2f}** · {confidence_kind_label(conf_kind, 'en')} · evidence strength {evidence_strength_label(ev_strength, 'en')} |\n"
+        f"| **Confidence** | {badge} **{conf_val:.2f}** · {confidence_kind_label(conf_kind, 'en')} · evidence strength {evidence_strength_label(ev_strength, 'en')}{_zero_score_note(prc, 'en')} |\n"
     )
     cb_row = format_confidence_breakdown(prc.get("confidence_breakdown"), conf_val, lang="en")
     if cb_row:
@@ -1790,6 +1804,41 @@ def _render_passed_edition(
     return "".join(lines)
 
 
+def _render_pending_edition(
+    evidence: Dict[str, Any], analysis: Dict[str, Any], lang: str, output_format: str
+) -> str:
+    en = lang == "en"
+    bilingual = lang == "bilingual"
+    case = analysis.get("case_id") or evidence.get("case_id") or "unknown"
+    title = "Review required" if en else "待人工复核"
+    status = "Review status" if en else "复核状态"
+    saved = "Saved evidence" if en else "已保存证据"
+    if bilingual:
+        title += " / Review required"
+        status += " (Review status)"
+        saved += " (Saved evidence)"
+    lines = [f"# {title}: `{case}`", "", f"## 1. {status}", ""]
+    lines.append(
+        "The verifier recorded REVIEW_REQUIRED. No valid score or pass/fail result was produced; no failure cause is assigned."
+        if en
+        else "评分器记录为 REVIEW_REQUIRED，未生成有效分数或通过/失败结论；不作失败归因。"
+    )
+    receipts = (evidence.get("runtime") or {}).get("review_receipts") or []
+    report = evidence.get("verifier_report") or {}
+    messages = report.get("messages") or []
+    reason = next((r["reason"] for r in receipts if r.get("reason")), None)
+    if reason or messages:
+        lines.append("\n" + source_quotation(reason or messages[0], lang))
+    lines.extend(["", f"## 2. {saved}", ""])
+    for receipt in receipts:
+        lines.append(
+            f"- `{receipt['source_file']}` (`{receipt['source_pointer']}`) · REVIEW_REQUIRED"
+        )
+    lines.append("")
+    lines.extend(_render_evidence_file_pointers(evidence, lang=lang, output_format=output_format))
+    return "\n".join(lines)
+
+
 def render_report_markdown(
     evidence: Dict[str, Any],
     analysis: Dict[str, Any],
@@ -1798,7 +1847,9 @@ def render_report_markdown(
     data_paths: Optional[Dict[str, str]] = None,
 ) -> str:
     """Render four failure sections or a two-section passed view with relative data links."""
-    if analysis.get("verdict", "failed") == "passed":
+    if analysis.get("verdict") == "pending":
+        rendered = _render_pending_edition(evidence, analysis, lang, output_format)
+    elif analysis.get("verdict", "failed") == "passed":
         rendered = _render_passed_edition(
             evidence, analysis, lang=lang, output_format=output_format
         )
@@ -1823,7 +1874,7 @@ def render_report_markdown(
             .replace("| **置信度 (Confidence)** |", "| **原规则评分 (Original rule score)** |")
         )
     assessment = analysis.get("causal_assessment") or {}
-    if assessment and analysis.get("verdict") != "passed":
+    if assessment and analysis.get("verdict") not in ("passed", "pending"):
         supported = assessment.get("level") == "evidence_supported_cause"
         rendered = rendered.replace(
             "**主因**", "**审查归因**" if supported else "**规则候选**"

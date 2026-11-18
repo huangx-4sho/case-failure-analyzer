@@ -150,7 +150,10 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
     total = len(cases_sorted)
     passed = sum(1 for c in cases_sorted if c.get("verdict") == "passed" and score_was_produced(c))
     failed = sum(1 for c in cases_sorted if c.get("verdict") == "failed" and score_was_produced(c))
-    errored_unscored = sum(1 for c in cases_sorted if not score_was_produced(c))
+    pending = sum(1 for c in cases_sorted if c.get("verdict") == "pending")
+    errored_unscored = sum(
+        1 for c in cases_sorted if c.get("verdict") != "pending" and not score_was_produced(c)
+    )
     scored = sum(score_was_produced(c) for c in cases_sorted)
     scored_pass_rate = f"{(passed / scored * 100):.1f}%" if scored > 0 else "0.0%"
 
@@ -164,6 +167,7 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
             f"**总用例 / Total**: `{total}` · "
             f"**通过 / Passed**: `{passed}` · "
             f"**已评分失败 / Failed**: `{failed}` · "
+            f"**待复核 / Pending Review**: `{pending}` · "
             f"**未评分或异常 / Errored & Unscored**: `{errored_unscored}` · "
             f"**可评分通过率 / Scored Pass Rate**: `{scored_pass_rate}`"
         ),
@@ -176,7 +180,7 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
 
     cat_counts: Dict[str, int] = {"agent": 0, "verifier": 0, "case": 0, "infra": 0, "unknown": 0}
     for c in cases_sorted:
-        if c.get("verdict") == "passed":
+        if c.get("verdict") in ("passed", "pending"):
             continue
         cat = c.get("category", "unknown")
         if cat not in cat_counts:
@@ -207,7 +211,9 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
         conf = c.get("confidence")
 
         # Visual strength indicator for confidence
-        if v == "passed":
+        if v == "pending":
+            conf_str = "—"
+        elif v == "passed":
             conf_str = f"✅ {float(conf):.2f}" if isinstance(conf, (int, float)) else "✅ 1.00"
         elif isinstance(conf, (int, float)):
             c_val = float(conf)

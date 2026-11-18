@@ -167,6 +167,20 @@ class ReportLanguageTests(unittest.TestCase):
                 next(line for line in candidate.splitlines() if "H_REVIEW" in line),
             )
 
+    def test_pending_reports_do_not_assign_failure_or_passed_status(self):
+        self.analysis["verdict"] = "pending"
+        for lang, status in (
+            ("zh", "复核状态"),
+            ("en", "Review status"),
+            ("bilingual", "复核状态 (Review status)"),
+        ):
+            report = render_report_markdown(self.evidence, self.analysis, lang=lang)
+            self.assertIn("## 1. " + status, report)
+            self.assertEqual(sum(line.startswith("## ") for line in report.splitlines()), 2)
+            self.assertNotIn("**Attribution**", report)
+            self.assertNotIn("**归因判断**", report)
+            self.assertNotIn("Root Cause Verdict", report)
+
     def test_verifier_startup_does_not_imply_scoring_or_completion(self):
         self.evidence["runtime"].update(score_produced=False, reward=None)
         self.assertFalse(build_verdict_card(self.evidence, self.analysis)["scored"])

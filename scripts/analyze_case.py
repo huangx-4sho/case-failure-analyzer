@@ -865,7 +865,7 @@ def build_causal_attribution(
     if cand_hyps is None:
         cand_hyps = generate_candidate_hypotheses(evidence)
     result = _build_raw_causal_attribution(evidence, norm_traj, contract_res, cand_hyps)
-    if result.get("verdict") != "passed":
+    if result.get("verdict") not in ("passed", "pending"):
         result["competing_hypotheses"] = _reconcile_competing_hypotheses(
             result.get("competing_hypotheses") or [],
             cand_hyps,
@@ -1397,6 +1397,7 @@ def compute_batch_statistics(summary_rows: List[Dict[str, Any]]) -> Dict[str, An
         # scored failures and must not be counted as agent failures in the rate.
         "scored_trial_count": scored_trial_count,
         "not_scored_trial_count": not_scored_trial_count,
+        "pending_review_trial_count": int(verdict_counts.get("pending", 0)),
         "scored_pass_rate": scored_pass_rate,
         "low_diagnosability_trial_count": low_diagnosability_count,
         "verdict_counts": verdict_counts,

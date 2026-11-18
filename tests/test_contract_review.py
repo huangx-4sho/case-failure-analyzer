@@ -60,6 +60,55 @@ class ContractReviewTests(unittest.TestCase):
         )
         return path
 
+    def test_nested_group_samples_are_present_despite_direct_list_rejection(self):
+        from report_style import render_contract_review
+
+        self.output(
+            "provenance.json",
+            {
+                "samples": {
+                    "EAD|a|b": {
+                        "source": "public table",
+                        "errors": [{"mol": i, "err": 0.01} for i in range(1, 36)],
+                    }
+                }
+            },
+        )
+        source = """
+def check_items(items, where):
+    if not isinstance(items, list) or not items:
+        return [f"{where}: per-item samples missing"]
+    return []
+def verify(prov):
+    samples = prov.get("samples")
+    for key in ["EAD|a|b"]:
+        problems = check_items(samples.get(key), f"samples[{key}]")
+    return problems
+"""
+        public = 'provenance.json: samples keyed by group; identify the raw-data source for each group and include all 35 {"mol": number, "err": signed_error} entries.'
+        result = self.audit(source, "samples[EAD|a|b]: per-item samples missing", public)
+        item = next(
+            i for i in result["review_items"] if i["subtype"] == "group_object_vs_direct_list"
+        )
+        self.assertEqual(item["expected_representation"]["type"], "list")
+        actual = item["actual_submitted_representation"][0]
+        self.assertEqual(actual["value_type"], "object")
+        self.assertEqual(actual["nested_sample_lists"][0]["count"], 35)
+        self.assertEqual(len(actual["value"]["errors"]), 35)
+        self.assertTrue(item["public_requirement_evidence"])
+        self.assertIn("remain unverified", item["uncertainty"])
+        for lang, label in (("en", "Nested records"), ("zh", "嵌套样本数")):
+            report = "\n".join(render_contract_review({"contract_review": result}, lang))
+            self.assertIn(label, report)
+            self.assertIn("35", report)
+            self.assertIn("Public requirement" if lang == "en" else "公开要求", report)
+        self.assertFalse(
+            self.audit(source, "samples[other]: per-item samples missing", public)["review_items"]
+        )
+        self.assertFalse(
+            self.audit(source, "samples[EAD|a|b]: numerical mismatch", public)["review_items"]
+        )
+
     @staticmethod
     def alias_source(failure="not decisions or not decisions[0]"):
         return f"""

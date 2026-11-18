@@ -460,6 +460,19 @@ def build_verdict_card(
 def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
     """Render the card as a compact bilingual-ish Markdown answer."""
     prc = card["primary_root_cause"]
+    if card.get("verdict") == "pending":
+        if lang == "en":
+            return (
+                f"# {card['task_id']} — Pending Review\n\n"
+                "**Verdict**: `pending` · **Scored**: `false`\n\n"
+                "The saved verifier requested independent review. No numeric score "
+                "or failure cause has been assigned.\n"
+            )
+        return (
+            f"# {card['task_id']} — 待复核 (Pending Review)\n\n"
+            "**裁定**: `pending` · **已评分**: `false`\n\n"
+            "已保存的验证器记录请求独立复核；尚未产出数值评分，也未归因于任何失败原因。\n"
+        )
     conf = prc.get("confidence")
     conf_txt = f"{float(conf):.2f}" if isinstance(conf, (int, float)) else "—"
     basename = card.get("report_basename") or card.get("task_id") or "task"
@@ -471,7 +484,9 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
             f"**Verdict**: `{card['verdict']}` · **Primary**: `{prc['category']}` "
             f"/ `{prc['subtype']}` / `{prc['code']}` (confidence **{conf_txt}**)"
         )
-        reason_hdr = "**Why it failed**"
+        reason_hdr = (
+            "**Review status**" if card.get("verdict") == "pending" else "**Why it failed**"
+        )
         cat_hdr = "## 1. Four peer categories"
         cat_cols = ("Category", "Status", "Reason")
         sub_hdr = f"## 2. Subcategory under `{prc['category']}`"
@@ -518,7 +533,7 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
         checks_hdr = "**具名失败检查**"
         gate_hdr = "判定门控"
 
-    if card.get("causal_assessment") and card.get("verdict") != "passed":
+    if card.get("causal_assessment") and card.get("verdict") not in ("passed", "pending"):
         lead = lead.replace("**主根因**", "**规则候选**").replace(
             "**Primary**", "**Rule candidate**"
         )
