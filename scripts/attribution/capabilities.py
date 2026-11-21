@@ -21,6 +21,7 @@ MECHANISM_TAGS = {
         "norm_or_metric_mismatch",
         "reference_state_or_baseline_wrong",
         "sign_or_unit_convention_wrong",
+        "derived_parameter_definition_mismatch",
     },
     "physical_model": {
         "simplified_or_decoupled_model",
@@ -30,6 +31,7 @@ MECHANISM_TAGS = {
     "numerical_adequacy": {
         "fitting_model_or_residual_mismatch",
         "sampling_sequence_or_seed_divergence",
+        "sampling_acceptance_rule_mismatch",
         "convergence_or_grid_inadequate",
     },
     "workflow_state": {
@@ -47,6 +49,9 @@ MECHANISM_TAGS = {
         "identifier_normalization_loss",
         "wrong_derived_column_mapping",
         "evidence_or_hash_provenance_gap",
+        "output_schema_mismatch",
+        "source_operand_order_mismatch",
+        "reporting_scope_omission",
     },
     "independent_validation": {
         "self_check_missed_nested_schema",

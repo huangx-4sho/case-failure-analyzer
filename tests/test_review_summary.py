@@ -55,6 +55,8 @@ class ReviewSummaryTests(unittest.TestCase):
                         },
                     },
                 }
+                if name == "two":
+                    del review["causal_assessment"]["capability"]["diagnosis"]["mechanism_tag"]
                 for basename, value in (
                     ("review", {}),
                     ("evidence", evidence),
@@ -109,9 +111,66 @@ class ReviewSummaryTests(unittest.TestCase):
                 {
                     "verdict": "errored",
                     "primary_root_cause": {"category": "infra"},
+                    "failure_manifestation": {
+                        "runtime_triage": {
+                            "leads": [
+                                {
+                                    "category": "agent",
+                                    "mechanism": "reasoning_token_runaway",
+                                    "evidence_refs": ["err:sdk_limit"],
+                                }
+                            ],
+                        },
+                    },
                 },
             )
             write(root / "dossiers" / "task7" / "dossier.json", {"trial_name": "trial"})
             data = build_summary(root / "audit", dossier_root=root / "dossiers")
             self.assertEqual(data["queues"], {"runtime": 1})
             self.assertEqual(data["supported_categories"], {})
+            self.assertEqual(data["runtime_mechanism_lead_counts"], {"reasoning_token_runaway": 1})
+            self.assertEqual(data["mechanism_tagged_trials"], 0)
+            self.assertEqual(data["mechanisms"], [])
+
+    def test_mechanism_counts_distinct_definitions_with_a_shared_case_label(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for n, task in enumerate(("task76", "task77", "task76"), 1):
+                evidence = {
+                    "trial_dir": str(root / f"trial{n}"),
+                    "task_dir": str(root / "tasks" / task),
+                    "case_id": "shared descriptive label",
+                    "runtime": {"score_produced": True},
+                }
+                baseline = {"verdict": "failed", "primary_root_cause": {"category": "unknown"}}
+                reviewed = {
+                    "verdict": "failed",
+                    "primary_root_cause": {"category": "agent"},
+                    "causal_assessment": {
+                        "level": "candidate_cause",
+                        "defect_verification": "verified_in_trial",
+                        "decision": {"event_ref": "trajectory:step:8"},
+                        "capability": {
+                            "diagnosis": {
+                                "dimension": "postprocessing_provenance",
+                                "mechanism_tag": "identifier_normalization_loss",
+                            }
+                        },
+                    },
+                }
+                audit = root / "audit" / f"job{n}" / task
+                write(audit / "evidence.json", evidence)
+                write(audit / "analysis.json", baseline)
+                bundle = root / "reviews" / f"trial{n}"
+                for name, value in (
+                    ("review", {}),
+                    ("evidence", evidence),
+                    ("analysis", reviewed),
+                    ("original-analysis", baseline),
+                ):
+                    write(bundle / f"{name}.json", value)
+            with patch("review_summary.validate_all", return_value=(True, [])):
+                data = build_summary(root / "audit", [root / "reviews"])
+            self.assertEqual(data["candidate_categories"], {"agent": 3})
+            self.assertEqual(data["mechanisms"][0]["independent_cases"], 2)
+            self.assertNotIn(str(root), json.dumps(data["mechanisms"]))

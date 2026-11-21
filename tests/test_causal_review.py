@@ -319,6 +319,58 @@ class EvidenceOnlyReviewTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, message):
                 reviewed_analysis(ev, an, review)
 
+    def test_case_ambiguity_binds_a_rejection_to_a_public_task_artifact(self):
+        ev, an, review = nonagent_review("case")
+        ev["artifacts"][0].update(scope="trial", rel_path="artifacts/app/report.csv")
+        ev["artifacts"].append(
+            {
+                "artifact_id": "art:public",
+                "scope": "task",
+                "rel_path": "instruction.md",
+                "exists": True,
+                "abs_path": str(Path(__file__).resolve()),
+            }
+        )
+        review["binding"] = plan(ev, an)["binding"]
+        decision = review["decision"]
+        decision.update(
+            event_ref="ver:1",
+            contract_ambiguity={
+                "public_source_ref": "art:public",
+                "submitted_interpretation": "Path is relative to the task root.",
+                "scorer_interpretation": "Path is relative to the orientation directory.",
+            },
+        )
+        decision["execution_binding"]["evidence_refs"] = ["ver:1", "art:report"]
+        decision["basis"]["evidence_refs"].append("art:public")
+        next(a for a in review["alternatives"] if a["category"] == "verifier")["status"] = (
+            "unresolved"
+        )
+        self.assertEqual(
+            reviewed_analysis(ev, an, review)["causal_assessment"]["level"], "candidate_cause"
+        )
+        decision["contract_ambiguity"]["public_source_ref"] = "art:rule"
+        with self.assertRaisesRegex(ValueError, "cited public task artifact"):
+            reviewed_analysis(ev, an, review)
+
+    def test_review_follow_up_replaces_inherited_actions_without_verifying_a_defect(self):
+        ev, an = fixture()
+        an["recommended_actions"] = [{"owner": "Infra", "action": "Inspect generic logs."}]
+        review = complete_review(ev, an)
+        review["decision"]["follow_up"] = {
+            "action_en": "Bind the expected reference to the public method.",
+            "action_zh": "核对公开方法对应的参考结果。",
+        }
+        result = reviewed_analysis(ev, an, review)
+        self.assertEqual(
+            result["recommended_actions"][0]["action_zh"], "核对公开方法对应的参考结果。"
+        )
+        self.assertNotIn("defect_verification", result["causal_assessment"])
+        self.assertEqual(
+            reviewed_analysis(ev, an, review, result_version=1)["recommended_actions"],
+            an["recommended_actions"],
+        )
+
     def test_proposed_review_bundle_retains_original_and_rejects_stale_or_missing_original(self):
         ev, an, review = nonagent_review()
         with tempfile.TemporaryDirectory() as temp:

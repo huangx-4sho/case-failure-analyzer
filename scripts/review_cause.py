@@ -461,6 +461,12 @@ def reviewed_analysis(
                 },
             )
             result["recommended_actions"] = [{"owner": "Agent", "action": mechanism["minimal_fix"]}]
+        if follow_up := decision.get("follow_up"):
+            action = {"owner": "Review", "action": follow_up["action_en"], **follow_up}
+            if category == "agent" and decision.get("mechanism"):
+                result["recommended_actions"].append(action)
+            else:
+                result["recommended_actions"] = [action]
     cap = a["capability"]
     annotation = review.get("capability_dimension")
     if annotation is not None:

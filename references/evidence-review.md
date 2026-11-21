@@ -97,6 +97,8 @@ Start from the recorded rejection and any matching scorer function. For archived
 
 In the review plan, `decision.event_ref` anchors the implicated action. An optional `decision.mechanism` on an Agent decision has four text fields: `actual_logic`, `expected_logic`, `why_unrecovered`, and `minimal_fix`. Cite the applicable basis, inputs, outputs and rejection using the existing decision bindings. Set an optional `capability_dimension.mechanism_tag` from the [mechanism list](agent-mechanisms.md). Use `review apply` with the original audit JSON files and the filled review plan.
 
+For a case-side ambiguity anchored at a failed check, use `decision.contract_ambiguity` with `public_source_ref`, `submitted_interpretation`, and `scorer_interpretation`. Cite the public source in the basis and bind the captured submission and named rejection. When a cause remains a candidate, `decision.follow_up` accepts `action_en` and `action_zh` for the next evidence check.
+
 The applied review records `defect_verification` when it can bind the discrepancy itself to a saved execution result, public requirement and submitted output. Treat `quantitative_sufficiency` separately. A reviewed discrepancy can remain quantitatively unverified. A determination of `sufficient` requires a fresh retained verifier comparison that isolates the cited change and shows the comparison crossing its recorded tolerance. Refer to it through `decision.quantitative_evidence` with the failed check reference and a review statement.
 
 `--with-oracle` includes private comparison excerpts where present. Use them to locate implementation differences. Judge responsibility against the run-time public task and saved execution evidence.
@@ -104,6 +106,8 @@ The applied review records `defect_verification` when it can bind the discrepanc
 ## Review summary
 
 Run `cfa.py review summary --audit-root <audit> --review-root <reviews> --dossier-root <dossiers> --output <summary>` for the trial table, review queues and mechanism counts. Repeat `--review-root` for additional review locations. The summary validates each review against its saved evidence. Earlier audits must match the current trial result bytes and outcome. Summary links are relative to the summary output directory.
+
+The category table shows supported causes and reviewed candidates in separate columns. Runtime leads have their own section. The mechanism recurrence table uses supported reviews or verified concrete defects and counts distinct task definitions when their paths are available.
 
 ## Capability scope
 

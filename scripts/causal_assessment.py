@@ -218,11 +218,38 @@ def terminal_failure_refs(evidence: dict) -> set:
     return refs - {None}
 
 
+def _nonagent_event(evidence: dict, decision: dict) -> Optional[dict]:
+    kind, ref = decision.get("kind"), decision.get("event_ref")
+    event = nonagent_events(evidence, kind).get(ref)
+    if event is None and kind == "case" and decision.get("contract_ambiguity") is not None:
+        # Use the rejection as the observed outcome of the ambiguity. The
+        # case-side evidence is supplied separately in the public task basis.
+        rejected = nonagent_events(evidence, "verifier").get(ref)
+        if rejected and (
+            rejected.get("type") == "failed_check"
+            or str(ref).startswith("verifier_report.failed_checks[")
+        ):
+            return rejected
+    return event
+
+
+def _public_task_artifact(artifact: dict) -> bool:
+    path = str(artifact.get("rel_path") or "")
+    return bool(
+        artifact.get("exists") is True
+        and artifact.get("scope") == "task"
+        and (
+            Path(path).name.startswith("instruction.")
+            or path.startswith(("environment/assets/", "assets/", "inputs/"))
+        )
+    )
+
+
 def nonagent_binding_errors(evidence: dict, decision: dict) -> List[str]:
     kind = decision.get("kind")
     if kind not in ("verifier", "case", "infrastructure"):
         return []
-    event = nonagent_events(evidence, kind).get(decision.get("event_ref"))
+    event = _nonagent_event(evidence, decision)
     if event is None:
         return ["non-agent decision event must resolve to a typed saved observation"]
     binding = decision.get("execution_binding") or {}
@@ -249,6 +276,26 @@ def nonagent_binding_errors(evidence: dict, decision: dict) -> List[str]:
         if r
     }
     basis = set((decision.get("basis") or {}).get("evidence_refs") or [])
+    ambiguity = decision.get("contract_ambiguity")
+    if kind == "case" and isinstance(ambiguity, dict):
+        public = ambiguity.get("public_source_ref")
+        if (
+            not isinstance(public, str)
+            or public not in basis
+            or not _public_task_artifact(artifacts.get(public, {}))
+            or decision.get("event_ref")
+            not in (decision.get("outcome") or {}).get("evidence_refs", [])
+            or not any(
+                artifacts.get(ref, {}).get("scope") == "trial"
+                and artifacts[ref].get("exists") is True
+                and str(artifacts[ref].get("rel_path") or "").startswith("artifacts/")
+                for ref in binding.get("effective_input_refs", [])
+            )
+        ):
+            errors.append(
+                "case ambiguity requires a cited public task artifact, captured submission, "
+                "and its named terminal rejection"
+            )
     rules = {o.get("contract_id") for o in evidence.get("contract_observations") or []}
     if not (
         basis.intersection(rules)
@@ -355,17 +402,7 @@ def agent_defect_evidence(evidence: dict, decision: dict) -> bool:
     ):
         return False
     basis = [artifacts[ref] for ref in decision["basis"]["evidence_refs"] if ref in artifacts]
-    public_basis = any(
-        artifact.get("exists") is True
-        and artifact.get("scope") == "task"
-        and (
-            Path(artifact.get("rel_path") or "").name.startswith("instruction.")
-            or str(artifact.get("rel_path") or "").startswith(
-                ("environment/assets/", "assets/", "inputs/")
-            )
-        )
-        for artifact in basis
-    )
+    public_basis = any(_public_task_artifact(artifact) for artifact in basis)
     recorded_output = any(
         artifacts[ref].get("scope", "trial") == "trial"
         and str(artifacts[ref].get("rel_path") or "").startswith("artifacts/")
@@ -598,12 +635,29 @@ def review_errors(
     if decision.get("kind") not in DECISION_KINDS:
         errors.append("invalid decision.kind")
     ref = decision.get("event_ref")
-    if (
-        ref
-        and ref not in execution_refs(evidence)
-        and ref not in nonagent_events(evidence, decision.get("kind"))
-    ):
+    if ref and ref not in execution_refs(evidence) and _nonagent_event(evidence, decision) is None:
         errors.append("decision event must be actual execution, not reasoning or a final answer")
+    ambiguity = decision.get("contract_ambiguity")
+    ambiguity_fields = {"public_source_ref", "submitted_interpretation", "scorer_interpretation"}
+    if ambiguity is not None and (
+        category != "case"
+        or decision.get("kind") != "case"
+        or not isinstance(ambiguity, dict)
+        or set(ambiguity) != ambiguity_fields
+        or any(not isinstance(value, str) or not value.strip() for value in ambiguity.values())
+        or ambiguity["submitted_interpretation"].strip()
+        == ambiguity["scorer_interpretation"].strip()
+    ):
+        errors.append(
+            "decision.contract_ambiguity requires a public source and two distinct interpretations"
+        )
+    follow_up = decision.get("follow_up")
+    if follow_up is not None and (
+        not isinstance(follow_up, dict)
+        or set(follow_up) != {"action_en", "action_zh"}
+        or any(not isinstance(value, str) or not value.strip() for value in follow_up.values())
+    ):
+        errors.append("decision.follow_up requires nonempty action_en and action_zh")
     mechanism = decision.get("mechanism")
     if mechanism is not None:
         fields = {"actual_logic", "expected_logic", "why_unrecovered", "minimal_fix"}

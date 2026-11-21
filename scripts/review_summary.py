@@ -10,7 +10,7 @@ from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from attribution.capabilities import DIMENSIONS
+from attribution.capabilities import DIMENSIONS, MECHANISM_TAGS
 from render_index import natural_sort_key
 from review_cause import read
 from runtime_state import score_was_produced
@@ -175,6 +175,18 @@ def _rank_review(item):
     )
 
 
+def _runtime_mechanism_leads(analysis):
+    manifestation = analysis.get("failure_manifestation")
+    triage = manifestation.get("runtime_triage") if isinstance(manifestation, dict) else None
+    return [
+        {"mechanism_tag": lead["mechanism"], "evidence_refs": lead["evidence_refs"]}
+        for lead in (triage or {}).get("leads", [])
+        if lead.get("category") == "agent"
+        and lead.get("mechanism") in MECHANISM_TAGS["execution_recovery"]
+        and lead.get("evidence_refs")
+    ]
+
+
 def build_summary(audit_root, review_roots=(), dossier_root=None):
     """Count trials once. Reviews must validate against their saved sources."""
     audits = {}
@@ -260,6 +272,15 @@ def build_summary(audit_root, review_roots=(), dossier_root=None):
             else set()
         )
         resolved = selected and best_level == "已获证据支持" and len(ranked_categories) == 1
+        candidate = (
+            selected["category"]
+            if selected
+            and not resolved
+            and len(ranked_categories) == 1
+            and selected["category"] in _CATEGORY_LABELS
+            and selected["category"] != "unknown"
+            else None
+        )
         base_category = root.get("category") or "unknown"
         # Direct setup/runner and verifier package errors already have typed receipts.
         direct_stop = not dossiers.get(key) and (
@@ -279,16 +300,23 @@ def build_summary(audit_root, review_roots=(), dossier_root=None):
             "job": Path(evidence.get("job_dir") or folder.parent).name,
             "task_id": folder.name,
             "case_id": str(evidence.get("case_id") or folder.name),
+            "_definition_key": (
+                ("task_dir", str(Path(evidence["task_dir"]).resolve()))
+                if evidence.get("task_dir")
+                else ("case_id", str(evidence.get("case_id") or folder.name))
+            ),
             "trial_name": evidence.get("trial_name"),
             "outcome": _status(evidence, analysis),
             "base_category": base_category,
             "attribution": best_level,
             "supported_category": selected["category"] if resolved else None,
+            "candidate_category": candidate,
             "reason": selected["reason"] if selected else _reason(analysis, reviewed=False),
             "audit": _report(folder),
             "dossier": dossiers.get(key),
             "queue": _queue(evidence, analysis) if key in dossiers and not resolved else None,
             "reviews": options,
+            "runtime_mechanism_leads": _runtime_mechanism_leads(analysis),
             "defect_verification": (
                 "verified_in_trial"
                 if any(r["defect_verification"] == "verified_in_trial" for r in options)
@@ -303,8 +331,8 @@ def build_summary(audit_root, review_roots=(), dossier_root=None):
         rows.append(row)
     rows.sort(key=lambda row: (natural_sort_key(row["job"]), natural_sort_key(row["task_id"])))
 
-    diagnoses = {
-        (row["case_id"], review["dimension"], review["mechanism_tag"])
+    supported_decisions = {
+        (row["_definition_key"], review["dimension"], review["event_ref"], review["mechanism_tag"])
         for row in rows
         for review in row["reviews"]
         if review["dimension"] in DIMENSIONS
@@ -313,15 +341,41 @@ def build_summary(audit_root, review_roots=(), dossier_root=None):
             or review["defect_verification"] == "verified_in_trial"
         )
     }
+    tagged_decisions = {
+        (case, dim, event) for case, dim, event, tag in supported_decisions if event and tag
+    }
+    diagnoses = {
+        (case, dim, tag)
+        for case, dim, event, tag in supported_decisions
+        if tag or (case, dim, event) not in tagged_decisions
+    }
     mechanisms = Counter((dimension, tag or "未标具体机制") for _, dimension, tag in diagnoses)
+    runtime_leads = Counter(
+        tag
+        for _, tag in {
+            (row["_definition_key"], lead["mechanism_tag"])
+            for row in rows
+            for lead in row["runtime_mechanism_leads"]
+        }
+    )
+    for row in rows:
+        row.pop("_definition_key")
     return {
         "schema_version": "cfa-review-summary-v1",
         "trials": len(rows),
+        "reviewed_trial_count": sum(bool(row["reviews"]) for row in rows),
         "outcomes": dict(Counter(row["outcome"] for row in rows)),
         "attribution_counts": dict(Counter(row["attribution"] for row in rows)),
         "supported_categories": dict(
             Counter(row["supported_category"] for row in rows if row["supported_category"])
         ),
+        "candidate_categories": dict(
+            Counter(row["candidate_category"] for row in rows if row["candidate_category"])
+        ),
+        "mechanism_tagged_trials": sum(
+            any(review["mechanism_tag"] for review in row["reviews"]) for row in rows
+        ),
+        "runtime_mechanism_lead_counts": dict(runtime_leads),
         "defect_verification_counts": dict(
             Counter(row["defect_verification"] for row in rows if row["defect_verification"])
         ),
@@ -351,7 +405,12 @@ def render_summary(summary):
             return ""
         return f"[{label}](<{path}>)"
 
-    lines = ["# 全量归因与复核总表", "", f"共 {summary['trials']} 条试次。", ""]
+    lines = [
+        "# 全量归因与复核总表",
+        "",
+        f"共 {summary['trials']} 条试次，其中 {summary['reviewed_trial_count']} 条有通过校验的复核。",
+        "",
+    ]
     lines.append(
         "评测结果 · " + "，".join(f"{status} {n}" for status, n in summary["outcomes"].items())
     )
@@ -369,12 +428,19 @@ def render_summary(summary):
             f"定量充分性未验证 · {quantity.get('unverified_without_recompute', 0)} 条。"
         )
     lines.extend(
-        ["", "## 证据支持的主因分布", "", "| 大类 | 试次数 | 占已支持归因 |", "|---|---:|---:|"]
+        [
+            "",
+            "## 归因大类分布",
+            "",
+            "| 大类 | 有证据支持 | 占已支持归因 | 人工候选 |",
+            "|---|---:|---:|---:|",
+        ]
     )
     total = sum(summary["supported_categories"].values())
     for key, label in _CATEGORY_LABELS.items():
         n = summary["supported_categories"].get(key, 0)
-        lines.append(f"| {label} | {n} | {n / total:.1%} |" if total else f"| {label} | {n} | — |")
+        share = f"{n / total:.1%}" if total else "—"
+        lines.append(f"| {label} | {n} | {share} | {summary['candidate_categories'].get(key, 0)} |")
     lines.extend(["", "## 待复核队列", "", "| 队列 | 试次数 |", "|---|---:|"])
     lines.extend(f"| {label} | {summary['queues'].get(key, 0)} |" for key, label in _QUEUES.items())
     lines.extend(["", "## D1–D8 机制统计", "", "| 维度 | 机制 | 独立任务数 |", "|---|---|---:|"])
@@ -397,6 +463,20 @@ def render_summary(summary):
         )
     else:
         lines.append("当前通过校验的复核中，暂无带相同具体标签的独立任务达到两例。")
+    if summary["runtime_mechanism_lead_counts"]:
+        lines.extend(
+            [
+                "",
+                "## 运行机制线索",
+                "",
+                "这些线索来自运行分诊，等待独立归因。",
+                "",
+                "| D5 线索 | 独立任务数 |",
+                "|---|---:|",
+            ]
+        )
+        for tag, count in sorted(summary["runtime_mechanism_lead_counts"].items()):
+            lines.append(f"| `{tag}` | {count} |")
     lines.extend(
         [
             "",
@@ -410,14 +490,18 @@ def render_summary(summary):
         status = row["attribution"]
         if row["supported_category"]:
             status += f" · {_CATEGORY_LABELS[row['supported_category']]}"
+        elif row["candidate_category"]:
+            status += f" · {_CATEGORY_LABELS[row['candidate_category']]}"
         evidence = [link("审计", row["audit"]), link("调查包", row["dossier"])]
         evidence.extend(
             link(f"复核 {i}", review["report"]) for i, review in enumerate(row["reviews"], 1)
         )
+        flags = ", ".join(f"`{lead['mechanism_tag']}`" for lead in row["runtime_mechanism_leads"])
+        reason = row["reason"] + (f" 运行线索 {flags}。" if flags else "")
         lines.append(
             f"| {cell(row['job'])} / {cell(row['task_id'])} | {cell(row['outcome'])} |"
             f" {cell(row['base_category'])} | {cell(status)} |"
-            f" {cell(_QUEUES.get(row['queue']))} | {cell(row['reason'])} |"
+            f" {cell(_QUEUES.get(row['queue']))} | {cell(reason)} |"
             f" {' · '.join(x for x in evidence if x)} |"
         )
     if summary["rejected_reviews"]:
