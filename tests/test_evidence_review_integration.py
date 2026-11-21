@@ -16,6 +16,8 @@ from cfa import _format_artifacts_summary
 from discover_artifacts import discover_all
 from deliverable_audit import extract_verified_missing_outputs
 from causal_assessment import existing_verification
+from review_cause import apply, plan, write
+from validate_analysis import collect_positive_agent_evidence_ids, validate_all
 
 
 class ExistingEvidenceIntegration(unittest.TestCase):
@@ -113,6 +115,85 @@ class ExistingEvidenceIntegration(unittest.TestCase):
             self.assertIn("未采集到不等于未生成", report)
             raw = json.loads(_format_artifacts_summary("task208", evidence, analysis, raw=True))
             self.assertEqual(raw["deliverable_audit"], audit)
+
+    def test_bound_review_can_validate_execution_outside_heuristic_anchors(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job, task, trial, _ = self.build(root, present=True)
+            (task / "instruction.md").write_text("Report the mean as output.json's value.")
+            trajectory = trial / "agent/rollout-example.jsonl"
+            trajectory.write_text(
+                trajectory.read_text().replace("python solve.py", "python reduction.py")
+            )
+            (trial / "verifier/science.json").write_text(
+                json.dumps(
+                    {
+                        "status": "FAIL",
+                        "checks": {
+                            "mean": {"status": "FAIL", "detail": "Recorded value is not the mean"}
+                        },
+                    }
+                )
+            )
+            evidence, analysis, *_ = analyze_single_trial(discover_all(job, task)["trials"][0], job)
+            event = next(item for item in evidence["timeline"] if item.get("tool_succeeded"))[
+                "event_id"
+            ]
+            self.assertNotIn(event, collect_positive_agent_evidence_ids(evidence))
+            review = plan(evidence, analysis)
+            review.update(
+                reviewer="Fixture",
+                rationale="Saved execution and output show a different reduction from the required mean.",
+                proposed_attribution={
+                    "category": "agent",
+                    "subtype": "result_validation",
+                    "code": "AGENT_RESULT_VALIDATION",
+                    "summary_zh": "输出采用了错误的统计量。",
+                    "summary_en": "The output used the wrong statistic.",
+                },
+            )
+            output_ref = "art:artifacts/app/output.json"
+            review["decision"].update(
+                kind="scientific",
+                event_ref=event,
+                description="Executed a reduction with the wrong formula.",
+                rationale="The public mean requirement and recorded rejected value isolate the error.",
+                mechanism={
+                    "actual_logic": "Used the first observed value.",
+                    "expected_logic": "Take the arithmetic mean.",
+                    "why_unrecovered": "The execution did not verify the statistic.",
+                    "minimal_fix": "Compute the mean before writing the output.",
+                },
+                execution_binding={
+                    "evidence_refs": [event, output_ref],
+                    "statement": "The recorded command completed and the artifact holds its result.",
+                    "effective_input_refs": ["art:instruction_md"],
+                    "effective_output_refs": [output_ref],
+                },
+                basis={
+                    "evidence_refs": ["art:instruction_md"],
+                    "statement": "The public instructions require the mean.",
+                },
+                outcome={
+                    "evidence_refs": ["verifier_report.failed_checks[0]"],
+                    "statement": "The verifier rejected the saved value.",
+                },
+            )
+            for alternative in review["alternatives"]:
+                alternative.update(
+                    status="ruled_out",
+                    evidence_refs=["art:instruction_md", output_ref],
+                    reason="The fixture supplies a deterministic workload and a single explicit reduction requirement.",
+                )
+            inputs = root / "inputs"
+            inputs.mkdir()
+            paths = [inputs / name for name in ("evidence.json", "analysis.json", "review.json")]
+            for path, data in zip(paths, (evidence, analysis, review)):
+                write(path, data)
+            reviewed = apply(*paths, root / "reviewed")
+            self.assertEqual(reviewed["causal_assessment"]["level"], "evidence_supported_cause")
+            _, errors = validate_all(evidence, reviewed)
+            self.assertTrue(any("POSITIVE_AGENT_EVIDENCE" in error for error in errors))
 
     def test_present_capture_is_registered_even_when_old_verifier_says_missing(self):
         with tempfile.TemporaryDirectory() as td:

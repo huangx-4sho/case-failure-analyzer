@@ -11,6 +11,48 @@ _PACKAGED_INPUT_FAILURE = re.compile(
     r"public input asset digest mismatch|protected asset missing or damaged)"
     r":\s*([A-Za-z0-9_./-]+\.[A-Za-z0-9_]+)"
 )
+_DEPENDENCY_PREFLIGHT_FAILURE = re.compile(
+    r"protected source missing/corrupt:\s*[\w./-]+|"
+    r"protected reference integrity mismatch\b|"
+    r"integrity failure:\s*assets/[\w./-]+|"
+    r"tests/refs\.json missing or malformed\b",
+    re.IGNORECASE,
+)
+_REPLAY_RUNTIME_REQUIREMENT = re.compile(
+    r"^candidate replay requires executable /dev/shm tmpfs\b", re.IGNORECASE
+)
+
+
+def dependency_preflight_matches(message: str) -> bool:
+    """Recognize saved preflight rejections of verifier-owned inputs."""
+    return bool(
+        _PACKAGED_INPUT_FAILURE.search(message) or _DEPENDENCY_PREFLIGHT_FAILURE.search(message)
+    )
+
+
+def replay_runtime_error(report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A recorded environment guard, separate from verifier code or reference defects."""
+    if str(report.get("status") or "").upper() != "ENV_INVALID":
+        return None
+    message = next(iter(report.get("messages") or []), "")
+    if not _REPLAY_RUNTIME_REQUIREMENT.match(message):
+        return None
+    location = report.get("first_message_location") or {}
+    source = location.get("source")
+    if not source or source != report.get("primary_report"):
+        return None
+    return {
+        "error_id": "err:verifier_runtime_requirement",
+        "code": "INFRA_VERIFIER_RUNTIME_REQUIREMENT",
+        "subtype": "verifier_runtime_requirement",
+        "stage": "verifier_execution",
+        "matched_text": message[:300],
+        "causal_candidate": True,
+        "transient": False,
+        "source_file": "verifier/" + source,
+        "source_pointer": location.get("pointer"),
+        "scoring_reached": False,
+    }
 
 
 def _pointer_metadata(path: Path) -> Optional[Dict[str, Any]]:

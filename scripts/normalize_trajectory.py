@@ -180,12 +180,15 @@ def summarize_code_payload(args: Dict[str, Any], limit: int = 600) -> Optional[s
     return out[:limit]
 
 
-def extract_thought(step: Dict[str, Any]) -> Optional[str]:
-    for key in ("reasoning_content", "thinking", "thought", "reasoning"):
+_THOUGHT_FIELDS = ("reasoning_content", "thinking", "thought", "reasoning")
+
+
+def extract_thought(step: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    for key in _THOUGHT_FIELDS:
         val = step.get(key)
         if isinstance(val, str) and val.strip():
-            return val.strip()
-    return None
+            return key, val
+    return None, None
 
 
 def sha256_text(text: str) -> str:
@@ -1001,9 +1004,9 @@ def normalize_trajectory(
             )
             continue
 
-        thought = extract_thought(step)
+        thought_key, thought = extract_thought(step)
         if thought:
-            t_trunc, t_sha, _ = truncate_with_head_tail(thought, max_obs_bytes)
+            t_trunc, t_sha, thought_truncated = truncate_with_head_tail(thought, max_obs_bytes)
             events.append(
                 {
                     "event_id": f"trajectory:step:{step_id}:thought",
@@ -1016,7 +1019,8 @@ def normalize_trajectory(
                     "observation_sha256": t_sha,
                     "exit_code": None,
                     "source_file": str(trajectory_path),
-                    "source_pointer": f"{step_ptr}/thinking",
+                    "source_pointer": f"{step_ptr}/{thought_key}",
+                    "observation_truncated": thought_truncated,
                 }
             )
 
@@ -1066,8 +1070,13 @@ def normalize_trajectory(
 
             obs_text = all_results.get(str(tc_id), obs_by_call_id.get(tc_id, ""))
             result_recorded = str(tc_id) in all_results or tc_id in obs_by_call_id
-            exit_code, has_error = extract_exit_code_and_error(obs_text)
-            has_error = has_error or "ERROR: tool result marked is_error" in obs_text
+            status_text = obs_text
+            if fn_name.lower().rsplit(".", 1)[-1] in {"write", "edit", "multiedit", "replace"}:
+                # Echoed source may contain exception literals. Keep the tool receipt
+                # and any explicit status lines appended after the metadata.
+                status_text = re.sub(r"(?m)^\[metadata\][^\n]*$", "", obs_text)
+            exit_code, has_error = extract_exit_code_and_error(status_text)
+            has_error = has_error or "ERROR: tool result marked is_error" in status_text
             mutation_succeeded = result_recorded and not has_error
             if not result_recorded:
                 diagnostic = f"Tool call without recorded result: {tc_id!r}"

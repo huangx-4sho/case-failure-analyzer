@@ -31,6 +31,8 @@ REPORT_DIR_NAME = "failure-report"
 _TASK_REF_RE = re.compile(r"^\s*(?:task[\s_-]*)?0*(\d+)\s*$", re.IGNORECASE)
 _TRIAL_DIR_RE = re.compile(r"^(?:\d+-)?task[\s_-]*0*(\d+)(?:__|[-_])", re.IGNORECASE)
 _TASK_DEF_DIR_RE = re.compile(r"^(?:\d+-)?task[\s_-]*0*(\d+)\s*$", re.IGNORECASE)
+_NUMBERED_TRIAL_RE = re.compile(r"^(\d+)-[\w.-]+?__[^/]+$")
+_NUMBERED_DEF_RE = re.compile(r"^(\d+)-[\w.-]+$")
 #: Directories that are never descended into when searching for task folders.
 _SKIP_DIRS = {
     ".git",
@@ -98,7 +100,7 @@ def discover_all_task_ids(jobs_root: Path) -> List[str]:
     for path, _depth in _walk_dirs(root, max_depth=8):
         if not _is_trial_dir(path):
             continue
-        m = _TRIAL_DIR_RE.match(path.name)
+        m = _match_trial(path.name)
         if m:
             discovered.add(f"task{int(m.group(1))}")
         else:
@@ -123,7 +125,7 @@ def normalize_task_ref(raw: str) -> str:
     if m:
         number = str(int(m.group(1)))
     else:
-        m = _TRIAL_DIR_RE.match(text)
+        m = _match_trial(text)
         if not m:
             raise TaskRefError(
                 f"cannot parse task reference {raw!r}; expected e.g. 'task208', '208', "
@@ -133,13 +135,17 @@ def normalize_task_ref(raw: str) -> str:
     return f"task{number}"
 
 
+def _match_trial(name: str):
+    return _TRIAL_DIR_RE.match(name) or _NUMBERED_TRIAL_RE.fullmatch(name)
+
+
 def _trial_number(name: str, number: str) -> bool:
-    m = _TRIAL_DIR_RE.match(name)
+    m = _match_trial(name)
     return bool(m and str(int(m.group(1))) == number)
 
 
 def _task_def_number(name: str, number: str) -> bool:
-    m = _TASK_DEF_DIR_RE.match(name)
+    m = _TASK_DEF_DIR_RE.match(name) or _NUMBERED_DEF_RE.fullmatch(name)
     return bool(m and str(int(m.group(1))) == number)
 
 
@@ -192,6 +198,9 @@ def _fast_candidates(root: Path, number: str) -> tuple[List[Path], List[Path]]:
         f"jobs/*/task {number}-*",
         f"jobs/*/task{number}-*",
         f"*/task {number}__*",
+        f"jobs/*/*{number}-*__*",
+        f"*/jobs/*/*{number}-*__*",
+        f"*/*{number}-*__*",
     )
     task_def_globs = (
         f"*/task {number}",
@@ -203,6 +212,8 @@ def _fast_candidates(root: Path, number: str) -> tuple[List[Path], List[Path]]:
         f"*-task{number}",
         f"*/*-task{number}",
         f"*/*/*-task{number}",
+        f"tasks/*{number}-*",
+        f"*/tasks/*{number}-*",
     )
     trials: List[Path] = []
     task_defs: List[Path] = []
@@ -406,7 +417,7 @@ def discover_job_task_refs(jobs_root: Path) -> List[TaskRef]:
     root = Path(jobs_root).resolve()
     pairs = set()
     for path, _depth in _walk_dirs(root, max_depth=8):
-        if _is_trial_dir(path) and _TRIAL_DIR_RE.match(path.name):
+        if _is_trial_dir(path) and _match_trial(path.name):
             pairs.add((str(path.parent.resolve()), normalize_task_ref(path.name)))
     return [
         resolve_task_ref(task_id, root, job=job)

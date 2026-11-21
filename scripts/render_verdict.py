@@ -429,6 +429,14 @@ def build_verdict_card(
         "trial_name": analysis.get("trial_name") or evidence.get("trial_name"),
         "verdict": analysis.get("verdict"),
         "scored": scored,
+        **(
+            {
+                "reward_scope": runtime["reward_scope"],
+                "reward_metrics": runtime.get("reward_metrics") or {},
+            }
+            if runtime.get("reward_scope")
+            else {}
+        ),
         "primary_root_cause": {
             "category": primary_cat,
             "category_label": _category_label(primary_cat),
@@ -471,17 +479,24 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
     """Render the card as a compact bilingual-ish Markdown answer."""
     prc = card["primary_root_cause"]
     if card.get("verdict") == "pending":
+        completeness = card.get("reward_scope") == "evidence_completeness_only"
+        value = (card.get("reward_metrics") or {}).get("reward")
         if lang == "en":
             return (
                 f"# {card['task_id']} — Pending Review\n\n"
                 "**Verdict**: `pending` · **Scored**: `false`\n\n"
-                "The saved verifier requested independent review. No numeric score "
-                "or failure cause has been assigned.\n"
+                "The verifier requested independent review. The final verdict is pending.\n"
+                + (
+                    f"\nThe recorded reward `{value}` measures evidence completeness.\n"
+                    if completeness
+                    else ""
+                )
             )
         return (
             f"# {card['task_id']} — 待复核 (Pending Review)\n\n"
             "**裁定**: `pending` · **已评分**: `false`\n\n"
-            "已保存的验证器记录请求独立复核；尚未产出数值评分，也未归因于任何失败原因。\n"
+            "评分器已请求独立复核，最终裁定待定。\n"
+            + (f"\n记录分数 `{value}` 衡量证据完整性。\n" if completeness else "")
         )
     conf = prc.get("confidence")
     conf_txt = f"{float(conf):.2f}" if isinstance(conf, (int, float)) else "—"

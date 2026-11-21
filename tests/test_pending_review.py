@@ -54,6 +54,45 @@ class PendingReviewTests(unittest.TestCase):
             self.assertTrue(state["score_produced"])
             self.assertTrue(state["state_conflicts"])
 
+    def test_explicit_completeness_reward_remains_pending(self):
+        (self.trial / "verifier/verification.json").write_text(
+            json.dumps(
+                {
+                    "status": "REQUIRE_REVIEW",
+                    "reward": 0.3,
+                    "reward_scope": "evidence_completeness_only",
+                    "scientific_score": None,
+                }
+            )
+        )
+        (self.trial / "verifier/reward.txt").write_text("0.3000\n")
+        self.result["verifier_result"]["rewards"] = {"reward": 0.3}
+        state = compute_runtime_state({}, self.result, self.trial)
+        self.assertEqual(state["verdict"], "pending")
+        self.assertIsNone(state["reward"])
+        self.assertFalse(state["score_produced"])
+        self.assertEqual(state["reward_metrics"], {"reward": 0.3})
+        self.assertEqual(state["reward_scope"], "evidence_completeness_only")
+        analysis = run_attribution_engine({"runtime": state, "case_id": "synthetic"}, {})
+        self.assertEqual(analysis["primary_root_cause"]["category"], "none")
+
+    def test_submission_only_reward_is_not_a_scientific_score(self):
+        (self.trial / "verifier/verification.json").write_text(
+            json.dumps({"status": "FAIL", "reward": 0})
+        )
+        (self.trial / "verifier/reward.txt").write_text("0\n")
+        self.result["verifier_result"]["rewards"] = {"submission_checks": 0}
+        state = compute_runtime_state({}, self.result, self.trial)
+        self.assertEqual(state["verdict"], "failed")
+        self.assertIsNone(state["reward"])
+        self.assertFalse(state["score_produced"])
+        self.assertEqual(state["reward_metrics"], {"submission_checks": 0})
+        self.assertEqual(state["reward_scope"], "submission_checks_only")
+        self.result["verifier_result"]["rewards"]["reward"] = 0
+        scored = compute_runtime_state({}, self.result, self.trial)
+        self.assertTrue(scored["score_produced"])
+        self.assertEqual(scored["reward"], 0)
+
     def test_nested_review_requirement_does_not_override_failure(self):
         (self.trial / "verifier/verification.json").write_text(
             json.dumps({"status": "FAIL", "review": {"status": "REVIEW_REQUIRED"}})

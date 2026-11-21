@@ -169,6 +169,22 @@ def _safe_target(root: Path, relative: PurePosixPath) -> tuple[Path | None, str 
     return target, None
 
 
+def captured_container_path(trial: Path | None, source: str) -> str | None:
+    """Return the exact contained capture for a named absolute container file."""
+    if trial is None:
+        return None
+    path = PurePosixPath(source)
+    if not path.is_absolute() or "\\" in source or "\x00" in source:
+        return None
+    root = trial / "artifacts"
+    if root.is_symlink():
+        return None
+    target, _ = _safe_target(root, PurePosixPath(*path.parts[1:]))
+    if target is None or not target.is_file():
+        return None
+    return target.relative_to(trial).as_posix()
+
+
 def _inspect_file(path: Path, root: Path, max_read_bytes: int) -> dict:
     record: dict[str, Any] = {
         "path": str(path.relative_to(root)),

@@ -212,7 +212,9 @@ STAGE_LABELS_EN = {
 SUBTYPE_LABELS = {
     "trusted_asset_hash_mismatch": ("评分依赖哈希不一致", "Scoring dependency hash mismatch"),
     "reference_lfs_pointer": ("评分依赖仍为 LFS 指针", "Scoring input is an LFS pointer"),
+    "dependency_preflight_failed": ("评分依赖预检失败", "Scoring dependency preflight failed"),
     "verifier_interpreter_missing": ("评分解释器缺失", "Missing scoring interpreter"),
+    "verifier_runtime_requirement": ("评分运行环境不符合要求", "Scoring runtime requirement"),
     "autocompact_thrashing": ("上下文压缩循环", "Context compaction thrashing"),
     "output_token_limit": ("输出 token 限额终止", "Output-token limit termination"),
     "semantic_rejection": ("语义误拒复核", "Semantic rejection review"),

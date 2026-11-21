@@ -346,6 +346,7 @@ def validate_all(
                 dependency_codes = {
                     "VERIFIER_TRUSTED_ASSET_HASH_MISMATCH",
                     "VERIFIER_REFERENCE_LFS_POINTER",
+                    "VERIFIER_DEPENDENCY_PREFLIGHT_FAILED",
                 }
                 allowed_codes.update(
                     v.get("code")
@@ -424,6 +425,10 @@ def validate_all(
                     f"primary_root_cause.category={cat!r} does not match any hypothesis in `competing_hypotheses`."
                 )
 
+    from causal_assessment import validate_assessment
+
+    assessment_errors = validate_assessment(evidence, analysis, valid_ids, review_root)
+
     # 6. Hard Rule: Positive agent evidence required when primary_root_cause.category == 'agent'
     reviewed_self_check = (
         _reviewed_self_check_event(evidence, analysis)
@@ -434,6 +439,24 @@ def validate_all(
         pos_agent_ids = collect_positive_agent_evidence_ids(evidence)
         if reviewed_self_check:
             pos_agent_ids.add(reviewed_self_check)
+        assessment = analysis.get("causal_assessment") or {}
+        decision = assessment.get("decision") or {} if isinstance(assessment, dict) else {}
+        if (
+            review_root is not None
+            and not assessment_errors
+            and isinstance(assessment, dict)
+            and (
+                assessment.get("level") == "evidence_supported_cause"
+                or assessment.get("defect_verification") == "verified_in_trial"
+            )
+            and decision.get("mechanism")
+        ):
+            event_ref = decision.get("event_ref")
+            if any(
+                item.get("event_id") == event_ref and item.get("result_recorded") is True
+                for item in evidence.get("timeline") or []
+            ):
+                pos_agent_ids.add(event_ref)
         if not any(r in pos_agent_ids for r in ev_refs):
             errors.append(
                 "POSITIVE_AGENT_EVIDENCE violation: primary_root_cause.category is 'agent', "
@@ -576,11 +599,7 @@ def validate_all(
             if not isinstance(breakdown.get("missing_to_raise"), list):
                 errors.append("confidence_breakdown.missing_to_raise must be a list when present.")
 
-    from causal_assessment import validate_assessment
-
-    errors.extend(
-        validate_assessment(evidence, analysis, collect_valid_evidence_ids(evidence), review_root)
-    )
+    errors.extend(assessment_errors)
 
     return len(errors) == 0, errors
 

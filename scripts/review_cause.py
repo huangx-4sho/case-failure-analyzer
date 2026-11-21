@@ -8,22 +8,28 @@ import copy
 import hashlib
 import json
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
 from attribution.capabilities import DIMENSIONS, reviewed_diagnosis, unassigned
 from causal_assessment import (
+    AGENT_DECISION_KINDS,
+    agent_defect_evidence,
     analysis_binding,
     assess_static,
     digest,
     execution_refs,
     promotion_ready,
     proposed_attribution_errors,
+    quantitative_review_status,
     review_errors,
+    saved_execution_event,
 )
 from validate_analysis import collect_valid_evidence_ids
 
 REVIEW_SCHEMA = "cfa-evidence-review-v1"
+REVIEW_RESULT_VERSION = 2
 
 
 def read(path: Path) -> dict:
@@ -117,6 +123,15 @@ def _hash_source_ids(evidence: dict, requested) -> list:
 
 def plan(evidence: dict, analysis: dict, hash_sources=()) -> dict:
     selected = _hash_source_ids(evidence, hash_sources)
+    for artifact in evidence.get("artifacts") or []:
+        if (
+            artifact.get("artifact_id") == "art:trajectory_json"
+            and artifact.get("exists")
+            and artifact.get("sha256")
+            and 1024 * 1024 < (artifact.get("size_bytes") or 0) <= 32 * 1024 * 1024
+        ):
+            selected = sorted(set(selected) | {"art:trajectory_json"})
+            break
     fresh = copy.deepcopy(analysis)
     assess_static(evidence, fresh)
     a = fresh["causal_assessment"]
@@ -137,6 +152,8 @@ def plan(evidence: dict, analysis: dict, hash_sources=()) -> dict:
         "limitations": [
             "Use existing evidence only; unresolved alternatives prevent promotion.",
             "Review rationale and applicability must be substantive; confirmed=true is not evidence.",
+            "For a specific agent error, decision.mechanism can record actual_logic, expected_logic, why_unrecovered and minimal_fix.",
+            "Quantitative sufficiency requires a retained isolated comparison in a cited verifier check.",
         ],
     }
 
@@ -262,7 +279,19 @@ def check_binding(review: dict, evidence: dict, analysis: dict) -> None:
             raise ValueError("Stale or tampered saved source artifacts")
 
 
-def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
+def _artifact_aliases(artifact: dict) -> set:
+    return {
+        artifact.get("artifact_id"),
+        artifact.get("rel_path"),
+        f"{artifact.get('scope', 'trial')}:{artifact.get('rel_path')}",
+    } - {None}
+
+
+def reviewed_analysis(
+    evidence: dict, analysis: dict, review: dict, *, result_version: int = REVIEW_RESULT_VERSION
+) -> dict:
+    if type(result_version) is not int or result_version not in {1, REVIEW_RESULT_VERSION}:
+        raise ValueError("Unsupported reviewed result version")
     check_binding(review, evidence, analysis)
     errors = proposed_attribution_errors(review, analysis)
     proposed = review.get("proposed_attribution")
@@ -281,6 +310,7 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
     ):
         raise ValueError("Review requires reviewer identity and written rationale")
     result = copy.deepcopy(analysis)
+    decision = review["decision"]
     if proposed:
         original_cause = copy.deepcopy(result.get("primary_root_cause") or {})
         result["primary_root_cause"] = {
@@ -293,7 +323,7 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
                 "primary_root_cause": original_cause,
             },
         }
-        event_ref = review["decision"]["event_ref"]
+        event_ref = decision["event_ref"]
         result["first_unrecovered_deviation"] = {
             "status": "identified",
             "event_ref": event_ref,
@@ -354,25 +384,28 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
         ]
     assess_static(evidence, result)
     a = result["causal_assessment"]
-    a["decision"] = copy.deepcopy(review["decision"])
+    a["decision"] = copy.deepcopy(decision)
     a["alternatives"] = copy.deepcopy(review["alternatives"])
     fingerprints = review["binding"]["source_fingerprints"]
     cited_artifacts = cited_source_refs(evidence, review)
-    unchecked = []
     by_source = {(f.get("artifact_id"), f.get("path")): f for f in fingerprints}
-    for artifact in evidence.get("artifacts") or []:
-        fingerprint = by_source.get((artifact.get("artifact_id"), artifact.get("abs_path")), {})
-        aliases = {
-            artifact.get("artifact_id"),
-            artifact.get("rel_path"),
-            f"{artifact.get('scope', 'trial')}:{artifact.get('rel_path')}",
-        }
-        if (
-            aliases.intersection(cited_artifacts)
-            and artifact.get("exists") is True
-            and fingerprint.get("status") != "checked"
-        ):
-            unchecked.append(fingerprint)
+    checked = [
+        artifact
+        for artifact in evidence.get("artifacts") or []
+        if artifact.get("exists") is True
+        and by_source.get((artifact.get("artifact_id"), artifact.get("abs_path")), {}).get("status")
+        == "checked"
+    ]
+    checked_keys = {(artifact.get("artifact_id"), artifact.get("abs_path")) for artifact in checked}
+
+    def unchecked(refs: set) -> bool:
+        return any(
+            artifact.get("exists") is True
+            and _artifact_aliases(artifact).intersection(refs)
+            and (artifact.get("artifact_id"), artifact.get("abs_path")) not in checked_keys
+            for artifact in evidence.get("artifacts") or []
+        )
+
     a["review_limits"] = [
         f"Saved source freshness not checked: {x['path']} ({x['status']})"
         for x in fingerprints
@@ -381,7 +414,7 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
     if a["level"] != "not_applicable":
         a["level"] = (
             "evidence_supported_cause"
-            if not unchecked and promotion_ready(evidence, review, category)
+            if not unchecked(cited_artifacts) and promotion_ready(evidence, review, category)
             else "candidate_cause"
         )
     a["review"] = {
@@ -390,6 +423,44 @@ def reviewed_analysis(evidence: dict, analysis: dict, review: dict) -> dict:
         "reviewer": review["reviewer"],
         "rationale": review["rationale"],
     }
+    if result_version == REVIEW_RESULT_VERSION:
+        a["review"]["result_version"] = result_version
+        if (
+            category == "agent"
+            and decision.get("kind") in AGENT_DECISION_KINDS
+            and decision.get("event_ref") in decision["execution_binding"].get("evidence_refs", [])
+            and saved_execution_event(evidence, decision)
+        ):
+            result["failure_stage"] = "agent_execution"
+        if category == "agent" and (mechanism := decision.get("mechanism")):
+            # Check the sources establishing the actual and expected logic. Missing
+            # alternative-analysis sources may limit the overall cause separately.
+            defect_refs = cited_source_refs(
+                evidence,
+                {"decision": {key: value for key, value in decision.items() if key != "outcome"}},
+            )
+            verified = (
+                agent_defect_evidence(evidence, decision)
+                and any(
+                    artifact.get("artifact_id") == "art:trajectory_json"
+                    or artifact.get("rel_path") == "agent/trajectory.json"
+                    for artifact in checked
+                )
+                and not unchecked(defect_refs)
+            )
+            a["defect_verification"] = "verified_in_trial" if verified else "unverified"
+            a["quantitative_sufficiency"] = quantitative_review_status(
+                evidence,
+                decision,
+                verified_defect=verified,
+                checked_verifier_files={
+                    artifact["rel_path"]
+                    for artifact in checked
+                    if artifact.get("scope", "trial") == "trial"
+                    and str(artifact.get("rel_path") or "").startswith("verifier/")
+                },
+            )
+            result["recommended_actions"] = [{"owner": "Agent", "action": mechanism["minimal_fix"]}]
     cap = a["capability"]
     annotation = review.get("capability_dimension")
     if annotation is not None:
@@ -416,7 +487,10 @@ def validate_bundle(root: Path, evidence: dict, analysis: dict) -> None:
     original = read(original_path) if original_path.exists() else analysis
     if review.get("proposed_attribution") and not original_path.exists():
         raise ValueError("Proposed attribution bundle requires original-analysis.json")
-    expected = reviewed_analysis(evidence, original, review)
+    result_record = (analysis.get("causal_assessment") or {}).get("review") or {}
+    expected = reviewed_analysis(
+        evidence, original, review, result_version=result_record.get("result_version", 1)
+    )
     if expected != analysis:
         raise ValueError("Reviewed analysis differs from its bound evidence review")
     if read(root / "evidence.json") != evidence or read(root / "analysis.json") != analysis:
@@ -574,7 +648,12 @@ def capability(review_path: Path, output: Path) -> dict:
     return result
 
 
-def main(argv=None) -> None:
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["summary"]:
+        from review_summary import main as summary_main
+
+        return summary_main(argv[1:])
     parser = argparse.ArgumentParser(prog="cfa review", description=__doc__)
     subs = parser.add_subparsers(dest="action", required=True)
     p = subs.add_parser("plan")
@@ -593,6 +672,7 @@ def main(argv=None) -> None:
     p = subs.add_parser("capability")
     for name in ("review", "output"):
         p.add_argument("--" + name, type=Path, required=True)
+    subs.add_parser("summary", help="Aggregate validated review bundles by trial and mechanism")
     args = parser.parse_args(argv)
     try:
         if args.action == "plan":

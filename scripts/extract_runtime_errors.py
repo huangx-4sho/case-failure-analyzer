@@ -309,21 +309,41 @@ def read_text_head_tail(path: Path, max_bytes: int = 120000) -> str:
 
 
 def _terminal_sdk_result(path: Path, max_log_bytes: int) -> Optional[Dict[str, Any]]:
+    try:
+        with path.open("rb") as source:
+            size = source.seek(0, 2)
+            start = max(0, size - max_log_bytes)
+            source.seek(max(0, start - 1))
+            at_line_start = start == 0 or source.read(1) == b"\n"
+            raw = source.read(max_log_bytes)
+    except OSError:
+        return None
+    # SDK terminal turns can end with a large assistant payload. Use the
+    # whole bounded read for the end of the stream rather than sampling its head.
+    if not at_line_start:
+        raw = raw.partition(b"\n")[2]
     terminal = None
-    for line in read_text_head_tail(path, max_log_bytes).splitlines():
-        if line == "... [TRUNCATED] ...":
-            terminal = None
+    thinking = None
+    for line in raw.splitlines():
         try:
             event = json.loads(line)
         except ValueError:
             continue
         if isinstance(event, dict):
             if event.get("type") == "result":
-                terminal = event
+                terminal = dict(event)
+                if thinking:
+                    terminal["terminal_thinking_estimate"] = thinking
+            elif event.get("type") == "system" and event.get("subtype") == "thinking_tokens":
+                estimate = event.get("estimated_tokens")
+                if type(estimate) is int and estimate > 0:
+                    thinking = {"estimated_tokens": estimate, "event_uuid": event.get("uuid")}
             elif event.get("type") in ("assistant", "user") or (
                 event.get("type") == "system" and event.get("subtype") == "init"
             ):
                 terminal = None
+                if event.get("type") != "assistant":
+                    thinking = None
     return terminal
 
 
@@ -537,17 +557,29 @@ def extract_runtime_errors(
             causal = bool(
                 rt_state["has_trial_exception"] and rt_state["verification_status"] != "passed"
             )
+            diagnostic = str(terminal.get("result") or terminal["api_error"])
+            ceiling = re.search(r"\b(\d[\d,]*) output token maximum\b", diagnostic, re.I)
             error_observations.append(
                 {
                     "error_id": "err:terminal_sdk",
                     "code": code,
                     "subtype": subtype,
                     "stage": "agent_execution",
-                    "matched_text": str(terminal.get("result") or terminal["api_error"])[:300],
+                    "matched_text": diagnostic[:300],
                     "causal_candidate": causal,
                     "transient": not causal,
                     "source_file": "agent/claude-code.txt",
                     "source_pointer": "terminal_result",
+                    **(
+                        {"terminal_thinking_estimate": terminal["terminal_thinking_estimate"]}
+                        if terminal.get("terminal_thinking_estimate")
+                        else {}
+                    ),
+                    **(
+                        {"output_token_ceiling": int(ceiling.group(1).replace(",", ""))}
+                        if ceiling
+                        else {}
+                    ),
                 }
             )
 
@@ -691,6 +723,14 @@ def extract_runtime_errors(
                     "source_file": src_file,
                     "source_pointer": src_ptr,
                 }
+                if code == "INFRA_AGENT_TIMEOUT":
+                    limit = re.search(
+                        r"\bAgent execution timed out after (\d+(?:\.\d+)?) seconds\b",
+                        text,
+                        re.I,
+                    )
+                    if limit:
+                        observation["timeout_seconds"] = float(limit.group(1))
                 if code == "INFRA_CONTAINER_BUILD" or (
                     code == "INFRA_EXTERNAL_NETWORK"
                     and build_excerpt.get("build_failure_kind") != "missing_local_build_dependency"

@@ -77,6 +77,9 @@ FAIL_WORDS = frozenset(
         "INCOMPLETE",
         "REJECTED",
         "ABORTED",
+        "INFRA_ERROR",
+        "ENVIRONMENT_ERROR",
+        "ENV_INVALID",
     }
 )
 #: Statuses that describe the *scoring process*, not the science outcome.
@@ -95,12 +98,12 @@ STATUS_KEYS = (
     "status",
     "preflight",
 )
-MESSAGE_KEYS = ("message", "reason", "detail", "scope", "submission_criteria_status")
+MESSAGE_KEYS = ("message", "reason", "detail", "error", "scope", "submission_criteria_status")
 NAME_KEYS = ("name", "criterion", "check", "id", "key")
 DETAIL_KEYS = ("detail", "summary", "message", "description", "reason", "error", "actual")
 
 _ENV_RUNTIME_RE = re.compile(
-    r"\b(?:ENV_INVALID|FileNotFoundError|Traceback|Exception|Crash)\b|missing/damaged",
+    r"\b(?:ENV_INVALID|INFRA_ERROR|ENVIRONMENT_ERROR|FileNotFoundError|Traceback|Exception|Crash)\b|missing/damaged",
     re.IGNORECASE,
 )
 _TRACE_PROV_RE = re.compile(
@@ -114,6 +117,14 @@ _SCHEMA_ID_RE = re.compile(
 _NUMERICAL_KEYWORDS_RE = re.compile(
     r"\b(?:differs\s+from|recomputed|tolerance|bound|mae|rmse|ev|hartree|kcal|deviation)\b|!=|(?:\d+(?:\.\d+)?\s*(?:[A-Za-z/]+)?\s*(?:deviation|error))",
     re.IGNORECASE,
+)
+_PYTEST_ERROR_LINE = re.compile(r"^E\s{2,}(\S.*)$")
+_PYTEST_LOCATION = re.compile(
+    r"^(?:/tests/|\.\./tests/|tests/)?"
+    r"(?P<path>(?:[\w.-]+/)*[\w.-]+\.py):(?P<line>[1-9]\d{0,8}):\s+[\w.]+\s*$"
+)
+_WRAPPER_REASONS = frozenset(
+    {"scientific_core_result", "overall_scientific_pass", "frozen_scientific_controls_failed"}
 )
 
 
@@ -306,6 +317,143 @@ def _normalize_check(
     return rec
 
 
+def _collect_ctrf(data: Dict[str, Any], rel: str, checks: List[Dict[str, Any]]) -> None:
+    results = data.get("results")
+    tests = results.get("tests") if isinstance(results, dict) else None
+    if not isinstance(tests, list):
+        return
+    for index, test in enumerate(tests):
+        if not isinstance(test, dict) or not isinstance(test.get("name"), str):
+            continue
+        record = _normalize_check(test, layer="pytest", source=rel)
+        pointer = f"$.results.tests[{index}]"
+        field = "message" if record["detail"] else "status"
+        trace = test.get("trace")
+        if record["ok"] is False and isinstance(trace, str):
+            lines = trace.splitlines()
+            diagnostic = []
+            for line in lines:
+                match = _PYTEST_ERROR_LINE.match(line)
+                if match:
+                    diagnostic.append(match[1][:240])
+                    if len(diagnostic) == 8:
+                        break
+            if diagnostic:
+                record["detail"] = _text(" | ".join(diagnostic))
+                record["failure_kind"] = _classify_failure_kind(record["name"], record["detail"])
+                field = "trace"
+            for line in reversed(lines[-20:]):
+                location = _PYTEST_LOCATION.fullmatch(line.strip())
+                if location and ".." not in Path(location["path"]).parts:
+                    record["reported_scorer_location"] = {
+                        "source": "tests/" + location["path"],
+                        "line": int(location["line"]),
+                        "source_pointer": f"{pointer}.trace",
+                    }
+                    break
+        record["source_pointer"] = f"{pointer}.{field}"
+        checks.append(record)
+
+
+def _collect_score_breakdown(data: Dict[str, Any], rel: str, checks: List[Dict[str, Any]]) -> None:
+    staircase = data.get("conformer_staircase")
+    groups = (
+        ("subgates", "$.subgates", data.get("subgates")),
+        (
+            "conformer_staircase",
+            "$.conformer_staircase.stages",
+            staircase.get("stages") if isinstance(staircase, dict) else None,
+        ),
+    )
+    for layer, pointer, entries in groups:
+        if not isinstance(entries, list):
+            continue
+        for index, item in enumerate(entries):
+            if not isinstance(item, dict) or not isinstance(item.get("passed"), bool):
+                continue
+            name = _text(item.get("slug") or item.get("name"), 150)
+            if not name:
+                continue
+            points = {
+                key: item[key]
+                for key in ("earned", "possible")
+                if isinstance(item.get(key), (int, float)) and not isinstance(item[key], bool)
+            }
+            normalized = dict(item)
+            if {"earned", "possible"} == points.keys():
+                normalized.setdefault(
+                    "detail", f"Recorded points {points['earned']}/{points['possible']}"
+                )
+                normalized.setdefault("evidence", points)
+            record = _normalize_check(normalized, layer=layer, source=rel, name=name)
+            record["source_pointer"] = f"{pointer}[{index}]"
+            checks.append(record)
+
+
+def _collect_mlrs_failure(
+    primary: Dict[str, Any],
+    primary_rel: str,
+    docs: List[Tuple[str, Dict[str, Any]]],
+    checks: List[Dict[str, Any]],
+) -> None:
+    """Retain the native rejection behind a scored MLRS envelope."""
+    if primary.get("schema_version") != "mlrs-verifier-report-1" or not (
+        primary.get("status") == "SCORED"
+        and _status_verdict(primary.get("scientific_status")) == "fail"
+    ):
+        return
+    origin = primary.get("failure_origin")
+    native_rel = origin.get("evidence") if isinstance(origin, dict) else None
+    native_rel = native_rel if isinstance(native_rel, str) else "native/verify.json"
+    native = dict(docs).get(native_rel, {})
+    reason, name, source, pointer = (
+        primary.get("message"),
+        "scientific_result",
+        primary_rel,
+        "$.message",
+    )
+    if _status_verdict(native.get("result")) == "fail":
+        if any(c["source"] == native_rel and c["ok"] is False for c in checks):
+            return
+        findings = native.get("findings")
+        if isinstance(findings, list):
+            previous = len(checks)
+            for index, item in enumerate(findings):
+                if not isinstance(item, dict) or not _text(_first_value(item, DETAIL_KEYS)):
+                    continue
+                record = _normalize_check(item, layer="scientific", source=native_rel)
+                if record["ok"] is True:
+                    continue
+                record["ok"] = False
+                record["source_pointer"] = f"$.findings[{index}]"
+                checks.append(record)
+            if len(checks) > previous:
+                return
+        native_reason = native.get("reason")
+        if isinstance(native_reason, str) and native_reason.strip():
+            failed_subtasks = [
+                key
+                for key in ("numerical_subtask", "interpretation_subtask")
+                if _status_verdict(native.get(key)) == "fail"
+            ]
+            name = failed_subtasks[0] if len(failed_subtasks) == 1 else "scientific_result"
+            reason, source, pointer = native_reason, native_rel, "$.reason"
+    if isinstance(reason, str) and reason.strip():
+        record = _normalize_check(
+            {"ok": False, "detail": reason}, layer="scientific", source=source, name=name
+        )
+        record["source_pointer"] = pointer
+        checks.append(record)
+
+
+def _failure_is_wrapper(check: Dict[str, Any]) -> bool:
+    name = str(check.get("name") or "").strip().lower()
+    detail = str(check.get("detail") or "").strip().lower()
+    return detail in _WRAPPER_REASONS or (
+        name in _WRAPPER_REASONS and (not detail or detail in {"fail", "failed", "false"})
+    )
+
+
 def _collect_from_mapping(
     data: Dict[str, Any], rel: str, checks: List[Dict[str, Any]], pointer: str = "$"
 ) -> None:
@@ -323,14 +471,16 @@ def _collect_from_mapping(
                         rec["source_pointer"] = f"{pointer}.layers.{layer}[{index}]"
                         checks.append(rec)
 
-    criteria = data.get("criteria")
-    if isinstance(criteria, list):
+    for key in ("criteria", "static_scientific_checks"):
+        criteria = data.get(key)
+        if not isinstance(criteria, list):
+            continue
         for index, item in enumerate(criteria):
             if not isinstance(item, dict):
                 continue
-            rec = _normalize_check(item, layer=str(item.get("level") or "criteria"), source=rel)
+            rec = _normalize_check(item, layer=str(item.get("level") or key), source=rel)
             if rec:
-                rec["source_pointer"] = f"{pointer}.criteria[{index}]"
+                rec["source_pointer"] = f"{pointer}.{key}[{index}]"
                 checks.append(rec)
 
     rubric = data.get("completeness_rubric")
@@ -573,6 +723,17 @@ def _envelope_fields(
 
 
 def _scorable(primary: Dict[str, Any], all_docs: List[Dict[str, Any]]) -> bool:
+    status = _text(primary.get("status"), 40).upper()
+    if status in {
+        "ERROR",
+        "ENV_INVALID",
+        "INFRA_ERROR",
+        "ENVIRONMENT_ERROR",
+        "INCONCLUSIVE",
+        "REVIEW_REQUIRED",
+        "REQUIRE_REVIEW",
+    }:
+        return False
     for doc in [primary, *all_docs]:
         for key in ("scoreable", "scoring_eligible", "eligible_for_success_ranking"):
             if doc.get(key) is True:
@@ -701,31 +862,57 @@ def build_verifier_report(
             return "primary" if parts[0] in PRIMARY_FILENAMES else "diagnostic"
         return "nested"
 
+    active_docs = [(rel, doc) for rel, doc in docs if role(rel) != "historical"]
+    if not active_docs:
+        return None
+
     # The root envelope is authoritative for the trial's scoring verdict; among
     # root files `verify.json` outranks native/diagnostic reports.
-    root_docs = [(rel, doc) for rel, doc in docs if role(rel) == "primary"]
+    root_docs = [(rel, doc) for rel, doc in active_docs if role(rel) == "primary"]
     root_docs.sort(key=lambda pair: PRIMARY_FILENAMES.index(pair[0].split("/")[-1]))
     primary: Dict[str, Any] = {}
     primary_rel = ""
     if root_docs:
         primary_rel, primary = root_docs[0]
     else:
-        nested = [(rel, doc) for rel, doc in docs if role(rel) == "nested"]
+        nested = [(rel, doc) for rel, doc in active_docs if role(rel) == "nested"]
         if nested:
             primary_rel, primary = nested[0]
         else:
-            primary_rel, primary = docs[0]
+            primary_rel, primary = active_docs[0]
 
-    # Everything except preserved `original/` copies contributes observations.
-    ordered_docs = [primary] + [
-        doc for rel, doc in docs if role(rel) != "historical" and doc is not primary
-    ]
+    # Everything except saved historical copies contributes observations.
+    active_docs.sort(key=lambda pair: pair[0] != primary_rel)
+    ordered_docs = [doc for _, doc in active_docs]
 
     checks: List[Dict[str, Any]] = []
-    for rel, doc in sorted(docs, key=lambda pair: pair[0] != primary_rel):
-        if role(rel) == "historical":
-            continue  # a preserved pre-regrade copy, not the current verdict
+    score_breakdown = {}
+    families: Set[str] = set()
+    for rel, doc in active_docs:
+        filename = rel.rsplit("/", 1)[-1]
+        if filename == "ctrf.json":
+            _collect_ctrf(doc, rel, checks)
+            families.add("ctrf")
+        if filename == "score_breakdown.json":
+            _collect_score_breakdown(doc, rel, checks)
+            if not score_breakdown:
+                score_breakdown = {
+                    "source": rel,
+                    **{
+                        key: doc[key]
+                        for key in (
+                            "passed",
+                            "total",
+                            "diagnostic_points",
+                            "diagnostic_possible",
+                            "official_reward",
+                        )
+                        if isinstance(doc.get(key), (int, float)) and not isinstance(doc[key], bool)
+                    },
+                }
+            families.add("score_breakdown")
         _walk_checks(doc, rel, checks)
+    _collect_mlrs_failure(primary, primary_rel, active_docs, checks)
     for check in checks:
         original = str(check.get("detail") or "")
         readable = _diagnostic_message(original)
@@ -761,15 +948,13 @@ def build_verifier_report(
                 c.get("name", ""), c.get("detail", ""), c.get("evidence")
             )
 
-    failed = [c for c in checks if c["ok"] is False]
+    failed = sorted((c for c in checks if c["ok"] is False), key=_failure_is_wrapper)
     passed = [c for c in checks if c["ok"] is True]
 
     # Extract top-level verification coverage and limits from any non-historical doc
     verification_coverage: Optional[str] = None
     coverage_limits: List[str] = []
-    for _, doc in docs:
-        if role(_) == "historical":
-            continue
+    for _, doc in active_docs:
         if verification_coverage is None:
             cov = doc.get("verification_coverage") or doc.get("verification_implementation")
             if isinstance(cov, str) and cov.strip():
@@ -809,8 +994,7 @@ def build_verifier_report(
         diag, diag_reasons = "normal", []
     else:
         diag, diag_reasons = _assess_diagnosability(failed, fields["messages"])
-    families: Set[str] = set()
-    for _, doc in docs:
+    for _, doc in active_docs:
         if isinstance(doc.get("layers"), dict):
             families.add("layered")
         if isinstance(doc.get("criteria"), list):
@@ -821,15 +1005,18 @@ def build_verifier_report(
             families.add("problems")
         if any(k in doc for k in ("scientific_status", "failure_origin", "core_failures")):
             families.add("envelope")
+    if primary.get("schema_version") == "mlrs-verifier-report-1":
+        families.add("mlrs")
 
     return {
         "schema_family": "+".join(sorted(families)) or "unknown",
+        **({"score_breakdown": score_breakdown} if score_breakdown else {}),
         "schema_version": fields["schema_version"],
         "verdict": verdict,
-        "scorable": _scorable(primary, [doc for _, doc in docs]),
+        "scorable": _scorable(primary, ordered_docs),
         "status": fields["status"],
         "scientific_status": fields["scientific_status"],
-        "reward": fields["reward"],
+        "reward": None if "reward" in primary and primary["reward"] is None else fields["reward"],
         "score": fields["score"],
         "failure_origin": fields["failure_origin"],
         "core_failures": fields["core_failures"],
@@ -839,8 +1026,8 @@ def build_verifier_report(
         "first_message_location": next(
             (
                 {"source": rel, "pointer": f"$.{key}"}
-                for rel, doc in sorted(docs, key=lambda pair: pair[0] != primary_rel)
-                if role(rel) != "historical" and fields["messages"]
+                for rel, doc in active_docs
+                if fields["messages"]
                 for key in MESSAGE_KEYS
                 if isinstance(doc.get(key), str) and _text(doc[key], 300) == fields["messages"][0]
             ),

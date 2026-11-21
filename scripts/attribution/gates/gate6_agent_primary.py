@@ -26,7 +26,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from ..context import AttributionContext
-from .gate5_insufficient import unresolved_attribution
+from .gate5_insufficient import bound_failed_retries, unresolved_attribution
 
 
 def _readable_failure_text(
@@ -71,7 +71,8 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     fail_text = ctx.fail_text
     failure_excerpt = _readable_failure_text(fail_text, evidence=ctx.evidence, limit=220)
     premature_sigs = ctx.premature_sigs
-    repeated_fail_sigs = ctx.repeated_fail_sigs
+    retry_bindings = bound_failed_retries(ctx)
+    retry_ids = {signal.get("signal_id") for signal, _ in retry_bindings}
     runtime = ctx.runtime
     sci_obs = ctx.sci_obs
     signals = ctx.signals
@@ -97,6 +98,15 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     added_signals = 0
     for sig in signals:
         if sig.get("signal_type") == "dependency_search_attempted":
+            continue
+        if (
+            sig.get("signal_type")
+            in {
+                "iterative_debugging_failure",
+                "repeated_failed_action",
+            }
+            and sig.get("signal_id") not in retry_ids
+        ):
             continue
         if sig.get("signal_id"):
             ev_refs.append(sig["signal_id"])
@@ -186,15 +196,15 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             else (deliv_anchor.get("event_id") if deliv_anchor else None)
         )
 
-    debugging_fail_sigs = [
-        s for s in signals if s.get("signal_type") == "iterative_debugging_failure"
-    ]
+    scientific_retry = next(
+        ((sig, obs) for sig, obs in retry_bindings if obs is not None),
+        None,
+    )
 
     # Subcase 5a: Repeated failed action after unrecovered scientific software error (e.g. SCF nonconvergence)
-    if unrecovered_sci_obs and (repeated_fail_sigs or debugging_fail_sigs):
+    if scientific_retry:
         subcase_id = "5a"
-        first_sci = unrecovered_sci_obs[0]
-        rep_sig = repeated_fail_sigs[0] if repeated_fail_sigs else debugging_fail_sigs[0]
+        rep_sig, first_sci = scientific_retry
         subtype = "error_diagnosis"
         code = "AGENT_ERROR_DIAGNOSIS"
         summary = (
@@ -312,10 +322,18 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     # Subcase 5e: Inaccurate output / calculation error backed by behavioral signals
     elif (
         unverified_output_sigs
+        or retry_bindings
         or any(
-            signal.get("signal_type")
-            not in ("dependency_search_attempted", "self_verification_executed")
+            signal.get("signal_type") in ("asset_modified", "scientific_parameter_changed")
             for signal in signals
+        )
+        and (
+            not (ctx.evidence.get("verifier_report") or {}).get("failed_checks")
+            or any(
+                obs.get("agent_ref")
+                and any(s.get("event_ref") == obs["agent_ref"] for s in signals)
+                for obs in unrecovered_sci_obs
+            )
         )
         or bound_self_check_gap
     ) and (fail_text or failure_excerpt):
@@ -332,6 +350,7 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         fud_ref = (
             anchor_fud_ref
             or (unverified_output_sigs[0]["event_ref"] if unverified_output_sigs else None)
+            or (retry_bindings[0][0]["event_ref"] if retry_bindings else None)
             or (signals[0]["event_ref"] if signals else None)
             or (timeline[-1]["event_id"] if timeline else "ver:fail_log")
         )
@@ -525,7 +544,11 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
                     "evidence_cases": [f"{case_id}:{fud_ref}"],
                 }
             }
-        elif re.search(r"(?:window.*?yields|colleague|audit)", fail_text, re.IGNORECASE):
+        elif re.search(
+            r"(?:\bfit\b.*?\bcolleague(?:'s)?\b.*?\bwindow\b|\bwindow\b.*?\byields\b)",
+            fail_text,
+            re.IGNORECASE,
+        ):
             subtype = "task_understanding"
             code = "AGENT_TASK_UNDERSTANDING"
             summary = (
@@ -740,7 +763,9 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         reason=f"positive agent evidence ({code})",
         checks={
             "unrecovered_sci": len(unrecovered_sci_obs),
-            "repeated_failed_action": len(repeated_fail_sigs),
+            "repeated_failed_action": sum(
+                s.get("signal_type") == "repeated_failed_action" for s, _ in retry_bindings
+            ),
             "dependency_search_attempted": len(dep_search_sigs),
             "premature_completion": len(premature_sigs),
             "agent_mismatch_contracts": len(agent_mismatch_contracts),

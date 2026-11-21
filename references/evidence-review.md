@@ -1,6 +1,6 @@
 # Existing-evidence review
 
-**On this page:** [Missing outputs](#missing-outputs) · [Recorded verification](#recorded-verification) · [Causal review](#causal-review) · [Capability scope](#capability-scope) · [Harness compatibility](#harness-compatibility)
+**On this page:** [Missing outputs](#missing-outputs) · [Recorded verification](#recorded-verification) · [Contracts and replay](#contracts-and-replay) · [Causal review](#causal-review) · [Dossier](#dossier-for-a-specific-decision) · [Review summary](#review-summary) · [Capability scope](#capability-scope) · [Harness compatibility](#harness-compatibility)
 
 This workflow reads the benchmark's saved artifacts. It does not run a verifier, simulation, shell command, or Docker container. A benchmark may already have performed independent recomputation; review the retained record and its coverage instead of repeating it or assuming every check recomputed a result.
 
@@ -26,11 +26,21 @@ The scan defaults to 1,000 entries, eight directory levels, and 65,536 bytes per
 `causal_assessment.existing_verification` retains source files, failed checks, declared coverage, coverage limits, and numerical records. A reported recomputation, reference comparison, and generic `FAIL` are different evidence:
 
 - Preserve reported values, actual delivered values, recomputed/reference values, tolerances, source pointers, and execution/artifact bindings.
-- A reported delta is a deviation, not the delivered value or an absolute reference value.
+- Read a reported delta as a deviation. Bind the actual submitted value to a unique structured artifact row bearing every identifier named by the verifier. Leave the value unresolved when the row cannot be identified.
 - `verification_coverage` is the verifier's declaration of coverage. Missing detail does not establish independent recomputation.
 - Saved comparisons support an outcome finding within their coverage. They do not by themselves identify the scientific decision responsible for the discrepancy.
 
 No additional calculation is performed by this review. When records are insufficient, identify which existing files, checkpoints, task inputs, or verifier messages would resolve the gap.
+
+Use `runtime.score_produced` to establish whether a trial has a final score. Preserve the original names in `reward_metrics`. Completeness-only rewards can coexist with pending scientific review. Submission-only checks record a gate outcome, and a valid final pass can coexist with an Agent timeout.
+
+## Contracts and replay
+
+For a rejection of text, shape, enum, path, or derived label, compare the actual submission, public requirements, and the failed scorer rule. `contract_review` can flag semantic rejections, hidden format requirements, and ambiguous definitions for review. A structural rejection leaves later scientific checks unassessed when the verifier stopped at that gate.
+
+Check `execution_scope_findings` for isolated replay outputs before treating a captured file as missing. Check `requirement_coverage_findings` for nested labels before concluding that coverage is absent. For different definitions of a physical quantity, such as maximum force component and maximum per-atom norm, inspect the code that ran and the public definition.
+
+For retries or a changed checkout, start from the trial's own `lock.json` and saved verifier receipt. Compare the effective staged or embedded file, its expected digest, and the outer package copy. Confirm the runtime version before using a source match from the current checkout as causal evidence.
 
 ## Causal review
 
@@ -69,11 +79,31 @@ The original analysis snapshot is retained so validation can reconstruct the cha
 
 ### Failure location and self-check evidence
 
-The report, verdict card and `inspect --section errors` list the runtime interruption and the scoring rejection separately. When a message matches a single location in the scorer, the report gives the line and any condition it can identify. It also shows the submitted value when the field resolves to a unique captured file and scalar. Completeness scores retain their original scope. The per-check records are in `contract_review.failure_locations`. The field `causal_assessment.failure_detail` holds the records used in the report.
+The report, verdict card and `inspect --section errors` list the runtime interruption and the scoring rejection separately. When a message matches a single location in the scorer, the report gives the line and any condition it can identify. It also shows the submitted value when the field resolves to a unique captured file and scalar. The per-check records are in `contract_review.failure_locations`. The field `causal_assessment.failure_detail` holds the records used in the report.
+
+Read `runtime.reward_scope` together with `reward_metrics`. An explicitly scoped completeness reward with pending scientific review stays in the metrics while `runtime.reward` is null. A submission-only metric can explain a recorded submission rejection without entering the scored pass rate. Use the trial's per-run result and canonical verifier receipt to distinguish these cases from a final science score.
+
+For a packaged dependency failure, follow the file named by the saved verifier receipt to its effective staged copy and compare that copy with the run-time manifest or expected digest. The outer task file and an embedded evaluator bundle can differ. Use the trial's lock record to identify its package version. A match against the current checkout localizes a candidate rule or dependency. Confirm the loaded version before using that match to support causal responsibility.
 
 To review a self-check, look up the command, script version and output in `causal_anchors.self_check_executions`. Compare the criterion it tested with the public requirement and the recorded rejection. One script can pass an interface check and fail a numerical check. If the generator made an error and the self-check missed it, record the two decisions separately.
 
-For a larger cited file, add `--hash-source art:trajectory_json` to `review plan`. Repeat the option for each artifact ID that has a collected digest. Both plan and apply read the file in chunks and verify its collected SHA-256. The additional budget is 32 MiB per selected file and 128 MiB across those files. A missing digest, changed file or unresolved alternative limits the conclusion.
+The review plan automatically selects a collected trajectory between 1 and 32 MiB for extended fingerprinting. Use `--hash-source <artifact-id>` for another large cited file with a collected digest. Both plan and apply stream the file and check its collected SHA-256. The additional budget is 32 MiB per selected file and 128 MiB across those files. A missing digest, changed file or unresolved alternative limits the conclusion.
+
+### Dossier for a specific decision
+
+Run `cfa.py dossier <task-id> --output <dossier-dir>` after the audit. A saved report path also works as the target. The command writes `dossier.md`, `dossier.json`, and a review plan for a trial with a failure outcome. Use `--raw` without an output directory to inspect JSON in the terminal.
+
+Start from the recorded rejection and any matching scorer function. For archived source, cite the archive artifact as the physical source and use the member name and line to locate the rule. Compare the public requirement and the actual capture. A literal reconstruction accepts recorded full writes, unambiguous string edits and simple quoted heredocs. Dynamic writes and indirect execution may leave the effective version unresolved. Reasoning excerpts describe the recorded rationale and carry their own source pointers. Bind responsibility to an actual tool action.
+
+In the review plan, `decision.event_ref` anchors the implicated action. An optional `decision.mechanism` on an Agent decision has four text fields: `actual_logic`, `expected_logic`, `why_unrecovered`, and `minimal_fix`. Cite the applicable basis, inputs, outputs and rejection using the existing decision bindings. Set an optional `capability_dimension.mechanism_tag` from the [mechanism list](agent-mechanisms.md). Use `review apply` with the original audit JSON files and the filled review plan.
+
+The applied review records `defect_verification` when it can bind the discrepancy itself to a saved execution result, public requirement and submitted output. Treat `quantitative_sufficiency` separately. A reviewed discrepancy can remain quantitatively unverified. A determination of `sufficient` requires a fresh retained verifier comparison that isolates the cited change and shows the comparison crossing its recorded tolerance. Refer to it through `decision.quantitative_evidence` with the failed check reference and a review statement.
+
+`--with-oracle` includes private comparison excerpts where present. Use them to locate implementation differences. Judge responsibility against the run-time public task and saved execution evidence.
+
+## Review summary
+
+Run `cfa.py review summary --audit-root <audit> --review-root <reviews> --dossier-root <dossiers> --output <summary>` for the trial table, review queues and mechanism counts. Repeat `--review-root` for additional review locations. The summary validates each review against its saved evidence. Earlier audits must match the current trial result bytes and outcome. Summary links are relative to the summary output directory.
 
 ## Capability scope
 

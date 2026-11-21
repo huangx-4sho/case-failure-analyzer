@@ -299,7 +299,9 @@ def _display_actions(analysis: Dict[str, Any], lang: str) -> List[tuple[str, str
     return out
 
 
-def _manifestation_summary(evidence: Dict[str, Any], direct_cause: Any, lang: str = "zh") -> str:
+def _manifestation_summary(
+    evidence: Dict[str, Any], direct_cause: Any, lang: str = "zh", *, scoring_reached: bool = True
+) -> str:
     """
     Human-facing "what failed" line.
 
@@ -308,7 +310,7 @@ def _manifestation_summary(evidence: Dict[str, Any], direct_cause: Any, lang: st
     available and fall back to the cleaned analysis summary otherwise.
     """
     report = evidence.get("verifier_report")
-    if isinstance(report, dict):
+    if scoring_reached and isinstance(report, dict):
         failed = [c for c in (report.get("failed_checks") or []) if c.get("name")]
         names = [str(c["name"]) for c in failed]
         if names:
@@ -1059,7 +1061,13 @@ def _render_chinese_bilingual_core(
     if integrity_warn:
         lines.append(integrity_warn)
 
-    manifestation = _manifestation_summary(evidence, direct_cause, "zh")
+    manifestation = _manifestation_summary(
+        evidence,
+        direct_cause,
+        "zh",
+        scoring_reached=not isinstance(manifestation, dict)
+        or manifestation.get("scoring_reached") is not False,
+    )
     attribution = _attribution_sentence(prc, internal_cause, "zh")
     lines.append(_failure_callout(manifestation, attribution, lang))
 
@@ -1339,7 +1347,13 @@ def _render_english_edition(
 
     prc_summary = prc.get("summary") or prc.get("reasoning") if isinstance(prc, dict) else None
     internal_cause = prc_summary or direct_cause or "N/A"
-    manifestation_line = _manifestation_summary(evidence, direct_cause, "en")
+    manifestation_line = _manifestation_summary(
+        evidence,
+        direct_cause,
+        "en",
+        scoring_reached=not isinstance(manifestation, dict)
+        or manifestation.get("scoring_reached") is not False,
+    )
     attribution_line = _attribution_sentence(prc, internal_cause, "en")
     badge = "🟢" if conf_val >= 0.65 else ("🟡" if conf_val >= 0.40 else "🔴")
     lines.append(
@@ -1824,11 +1838,19 @@ def _render_pending_edition(
         saved += " (Saved evidence)"
     lines = [f"# {title}: `{case}`", "", f"## 1. {status}", ""]
     lines.append(
-        "The verifier recorded REVIEW_REQUIRED. No valid score or pass/fail result was produced; no failure cause is assigned."
+        "The verifier requested independent review. The final verdict is pending."
         if en
-        else "评分器记录为 REVIEW_REQUIRED，未生成有效分数或通过/失败结论；不作失败归因。"
+        else "评分器已请求独立复核，最终裁定待定。"
     )
-    receipts = (evidence.get("runtime") or {}).get("review_receipts") or []
+    runtime = evidence.get("runtime") or {}
+    if runtime.get("reward_scope") == "evidence_completeness_only":
+        value = (runtime.get("reward_metrics") or {}).get("reward")
+        lines.append(
+            f"\nThe recorded reward `{value}` measures evidence completeness."
+            if en
+            else f"\n记录分数 `{value}` 衡量证据完整性。"
+        )
+    receipts = runtime.get("review_receipts") or []
     report = evidence.get("verifier_report") or {}
     messages = report.get("messages") or []
     reason = next((r["reason"] for r in receipts if r.get("reason")), None)
@@ -1837,7 +1859,7 @@ def _render_pending_edition(
     lines.extend(["", f"## 2. {saved}", ""])
     for receipt in receipts:
         lines.append(
-            f"- `{receipt['source_file']}` (`{receipt['source_pointer']}`) · REVIEW_REQUIRED"
+            f"- `{receipt['source_file']}` (`{receipt['source_pointer']}`) · {receipt['status']}"
         )
     lines.append("")
     lines.extend(_render_evidence_file_pointers(evidence, lang=lang, output_format=output_format))

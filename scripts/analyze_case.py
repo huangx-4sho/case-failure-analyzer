@@ -45,6 +45,7 @@ from extract_scientific_errors import extract_scientific_errors
 from generate_hypotheses import generate_candidate_hypotheses
 from normalize_trajectory import normalize_trajectory
 from normalize_verifier_report import build_check_stats_from_report, build_verifier_report
+from verifier_source import collect_verifier_sources
 from render_report import (
     render_job_summary_markdown,
     render_report_markdown,
@@ -54,7 +55,11 @@ from render_verdict import build_verdict_card, render_verdict_card_markdown
 from runtime_state import resolve_trajectory_path, score_was_produced
 from contract_review import audit_contract_review
 from scientific_contract_review import audit_scientific_contracts
-from scoring_dependencies import collect_scoring_dependency_observations
+from scoring_dependencies import (
+    collect_scoring_dependency_observations,
+    dependency_preflight_matches,
+    replay_runtime_error,
+)
 from task_ref import TaskRef, TaskRefError, REPORT_DIR_NAME, resolve_task_ref
 from trace_causal_anchors import trace_causal_anchors
 from staging import (
@@ -308,7 +313,7 @@ def _is_unscored_evaluator_fault(report: Dict[str, Any]) -> bool:
     status = str(report.get("status") or "").strip().upper()
     scientific_status = str(report.get("scientific_status") or "").strip().upper()
     if (
-        status not in {"ERROR", "ENV_INVALID", "INCONCLUSIVE"}
+        status not in {"ERROR", "ENV_INVALID", "INFRA_ERROR", "ENVIRONMENT_ERROR", "INCONCLUSIVE"}
         and scientific_status != "INCONCLUSIVE"
     ):
         return False
@@ -325,7 +330,7 @@ def _is_unscored_evaluator_fault(report: Dict[str, Any]) -> bool:
         code = ""
     if "evaluator" in code or "infrastructure" in code:
         return True
-    return status in {"ERROR", "ENV_INVALID"}
+    return status in {"ERROR", "ENV_INVALID", "INFRA_ERROR", "ENVIRONMENT_ERROR"}
 
 
 def _attach_unscored_verifier_fault(
@@ -339,6 +344,27 @@ def _attach_unscored_verifier_fault(
     location = report.get("first_message_location") or {}
     source = "verifier/" + (location.get("source") or report.get("primary_report") or "verify.json")
     pointer = location.get("pointer") or "$"
+    preflight = bool(
+        location.get("source")
+        and location["source"] == report.get("primary_report")
+        and dependency_preflight_matches(message)
+    )
+    if not preflight:
+        for check in report.get("failed_checks") or []:
+            if check.get("source") != report.get("primary_report"):
+                continue
+            diagnostic = str(check.get("detail") or check.get("name") or "")
+            if dependency_preflight_matches(diagnostic):
+                message = diagnostic[:500]
+                source = "verifier/" + check["source"]
+                pointer = check.get("source_pointer") or "$"
+                preflight = True
+                break
+    if not preflight and str(report.get("status") or "").upper() in {
+        "INFRA_ERROR",
+        "ENVIRONMENT_ERROR",
+    }:
+        return
     fail_log = next(
         (obs for obs in verifier_observations if obs.get("obs_id") == "ver:fail_log"), None
     )
@@ -358,24 +384,43 @@ def _attach_unscored_verifier_fault(
         # report carries the actual evaluator exception.
         fail_log["summary"] = message[:240]
         fail_log.update(matched_text=message[:500], source_file=source, source_pointer=pointer)
-    if any(obs.get("obs_id") == "ver:internal_crash" for obs in verifier_observations):
+    if (
+        any(obs.get("obs_id") == "ver:internal_crash" for obs in verifier_observations)
+        and not preflight
+    ):
         return
-    verifier_observations.append(
-        {
-            "obs_id": "ver:internal_crash",
-            "type": "verifier_internal_crash",
-            "subtype": "recompute_defect",
-            "code": "VERIFIER_RECOMPUTE_DEFECT",
-            "summary": f"Verifier crashed internally: {message[:200]}",
-            "matched_text": message[:400],
-            "hazard_detected": True,
-            "failure_binding": "direct",
-            "binding_evidence": ["ver:fail_log"],
-            "triggered": True,
-            "source_file": source,
-            "source_pointer": pointer,
-        }
-    )
+    observation = {
+        "obs_id": "ver:dependency_preflight" if preflight else "ver:internal_crash",
+        "type": "verifier_internal_crash",
+        "subtype": "dependency_preflight_failed" if preflight else "recompute_defect",
+        "code": "VERIFIER_DEPENDENCY_PREFLIGHT_FAILED"
+        if preflight
+        else "VERIFIER_RECOMPUTE_DEFECT",
+        "summary": (
+            f"Verifier rejected a packaged scoring dependency during preflight: {message[:200]}"
+            if preflight
+            else f"Verifier crashed internally: {message[:200]}"
+        ),
+        "matched_text": message[:400],
+        "hazard_detected": True,
+        "failure_binding": "direct",
+        "binding_evidence": ["ver:fail_log"],
+        "triggered": True,
+        "source_file": source,
+        "source_pointer": pointer,
+        **({"scoring_reached": False} if preflight else {}),
+    }
+    if not any(obs.get("obs_id") == observation["obs_id"] for obs in verifier_observations):
+        # Prefer the specific historical receipt over generic traceback heuristics.
+        index = next(
+            (
+                i
+                for i, obs in enumerate(verifier_observations)
+                if obs.get("obs_id") == "ver:internal_crash"
+            ),
+            len(verifier_observations),
+        )
+        verifier_observations.insert(index, observation)
 
 
 def _bind_unfinished_remote_delivery(evidence, trajectory_path, trial_dir, task_dir):
@@ -486,10 +531,13 @@ def collect_case_evidence(
         max_log_bytes=max_log_bytes,
     )
 
+    verifier_sources = collect_verifier_sources(task_dir)
     contract_res = audit_contract(
         task_dir=task_dir,
         trial_dir=trial_dir,
         normalized_traj=norm_traj,
+        runtime=trial_inv.get("runtime"),
+        verifier_sources=verifier_sources,
     )
 
     dependencies = collect_scoring_dependency_observations(
@@ -499,8 +547,16 @@ def collect_case_evidence(
         contract_res["verifier_observations"] = dependencies + contract_res["verifier_observations"]
 
     verifier_report = build_verifier_report(trial_dir)
-    if verifier_report is not None:
-        _attach_unscored_verifier_fault(verifier_report, contract_res["verifier_observations"])
+    runtime = trial_inv["runtime"]
+    if verifier_report is not None and runtime.get("reward_scope"):
+        verifier_report["reward_scope"] = runtime["reward_scope"]
+        verifier_report["scorable"] = False
+    if verifier_report is not None and not score_was_produced(runtime):
+        runtime_failure = replay_runtime_error(verifier_report)
+        if runtime_failure:
+            runtime_err_res["error_observations"].append(runtime_failure)
+        else:
+            _attach_unscored_verifier_fault(verifier_report, contract_res["verifier_observations"])
 
     sci_res = extract_scientific_errors(
         trial_dir=trial_dir,
@@ -673,7 +729,20 @@ def collect_case_evidence(
     anchors = trace_causal_anchors(evidence)
     if anchors:
         evidence["causal_anchors"] = anchors
-    evidence["contract_review"] = audit_contract_review(evidence)
+    evidence["contract_review"] = audit_contract_review(evidence, verifier_sources=verifier_sources)
+    if task_dir is not None:
+        for source in (
+            evidence["contract_review"].get("source_inspection", {}).get("source_files", [])
+        ):
+            relative = source.get("path")
+            if not relative or source.get("archive_path") or ("task", relative) in known:
+                continue
+            path = task_dir / relative
+            if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(task_dir):
+                entry = make_artifact_entry("art:task:" + relative, task_dir, relative, "task")
+                if entry["sha256"] == source.get("sha256"):
+                    evidence["artifacts"].append(entry)
+                    known.add(("task", relative))
     try:
         evidence["scientific_contract_review"] = audit_scientific_contracts(evidence)
     except (OSError, ValueError, TypeError, AttributeError) as exc:
@@ -793,6 +862,8 @@ def _enrich_with_verifier_report(
     if not isinstance(manifestation, dict):
         manifestation = {}
         result["failure_manifestation"] = manifestation
+    if result.get("verdict") == "errored" and manifestation.get("scoring_reached") is False:
+        return result
     if summary:
         manifestation["summary"] = summary[:700]
     if failed:
@@ -1336,7 +1407,9 @@ def _summary_diagnostic_fields(evidence: Dict[str, Any]) -> Dict[str, Any]:
     """Summary-row fields that make degraded evidence visible in batch output."""
     counts = _degraded_diagnostic_counts(evidence)
     report = evidence.get("verifier_report") or {}
+    scope = (evidence.get("runtime") or {}).get("reward_scope")
     return {
+        **({"reward_scope": scope} if scope else {}),
         "diagnostic_counts": counts,
         "degraded_evidence": bool(counts["warning"] or counts["error"]),
         # `low` means the verifier's failure reason is a terse generic message

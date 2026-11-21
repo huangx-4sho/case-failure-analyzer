@@ -30,7 +30,29 @@ from analyze_case import _artifact_name
 from render_index import natural_sort_key, render_index_markdown, update_failure_report_index
 from render_verdict import build_verdict_card, render_verdict_card_markdown
 from staging import manifest_filename, publish_staging_to_output, validate_input_output_isolation
-from task_ref import REPORT_DIR_NAME, TaskRefError, normalize_task_ref, resolve_task_ref
+from task_ref import (
+    REPORT_DIR_NAME,
+    TaskRefError,
+    discover_job_task_refs,
+    normalize_task_ref,
+    resolve_task_ref,
+)
+
+
+class NumberedSlugTests(unittest.TestCase):
+    def test_numbered_slug_is_discovered_in_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task = root / "tasks" / "000-hello"
+            trial = root / "jobs" / "job" / "000-hello__abc"
+            task.mkdir(parents=True)
+            trial.mkdir(parents=True)
+            (task / "task.toml").write_text('schema_version = "1.4"')
+            (trial / "result.json").write_text('{"trial_name":"000-hello__abc"}')
+            (ref,) = discover_job_task_refs(root)
+            self.assertEqual(ref.task_id, "task0")
+            self.assertEqual(ref.task_def_dir, task.resolve())
+            self.assertEqual(resolve_task_ref(trial.name, root).trial_dir, trial.resolve())
 
 
 def _make_harbor_tree(root: Path, number: str = "208", hash_suffix: str = "jaekojA") -> Path:

@@ -109,9 +109,9 @@ Multi-trial jobs additionally emit `job_summary.md` (bilingual), `job_summary.zh
 
 `degraded_evidence_trial_count` counts trials whose evidence collection emitted at least one `warning` or `error` diagnostic; it is **not** a failure count and must not be folded into `verdict_counts`.
 
-### Three-State Scoring Coverage (`### 1.1`)
+### Scoring Coverage (`### 1.1`)
 
-`job_summary.md` renders an additive `### 1.1` subsection under Section 1 with four rows: **Scored Passed**, **Scored Failed**, **Not Scored** (runner aborted before the verifier, `reward=None`), and **Scored Pass Rate**. A note distinguishes the overall rate (`passed / total_trials`, retained in the Section 1 table) from the scored rate (`passed / scored_trials`). When `low_diagnosability_trial_count > 0`, a batch-level notice warns that some verifier conclusions are terse generic messages with no named check or numeric deviation. This subsection is additive: the four mandatory `## <N>.` sections of `report.md` and the existing Section 1 table are unchanged.
+`job_summary.md` shows scored passes, scored failures, pending review, and unscored trials in Section 1.1. It adds a submission-check failure row when those outcomes occur. The overall rate uses `passed / total_trials`. The scored rate uses `passed / scored_trials`. When `low_diagnosability_trial_count > 0`, the report flags conclusions that lack named checks or numerical detail.
 
 ### Verifier Report Block (single-trial `report.md`)
 
@@ -161,8 +161,8 @@ Path mode (`--job` + `--output`) keeps the legacy unprefixed names (`report.md`,
 
 The bench-level global board aggregates root-cause attributions across all analyzed tasks:
 
-- **Three-state Trial Statistics**: Header callout tracks `总用例 / Total`, `通过 / Passed`, `已评分失败 / Failed`, `未评分或异常 / Errored & Unscored`, and **可评分通过率 / Scored Pass Rate** (`passed / (passed + failed)`).
-- **Normalized Category Distribution**: Proportions in Section 1 are computed against non-passed cases (`non_passed = sum(cat_counts)`), guaranteeing that the 5 failure categories (`agent`, `verifier`, `case`, `infra`, `unknown`) always sum to `100.0%`.
+- **Trial statistics** track total, scored passes, scored failures, pending review, unscored or errored outcomes, and the scored pass rate.
+- **Category distribution** shows the share of classified non-passed trials in each peer category and the unresolved `unknown` bucket. Passed and pending trials are omitted from that denominator.
 - **Natural Numeric Ordering**: Case manifests are sorted naturally (`task98` before `task194` before `task207`), avoiding lexicographical misordering.
 - **Visual Confidence Indicators**: Quick-glance confidence signals: `🟢` for `>= 0.65`, `🟡` for `0.40..0.64`, `🔴` for `< 0.40`, and `✅ 1.00` for passed trials.
 - **Crisp Actionable Links**: Manifest table provides direct navigation links: `[速览]` (`summary.md`), `[报告]` (`{task_id}.md`), `[数据]` (`data/`); historical reports may also link an existing prescription, while new capability guidance is reviewed separately.
@@ -180,8 +180,9 @@ The bench-level global board aggregates root-cause attributions across all analy
 
 The card **is** the direct answer; the CLI prints it to stdout followed by `REPORT_DIR: <path>`, so a caller can answer without opening a file. Its order is load-bearing:
 
-1. **Primary root cause and why it failed** — one line with verdict, primary peer category, `subtype`, `code`, confidence, and the concrete failure reason (named failing check / deviation value). Embedded raw verifier JSON blobs are stripped.
-2. **Four peer categories** (`## 1. 四大类裁决`) — `agent`, `verifier`, `case`, `infra`, each with a status (`主因` / `伴随因素` / `已排除` / `未选为主因` / `候选假设`) and an evidence-backed reason. `unknown` is an auxiliary bucket, not a fifth peer category.
-3. **Subcategory under the winning category** (`## 2. 主因大类下的小分类`) — `subtype` → `code` → confidence → basis, plus contributing/candidate subcategories, named failing checks, `evidence_refs`, and `recommended_actions`.
+1. **Conclusion level and failure reason.** Give the verdict, candidate or reviewed category, `subtype`, `code`, heuristic confidence, and the concrete interruption or rejected check.
+2. **Four peer categories.** Present `agent`, `verifier`, `case`, and `infra` with their recorded statuses and evidence. Preserve unresolved alternatives when a rule did not select them.
+3. **Selected subcategory.** Give the subtype, code, confidence, basis, contributing factors, evidence, and recommended actions. Include a trial-level capability diagnosis for an Agent cause where available.
+4. **Report link.** Use the printed `REPORT_DIR` and the filename for the requested edition.
 
-When the primary category is `unknown`, the card says plainly that evidence cannot isolate a cause and shows what is missing; it never invents a subcategory. The card is bilingual-labelled and follows `--lang` (Chinese by default, English with `--lang en`).
+When the category is `unknown`, explain which evidence is needed to isolate a cause. Passed and pending cases use the corresponding shorter answer. The card follows the selected language.

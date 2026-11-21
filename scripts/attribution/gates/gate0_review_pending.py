@@ -8,14 +8,18 @@ def gate0_review_pending(ctx):
     ctx.trace.record(
         gate_id="gate0_review_pending",
         matched=pending,
-        reason="saved verifier requires review without a numeric score"
+        reason="saved verifier requires review without a final score"
         if pending
         else "no unscored review request",
         checks={"verification_status": ctx.verification_status},
     )
     if not pending:
         return None
-    summary = "Verifier requested independent review; no final numeric score or failure verdict was produced."
+    summary = "The verifier requested independent review. The final verdict is pending."
+    if ctx.runtime.get("reward_scope") == "evidence_completeness_only":
+        summary = (
+            "The recorded reward measures evidence completeness. Scientific review is pending."
+        )
     return {
         "schema_version": "failure-analysis-v1",
         "case_id": ctx.case_id,

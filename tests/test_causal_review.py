@@ -9,7 +9,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from causal_assessment import assess_static, validate_assessment, primary_alternative
+from causal_assessment import (
+    assess_static,
+    primary_alternative,
+    quantitative_review_status,
+    validate_assessment,
+)
 from review_cause import apply, capability, plan, read, reviewed_analysis, validate_bundle, write
 from validate_analysis import collect_valid_evidence_ids
 
@@ -91,6 +96,22 @@ def complete_review(ev, an):
     return review
 
 
+class QuantitativeScopeTests(unittest.TestCase):
+    def test_parameter_labels_on_missing_output_do_not_imply_a_numerical_rejection(self):
+        check = {
+            "name": "hidden",
+            "detail": "pressure=0.08: unsafe candidate output, no such file or directory",
+            "failure_kind": "numerical",
+        }
+        status = quantitative_review_status(
+            {"verifier_report": {"failed_checks": [check]}},
+            {"outcome": {"evidence_refs": ["verifier_report.failed_checks[0]"]}},
+            verified_defect=True,
+            checked_verifier_files=set(),
+        )
+        self.assertEqual(status, "not_applicable")
+
+
 def nonagent_review(kind="verifier"):
     ev, an = fixture()
     an["primary_root_cause"] = {
@@ -160,6 +181,95 @@ def nonagent_review(kind="verifier"):
 
 
 class EvidenceOnlyReviewTests(unittest.TestCase):
+    def test_verified_defect_is_independent_of_quantitative_and_causal_conclusions(self):
+        ev, an = fixture()
+        ev["artifacts"][0].update(scope="task", rel_path="instruction.md")
+        ev["artifacts"][1].update(scope="trial", rel_path="artifacts/output.json")
+        ev["artifacts"].extend(
+            {
+                "artifact_id": aid,
+                "rel_path": path,
+                "scope": "trial",
+                "exists": True,
+                "abs_path": str(Path(__file__).resolve()),
+            }
+            for aid, path in [
+                ("art:trajectory_json", "agent/trajectory.json"),
+                ("art:report", "verifier/verify.json"),
+            ]
+        )
+        event = ev["timeline"][0]
+        event["result_recorded"] = True
+        check_ref = "verifier_report.failed_checks[0]"
+        check = ev["verifier_report"]["failed_checks"][0]
+        check.update(
+            source="verify.json",
+            failure_kind="numerical",
+            evidence={
+                "isolated_comparison": {
+                    "decision_event_ref": event["event_id"],
+                    "isolated_change": True,
+                    "submitted": 7,
+                    "reference": 14,
+                    "corrected": 14.01,
+                    "tolerance": 0.02,
+                }
+            },
+        )
+        ev["verifier_observations"].append(
+            {
+                "obs_id": "ver:check:0",
+                "type": "failed_check",
+                "name": check["name"],
+                "source_ref": "verify.json",
+            }
+        )
+        an.update(
+            failure_stage="unknown",
+            recommended_actions=[{"owner": "Infra", "action": "Inspect generic logs"}],
+        )
+
+        def review_with_bound_mechanism():
+            review = complete_review(ev, an)
+            review["alternatives"][0]["status"] = "unresolved"
+            decision = review["decision"]
+            decision["basis"]["evidence_refs"] = ["art:input"]
+            decision["outcome"]["evidence_refs"] = ["ver:check:0"]
+            decision["mechanism"] = {
+                "actual_logic": "Read the unscaled input",
+                "expected_logic": "Scale input before scoring",
+                "why_unrecovered": "Input check validated only the representation",
+                "minimal_fix": "Scale the input in the producing step",
+            }
+            return review
+
+        review = review_with_bound_mechanism()
+        upgraded = reviewed_analysis(ev, an, review)
+        ca = upgraded["causal_assessment"]
+        self.assertEqual(upgraded["failure_stage"], "agent_execution")
+        self.assertEqual(
+            upgraded["recommended_actions"][0]["action"], "Scale the input in the producing step"
+        )
+        self.assertEqual(ca["defect_verification"], "verified_in_trial")
+        self.assertEqual(ca["quantitative_sufficiency"], "unverified_without_recompute")
+        self.assertEqual(ca["level"], "candidate_cause")
+        legacy = reviewed_analysis(ev, an, review, result_version=1)
+        self.assertEqual(legacy["failure_stage"], "unknown")
+        self.assertNotIn("defect_verification", legacy["causal_assessment"])
+
+        review["decision"]["quantitative_evidence"] = {
+            "check_ref": check_ref,
+            "statement": "Retained isolated comparison passes after the scale correction",
+        }
+        review["decision"]["outcome"]["evidence_refs"].append(check_ref)
+        ca = reviewed_analysis(ev, an, review)["causal_assessment"]
+        self.assertEqual(ca["quantitative_sufficiency"], "sufficient")
+        self.assertEqual(ca["level"], "candidate_cause")
+
+        event["result_recorded"] = False
+        ca = reviewed_analysis(ev, an, review_with_bound_mechanism())["causal_assessment"]
+        self.assertEqual(ca["defect_verification"], "unverified")
+
     def test_nonagent_reviews_can_reclassify_unknown_without_changing_score_or_verdict(self):
         for kind in ("verifier", "case", "infrastructure"):
             ev, an, review = nonagent_review(kind)

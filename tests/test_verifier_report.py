@@ -222,6 +222,132 @@ class VerifierReportNormalizationTests(unittest.TestCase):
         self.assertEqual(report["reward"], 0)
         self.assertEqual(report["failure_origin"]["reason_code"], "scientific_criterion_failed")
 
+    def test_ctrf_recovers_assertion_location_and_ignores_summary_as_checks(self) -> None:
+        _write(self.trial, "score_breakdown.json", {"passed": 1, "total": 2})
+        _write(
+            self.trial,
+            "ctrf.json",
+            {
+                "results": {
+                    "tests": [
+                        {"name": "verify.py::test_contract", "status": "passed"},
+                        {
+                            "name": "verify.py::test_targets",
+                            "status": "failed",
+                            "message": "The test failed in the call phase",
+                            "trace": (
+                                "    assert path.exists(), 'Missing output'\n"
+                                "E     assert 2928.2 <= 502.4\n"
+                                "E      + where 2928.2 = abs((7120.0 - 10048.2))\n"
+                                "\n/tests/verify.py:18: AssertionError"
+                            ),
+                        },
+                        {"name": "verify.py::test_optional", "status": "skipped"},
+                    ]
+                }
+            },
+        )
+        report = build_verifier_report(self.trial)
+        self.assertEqual(report["passed_check_count"], 1)
+        self.assertEqual(report["failed_check_count"], 1)
+        self.assertIsNone(report["reward"])
+        self.assertEqual(report["score_breakdown"]["total"], 2)
+        failure = report["failed_checks"][0]
+        self.assertIn("7120.0 - 10048.2", failure["detail"])
+        self.assertNotIn("Missing output", failure["detail"])
+        self.assertEqual(failure["source_pointer"], "$.results.tests[1].trace")
+        self.assertEqual(
+            failure["reported_scorer_location"],
+            {
+                "source": "tests/verify.py",
+                "line": 18,
+                "source_pointer": "$.results.tests[1].trace",
+            },
+        )
+
+    def test_score_breakdown_keeps_diagnostic_points_separate_from_official_reward(self) -> None:
+        _write(
+            self.trial,
+            "score_breakdown.json",
+            {
+                "diagnostic_points": 62,
+                "diagnostic_possible": 100,
+                "official_reward": 0.0,
+                "subgates": [
+                    {"slug": "constraint_bounds", "passed": False, "earned": 0, "possible": 12},
+                    {"slug": "signed_torsions", "passed": True, "earned": 8, "possible": 8},
+                ],
+                "rows": [{"slug": "constraint_bounds", "earned": 0, "possible": 12}],
+                "conformer_staircase": {"stages": [{"name": "complex_network", "passed": False}]},
+            },
+        )
+        report = build_verifier_report(self.trial)
+        constraint, staircase = report["failed_checks"]
+        self.assertEqual(constraint["name"], "constraint_bounds")
+        self.assertEqual(constraint["source_pointer"], "$.subgates[0]")
+        self.assertEqual(constraint["evidence"], {"earned": 0, "possible": 12})
+        self.assertEqual(staircase["source_pointer"], "$.conformer_staircase.stages[0]")
+        self.assertEqual(report["score_breakdown"]["official_reward"], 0)
+        self.assertEqual(report["score_breakdown"]["diagnostic_points"], 62)
+        self.assertIsNone(report["reward"])
+
+    def test_mlrs_reads_the_native_finding_named_by_the_envelope(self) -> None:
+        _write(
+            self.trial,
+            "verify.json",
+            {
+                "schema_version": "mlrs-verifier-report-1",
+                "status": "SCORED",
+                "scientific_status": "FAIL",
+                "reward": 0.0,
+                "message": "",
+                "failure_origin": {"evidence": "native/verify.json"},
+            },
+        )
+        _write(
+            self.trial,
+            "native/verify.json",
+            {
+                "status": "SCORED",
+                "result": "FAIL",
+                "findings": [
+                    {"criterion": "certificate", "message": "scientific source count mismatch"}
+                ],
+            },
+        )
+        report = build_verifier_report(self.trial)
+        (failure,) = report["failed_checks"]
+        self.assertEqual(failure["name"], "certificate")
+        self.assertEqual(failure["source"], "native/verify.json")
+        self.assertEqual(failure["source_pointer"], "$.findings[0]")
+
+    def test_specific_native_rejection_precedes_wrapper_reason(self) -> None:
+        _write(
+            self.trial,
+            "verify.json",
+            {
+                "status": "FAIL",
+                "reward": 0,
+                "reason": "SCIENTIFIC_CORE_RESULT",
+                "core_report": "core/verify.json",
+            },
+        )
+        _write(
+            self.trial,
+            "core/verify.json",
+            {
+                "status": "SCORED",
+                "layers": {
+                    "L3": [{"name": "titratable_census", "ok": False, "detail": "HIP: 0 vs 5"}]
+                },
+            },
+        )
+        report = build_verifier_report(self.trial)
+        self.assertEqual(report["primary_report"], "verify.json")
+        self.assertEqual(report["failed_checks"][0]["source"], "core/verify.json")
+        self.assertEqual(report["failed_checks"][0]["detail"], "HIP: 0 vs 5")
+        self.assertEqual(report["failed_checks"][1]["detail"], "SCIENTIFIC_CORE_RESULT")
+
     def test_terse_shared_message_is_flagged(self) -> None:
         """Task 208 pattern: four criteria, one uninformative message."""
         _write(

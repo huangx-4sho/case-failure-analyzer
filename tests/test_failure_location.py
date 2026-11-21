@@ -17,6 +17,35 @@ from validate_analysis import _reviewed_self_check_event
 
 
 class FailureLocationTests(unittest.TestCase):
+    def test_concrete_wrapper_outscores_nested_generic_message(self):
+        tree = ast.parse(
+            """def schema(path, expected):
+    raise ValueError(f"{path}: expected type {expected}")
+def score():
+    fail("audit.json does not match complete public output schema: " + str(exc))
+"""
+        )
+        parents = {
+            child: owner for owner in ast.walk(tree) for child in ast.iter_child_nodes(owner)
+        }
+        evidence = {
+            "runtime": {"verdict": "failed"},
+            "verifier_report": {
+                "failed_checks": [
+                    {
+                        "name": "audit.json",
+                        "source": "verification.json",
+                        "detail": "audit.json does not match complete public output schema: $.count: expected type integer",
+                    }
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            task = Path(tmp)
+            evidence["task_dir"] = str(task)
+            result = locate_failures(evidence, tree, parents, task / "tests/verify.py", [], [])
+        self.assertEqual(result[0]["matching_rule"]["line"], 4)
+
     def test_pointer_value_and_scorer_guard_refer_to_the_same_rejection(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -37,6 +37,7 @@ from extract_runtime_errors import API_LIMIT_CODE
 from runtime_state import SCHEMA_VERSION
 
 from ..context import AttributionContext
+from ..runtime_triage import build_runtime_triage
 
 #: Upstream execution faults, in descending causal priority.
 #: NOTE: a benign `litellm.BadRequestError: LLM Provider NOT provided` cost
@@ -47,6 +48,7 @@ EXECUTION_INFRA_CODES = (
     "INFRA_AGENT_OUTPUT_TOKEN_LIMIT",
     API_LIMIT_CODE,
     "INFRA_VERIFIER_INTERPRETER_MISSING",
+    "INFRA_VERIFIER_RUNTIME_REQUIREMENT",
 )
 
 
@@ -54,6 +56,8 @@ def _summary_for(primary: Dict[str, Any], verifier_started: bool) -> str:
     code = primary["code"]
     if code == "INFRA_VERIFIER_INTERPRETER_MISSING":
         return "Verifier shell could not launch its Python interpreter; the scoring environment failed before producing a score."
+    if code == "INFRA_VERIFIER_RUNTIME_REQUIREMENT":
+        return f"Verifier stopped at an environment requirement: {primary['matched_text']}."
     if code in ("INFRA_AGENT_AUTOCOMPACT_THRASHING", "INFRA_AGENT_OUTPUT_TOKEN_LIMIT"):
         return (
             f"Agent SDK terminated with {primary.get('subtype')}: {primary.get('matched_text', '')}"
@@ -119,6 +123,8 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
         primary = crashes[0]
     is_execution_primary = primary["code"] in EXECUTION_INFRA_CODES
     api_primary = primary["code"] == API_LIMIT_CODE
+    verifier_runtime_primary = primary.get("stage") == "verifier_execution"
+    triage = build_runtime_triage(primary, ctx.timeline, ctx.signals, ctx.runtime)
 
     missing = list(ctx.evidence.get("missing_deliverables") or [])
     declared_paths = [
@@ -128,6 +134,10 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
     declared_paths = [p for p in dict.fromkeys(declared_paths) if p]
     sig_refs = [s["signal_id"] for s in ctx.premature_sigs[:2] if s.get("signal_id")]
     err_refs = [e["error_id"] for e in [primary, *crashes] if e.get("error_id")]
+    if triage:
+        # The trace ending at a limit explains absent files without proving
+        # an independent earlier failure by the agent.
+        sig_refs = []
     ev_refs = list(dict.fromkeys(err_refs + sig_refs))
 
     verifier_started = bool(ctx.verifier_started)
@@ -153,19 +163,30 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
     )
 
     contributing: List[Dict[str, Any]] = []
-    if (declared_paths or sig_refs) and not api_primary:
+    collection_missing = list(
+        dict.fromkeys(e["missing_deliverable"] for e in crashes if e.get("missing_deliverable"))
+    )
+    has_missing_delivery = collection_missing if triage else declared_paths or sig_refs
+    if has_missing_delivery and not (api_primary or verifier_runtime_primary):
+        if triage:
+            missing_summary = (
+                "Runner could not collect these paths after the agent was interrupted: "
+                + ", ".join(collection_missing[:4])
+            )
+        else:
+            missing_summary = (
+                "Agent did not leave the declared deliverable(s) in the container: "
+                + ", ".join(declared_paths[:4])
+                if declared_paths
+                else "Agent did not leave a declared deliverable in the container."
+            )
         contributing.append(
             attach_confidence_metadata(
                 {
                     "category": "agent",
                     "subtype": "deliverable_not_written",
                     "code": "AGENT_MISSING_DECLARED_DELIVERABLE",
-                    "summary": (
-                        "Agent did not leave the declared deliverable(s) in the container: "
-                        + ", ".join(declared_paths[:4])
-                        if declared_paths
-                        else "Agent did not leave a declared deliverable in the container."
-                    ),
+                    "summary": missing_summary,
                 },
                 direct_causal_evidence=len(sig_refs) or 1,
             )
@@ -227,14 +248,7 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
     ctx.trace.record(
         gate_id="gate1c_runner_artifact_collection",
         matched=True,
-        reason=f"post-agent runner/execution failure ({primary['code']}); "
-        + (
-            scoring_record
-            if api_primary
-            else "verifier scored incomplete outputs"
-            if verifier_started
-            else "verifier never started"
-        ),
+        reason=f"post-agent runner/execution failure ({primary['code']}); {scoring_record}",
         checks={
             "agent_started": ctx.agent_started,
             "verifier_started": verifier_started,
@@ -252,6 +266,10 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
         )
     elif primary["code"] == "INFRA_VERIFIER_INTERPRETER_MISSING":
         infra_action = "Provide the interpreter used by tests/test.sh in the scoring environment."
+    elif primary["code"] == "INFRA_VERIFIER_RUNTIME_REQUIREMENT":
+        infra_action = (
+            "Compare the scoring container's saved mount configuration with the replay requirement."
+        )
     elif primary["code"] in ("INFRA_AGENT_AUTOCOMPACT_THRASHING", "INFRA_AGENT_OUTPUT_TOKEN_LIMIT"):
         infra_action = "Review the terminal SDK result and adjust context/output budgets and tool output chunking."
     elif api_primary:
@@ -263,7 +281,7 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
             "verifier still runs and produces a scored verdict."
         )
     actions = [{"owner": "Infra", "action": infra_action}]
-    if not api_primary:
+    if not (api_primary or verifier_runtime_primary or triage):
         actions.append(
             {
                 "owner": "Agent Policy",
@@ -293,13 +311,16 @@ def gate1c_runner_artifact_collection(ctx: AttributionContext) -> Optional[Dict[
             "summary": manifestation,
             "scoring_reached": score_produced,
             "missing_deliverables": declared_paths[:4],
+            **({"runtime_triage": triage} if triage else {}),
         },
         "primary_root_cause": prc,
         "contributing_factors": contributing,
-        "competing_hypotheses": [h1] if api_primary else [h1, h2],
+        "competing_hypotheses": [h1]
+        if api_primary or verifier_runtime_primary or triage
+        else [h1, h2],
         "evidence_refs": ev_refs,
         "excluded_hypotheses": []
-        if api_primary and verifier_started
+        if verifier_runtime_primary or ((api_primary or triage) and verifier_started)
         else [
             {
                 "hypothesis_id": "H_VERIFIER",

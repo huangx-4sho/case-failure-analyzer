@@ -67,6 +67,81 @@ def _anchor_links_failure(anchor: Dict[str, Any], evidence: Dict[str, Any]) -> b
     return any(name.lower() in text.lower() for name in _failed_check_names(evidence))
 
 
+def bound_failed_retries(ctx: AttributionContext) -> list:
+    """Bind a retry to its recorded scientific error or failed check."""
+    events = {event.get("event_id"): event for event in ctx.timeline}
+    science_refs = {
+        ref: observation
+        for observation in ctx.unrecovered_sci_obs
+        for ref in (observation.get("source_ref"), observation.get("agent_ref"))
+        if ref
+    }
+    check_names = [
+        name
+        for name in _failed_check_names(ctx.evidence)
+        if re.fullmatch(r"[\w.\-/]{5,}", name)
+        and name.lower() not in {"failed", "checks", "results", "error", "scientific"}
+    ]
+    bound = []
+    for signal in ctx.signals:
+        if signal.get("signal_type") not in {
+            "iterative_debugging_failure",
+            "repeated_failed_action",
+        }:
+            continue
+        event_ref = signal.get("event_ref")
+        event = events.get(event_ref) or {}
+        obs = str(event.get("observation") or "")
+        failed = event.get("exit_code") not in (None, 0) or event.get("event_type") == "shell_error"
+        check_hit = failed and any(
+            re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w.-])", obs, re.IGNORECASE)
+            for name in check_names
+        )
+        science = (
+            science_refs.get(event_ref)
+            if event.get("exit_code") != 0 and event.get("result_recorded") is not False
+            else None
+        )
+        if science is None and failed:
+            command = event.get("command")
+            science = next(
+                (
+                    s
+                    for ref, s in science_refs.items()
+                    if command
+                    and (events.get(ref) or {}).get("command") == command
+                    and s.get("matched_text")
+                    and s["matched_text"] in obs
+                ),
+                None,
+            )
+        if science is not None or check_hit:
+            bound.append((signal, science))
+    return bound
+
+
+def replay_scope_requires_review(ctx: AttributionContext) -> bool:
+    """Missing output in a verifier replay is a different claim from non-delivery."""
+    findings = (ctx.evidence.get("contract_review") or {}).get("execution_scope_findings") or []
+    paths = {
+        finding["filename"]
+        for finding in findings
+        if finding.get("filename")
+        and finding.get("subtype") == "captured_deliverable_replay_reconstruction"
+        and finding.get("status") == "review_required"
+    }
+    if not paths:
+        return False
+    checks = (ctx.evidence.get("verifier_report") or {}).get("failed_checks") or []
+    texts = [" ".join(str(c.get(k) or "") for k in ("name", "detail")) for c in checks] or [
+        ctx.fail_text
+    ]
+    return all(
+        any(re.search(rf"(?<![\w.-]){re.escape(path)}(?![\w.-])", text) for path in paths)
+        for text in texts
+    )
+
+
 def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     agent_mismatch_contracts = ctx.agent_mismatch_contracts
     agent_timeline_events = ctx.agent_timeline_events
@@ -74,7 +149,7 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
     evidence = ctx.evidence
     fail_text = ctx.fail_text
     premature_sigs = ctx.premature_sigs
-    repeated_fail_sigs = ctx.repeated_fail_sigs
+    failed_retries = bound_failed_retries(ctx)
     unrecovered_sci_obs = ctx.unrecovered_sci_obs
     unverified_output_sigs = ctx.unverified_output_sigs
     verifier_started = ctx.verifier_started
@@ -83,10 +158,7 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
         any(s.get("signal_type") == "self_verification_executed" for s in ctx.signals)
         and (ctx.named_check_failure or unrecovered_sci_obs)
     )
-    has_debugging_failure = bool(
-        any(s.get("signal_type") == "iterative_debugging_failure" for s in ctx.signals)
-        and unrecovered_sci_obs
-    )
+    has_debugging_failure = bool(failed_retries)
     deliverable_anchor = (evidence.get("causal_anchors") or {}).get("deliverable_generation")
     has_deliverable_anchor = bool(
         isinstance(deliverable_anchor, dict)
@@ -98,8 +170,7 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
     )
 
     has_positive_agent_evidence = bool(
-        (unrecovered_sci_obs and repeated_fail_sigs)
-        or has_self_check_gap
+        has_self_check_gap
         or has_debugging_failure
         or has_deliverable_anchor
         or has_divergence_with_named_failure
@@ -126,6 +197,10 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
             )
         )
     )
+    if replay_scope_requires_review(ctx) and not (
+        agent_mismatch_contracts or has_debugging_failure or unrecovered_sci_obs
+    ):
+        has_positive_agent_evidence = False
 
     if has_positive_agent_evidence:
         ctx.trace.record(
@@ -134,7 +209,9 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
             reason="positive agent evidence exists; attribution continues to gate 6",
             checks={
                 "unrecovered_sci": len(unrecovered_sci_obs),
-                "repeated_failed_action": len(repeated_fail_sigs),
+                "repeated_failed_action": sum(
+                    s.get("signal_type") == "repeated_failed_action" for s, _ in failed_retries
+                ),
                 "dependency_search_attempted": len(dep_search_sigs),
                 "premature_completion": len(premature_sigs),
                 "agent_mismatch_contracts": len(agent_mismatch_contracts),
@@ -152,7 +229,9 @@ def gate5_insufficient_positive_evidence(ctx: AttributionContext) -> Optional[Di
         reason="failed with no positive evidence implicating the agent",
         checks={
             "unrecovered_sci": len(unrecovered_sci_obs),
-            "repeated_failed_action": len(repeated_fail_sigs),
+            "repeated_failed_action": sum(
+                s.get("signal_type") == "repeated_failed_action" for s, _ in failed_retries
+            ),
             "dependency_search_attempted": len(dep_search_sigs),
             "premature_completion": len(premature_sigs),
             "agent_mismatch_contracts": len(agent_mismatch_contracts),

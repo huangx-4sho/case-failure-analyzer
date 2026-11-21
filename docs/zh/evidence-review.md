@@ -75,7 +75,21 @@ python3 "$SKILL_DIR/scripts/cfa.py" review apply \
 
 核对自检时，从 `causal_anchors.self_check_executions` 找到实际执行的命令、对应脚本版本和输出。逐项对照公开判据与终态拒绝，一个脚本可能通过接口检查，却在数值检查中失败。若生成程序先出错、自检随后漏检，应分别记录这两个决定。
 
-较大的证据文件可以在 `review plan` 中用 `--hash-source art:trajectory_json` 指定。每个文件使用一次该选项，并提供已有采集摘要的 artifact ID。生成计划和应用审查时都会分块读取文件，核对采集时的 SHA-256。每个指定文件最多读取 32 MiB，指定文件合计最多 128 MiB，普通扫描另计。引用的文件缺少采集摘要或内容已变，或者竞争原因尚未排除，都会限制结论等级。
+将 `runtime.reward_scope` 和 `reward_metrics` 一起读取。科学复核待定时，完整度分保留在原指标中，`runtime.reward` 为空。仅有提交检查结果的试次不进入科学评分通过率。
+
+依赖预检失败时，从试次自己的锁文件和 verifier 记录追到评分进程实际加载的副本，对照当时的清单或摘要。外层任务目录和内嵌快照可能含有同名文件。当前检出中的匹配项可以定位排查方向，支持正式归因还需确认运行时版本。
+
+审查计划会自动为 1 至 32 MiB 且已采集摘要的轨迹启用扩展指纹。其他大文件可用 `--hash-source <artifact-id>` 指定。生成计划和应用审查时都会分块核对 SHA-256。每个指定文件最多读取 32 MiB，合计最多 128 MiB。源文件变动或竞争原因尚未排除，都会限制结论等级。
+
+### 调查具体决策
+
+审计后运行 `cfa.py dossier <task-id> --output <dossier-dir>`。也可直接传入已有审计目录。调查包展示评分拒绝、匹配的评分函数、相关公开要求、提交物切片和已保存的执行记录。被判失败的试次会额外收到一份待填写的 `review-plan.json`。
+
+用 `decision.event_ref` 锚定实际操作，核实生效输入、交付物和公开要求。Agent 决策可选填 `decision.mechanism`，记录实际逻辑、应有逻辑、未纠正原因和最小修正。能力维度可附经过审查的 `mechanism_tag`。填完后用原审计 JSON 与该计划运行 `review apply`。如明确需要对照私有参考代码，可加 `--with-oracle`，归责仍以当时可见的公开要求为依据。
+
+已绑定执行、公开要求和实际提交物的具体逻辑偏差可记为 `defect_verification: verified_in_trial`。同一复核还可记录独立的 `quantitative_sufficiency`。只有保存的评分对照隔离了所述变更，并显示结果跨过记录的容差线时，才判定定量充分。
+
+用 `cfa.py review summary --audit-root <audit> --review-root <reviews> --dossier-root <dossiers> --output <summary>` 生成逐试次总榜、复核队列和机制统计。可重复传入 `--review-root`。历史复核依赖对应试次的结果文件摘要和原始证据，输出链接相对于总榜目录。
 
 ## 能力判断
 

@@ -8,6 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from scoring_dependencies import collect_scoring_dependency_observations
+from analyze_case import _attach_unscored_verifier_fault
+from normalize_verifier_report import build_verifier_report
+from scoring_dependencies import replay_runtime_error
 
 
 POINTER = "version https://git-lfs.github.com/spec/v1\noid sha256:" + "a" * 64 + "\nsize 12399138\n"
@@ -124,6 +127,48 @@ class PackagedInputDependencyTests(unittest.TestCase):
         observations = self.failure("x" * 1_200_000 + "\npackage asset hash mismatch: sample.npy\n")
         self.assertEqual(1, len(observations))
         self.assertEqual("package asset hash mismatch: sample.npy", observations[0]["matched_text"])
+
+    def test_saved_preflight_rejection_survives_restored_local_payload(self):
+        self.asset("environment/assets/sample.npy", "restored data")
+        (self.trial / "verifier/verification.json").write_text(
+            json.dumps(
+                {
+                    "status": "INFRA_ERROR",
+                    "reward": None,
+                    "static_scientific_checks": [
+                        {
+                            "name": "independent",
+                            "status": "INFRA_ERROR",
+                            "reason": ["evaluator input SHA-256 mismatch: sample.npy"],
+                        }
+                    ],
+                }
+            )
+        )
+        (self.trial / "verifier/native-result.json").write_text(
+            json.dumps({"status": "SCORED", "reward": 0.0})
+        )
+        self.assertEqual([], collect_scoring_dependency_observations(self.task, self.trial))
+        report = build_verifier_report(self.trial)
+        self.assertFalse(report["scorable"])
+        self.assertIsNone(report["reward"])
+        observations = []
+        _attach_unscored_verifier_fault(report, observations)
+        preflight = observations[-1]
+        self.assertEqual(preflight["code"], "VERIFIER_DEPENDENCY_PREFLIGHT_FAILED")
+        self.assertEqual(preflight["source_file"], "verifier/verification.json")
+        self.assertEqual(preflight["source_pointer"], "$.static_scientific_checks[0]")
+        self.assertFalse(preflight["scoring_reached"])
+
+    def test_saved_environment_guard_is_distinct_from_a_scored_failure(self):
+        path = self.trial / "verifier/verify.json"
+        message = "candidate replay requires executable /dev/shm tmpfs capped at 512 MiB or less"
+        path.write_text(json.dumps({"status": "ENV_INVALID", "message": message}))
+        runtime = replay_runtime_error(build_verifier_report(self.trial))
+        self.assertEqual(runtime["code"], "INFRA_VERIFIER_RUNTIME_REQUIREMENT")
+        self.assertEqual(runtime["source_pointer"], "$.message")
+        path.write_text(json.dumps({"status": "SCORED", "reward": 0, "message": message}))
+        self.assertIsNone(replay_runtime_error(build_verifier_report(self.trial)))
 
 
 if __name__ == "__main__":

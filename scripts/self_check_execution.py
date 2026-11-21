@@ -50,11 +50,13 @@ def _tokens(command: str) -> list[str]:
     return list(lexer)
 
 
-def _shell_commands(command: str) -> Iterator[tuple[list[str], Optional[str], str]]:
+def _shell_commands(
+    command: str, *, literal_heredocs_only: bool = False
+) -> Iterator[tuple[list[str], Optional[str], str]]:
     """Yield static shell segments, keeping literal heredoc bodies out of shell tokens."""
     lines = iter(command.splitlines(keepends=True))
     shell: list[str] = []
-    bodies: dict[str, str] = {}
+    bodies: dict[str, Optional[str]] = {}
     for line in lines:
         if "<<" in line:
             try:
@@ -62,26 +64,34 @@ def _shell_commands(command: str) -> Iterator[tuple[list[str], Optional[str], st
             except ValueError:
                 tokens = []
             for i, token in enumerate(tokens[:-1]):
-                if token != "<<" or not re.fullmatch(r"-?\w+", tokens[i + 1]):
+                if token != "<<":
                     continue
-                delimiter = tokens[i + 1].lstrip("-")
+                next_token = (
+                    tokens[i + 2] if tokens[i + 1] == "-" and i + 2 < len(tokens) else tokens[i + 1]
+                )
+                if not re.fullmatch(r"-?\w+", next_token):
+                    continue
+                delimiter = next_token.lstrip("-")
+                marker = re.search(
+                    rf"(<<(?P<strip>-)?[ \t]*)(?P<quote>['\"]?){re.escape(delimiter)}"
+                    rf"(?P=quote)(?=[\s;&|<>]|$)",
+                    line,
+                )
+                if not marker:
+                    return
                 body = []
                 for text in lines:
-                    if text.rstrip("\r\n").lstrip("\t") == delimiter:
+                    content = text.lstrip("\t") if marker["strip"] else text
+                    if content.rstrip("\r\n") == delimiter:
                         break
-                    body.append(text)
+                    body.append(content)
                 else:
                     return  # No closing delimiter in the retained command.
                 placeholder = f"CFA_HEREDOC_{len(bodies)}"
-                line, replaced = re.subn(
-                    rf"(<<-?\s*)(?:['\"])?{re.escape(delimiter)}(?:['\"])?(?=\s|$)",
-                    rf"\g<1>{placeholder}",
-                    line,
-                    count=1,
+                line = line[: marker.start()] + "<< " + placeholder + line[marker.end() :]
+                bodies[placeholder] = (
+                    None if literal_heredocs_only and not marker["quote"] else "".join(body)
                 )
-                if not replaced:
-                    return
-                bodies[placeholder] = "".join(body)
         shell.append(line)
     try:
         tokens = _tokens("".join(shell))

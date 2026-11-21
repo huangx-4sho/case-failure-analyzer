@@ -497,7 +497,7 @@ def _find_thought_for_step(timeline: List[Dict[str, Any]], step_prefix: str) -> 
     """Find agent thought in the same step."""
     for e in timeline:
         eid = e.get("event_id", "")
-        if eid.startswith(step_prefix) and "thought" in eid:
+        if eid == f"{step_prefix}:thought":
             obs = (e.get("observation") or "").strip()
             if obs:
                 return obs

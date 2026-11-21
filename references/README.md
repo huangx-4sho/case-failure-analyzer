@@ -1,10 +1,15 @@
 # Reference index
 
+## Commands
+
+- [CLI workflows](cli.md) covers audit modes, saved-result inspection, comparisons, validation, and rendering.
+
 ## Attribution and review
 
 - [Root-cause taxonomy](taxonomy.md) covers execution stages, the four peer causes and [eight agent capability dimensions](taxonomy.md#agent-capability-dimensions).
 - [Attribution protocol](attribution-protocol.md) defines the decision order and evidence requirements.
 - [Existing-evidence review](evidence-review.md) explains how to trace missing outputs, inspect recorded verification, review causal claims, and assess whether guidance applies across tasks.
+- [Agent mechanism tags](agent-mechanisms.md) lists trial-level tags for reviewed capability diagnoses.
 - [Skill prescription policy](skill-prescription-policy.md) defines eligibility for reusable guidance and what that guidance should contain.
 
 ## Output contracts

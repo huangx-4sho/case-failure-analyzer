@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import ast
 import csv
+import hashlib
 import io
 import json
 import re
 from pathlib import Path
 from typing import Any
 from attribution.failure_location import locate_failures
+from verifier_source import VerifierSource, collect_verifier_sources
 
 MAX_FILE_BYTES = 1_000_000
 MAX_TOTAL_BYTES = 8_000_000
 MAX_FILES = 96
+_FENCED_JSON = re.compile(r"\s*(?:\#{1,6}[^\r\n]*\r?\n\s*)?```json\s*\r?\n([\s\S]*?)\r?\n```\s*")
 
 
 def _name(node: ast.AST) -> str:
@@ -64,6 +67,7 @@ class _Review:
         self.tree = ast.Module(body=[], type_ignores=[])
         self.parents: dict[ast.AST, ast.AST] = {}
         self.verify_path: Path | None = None
+        self.verifier_source: VerifierSource | None = None
         self.sites: list[tuple[ast.AST, ast.AST]] = []
 
     def read(self, path: Path, group: str) -> str | None:
@@ -75,7 +79,8 @@ class _Review:
             if not path.is_file() or path.is_symlink():
                 record["status"] = "not_regular_file"
                 return None
-            if size > MAX_FILE_BYTES or self.total + size > MAX_TOTAL_BYTES:
+            limit = 4 * MAX_FILE_BYTES if group == "submitted_artifacts" else MAX_FILE_BYTES
+            if size > limit or self.total + size > MAX_TOTAL_BYTES:
                 record["status"] = "budget_skipped"
                 return None
             self.total += size
@@ -93,39 +98,27 @@ class _Review:
             paths = [task / "instruction.md"]
             assets = task / "environment" / "assets"
             # Includes shared interfaces and method notes, even if referred to indirectly.
-            paths.extend(sorted(assets.rglob("*.md")) if assets.is_dir() else [])
+            if assets.is_dir():
+                paths.extend(
+                    sorted(
+                        path
+                        for path in assets.rglob("*")
+                        if path.suffix == ".md"
+                        or (
+                            path.suffix in {".json", ".yaml", ".yml"}
+                            and any(token in path.stem.lower() for token in ("schema", "contract"))
+                        )
+                    )
+                )
             for path in paths[:MAX_FILES]:
+                if not path.resolve().is_relative_to(task.resolve()):
+                    continue
                 text = self.read(path, "public_contract")
                 if text is not None:
                     self.public.append((path, text))
             if len(paths) > MAX_FILES:
                 self.diagnostics.append(
                     {"code": "PUBLIC_FILE_LIMIT", "omitted_count": len(paths) - MAX_FILES}
-                )
-            grader = next(
-                (
-                    a.get("rel_path")
-                    for a in self.evidence.get("artifacts") or []
-                    if a.get("artifact_id") == "art:verify_py" and a.get("exists")
-                ),
-                None,
-            )
-            self.verify_path = task / (grader or "tests/verify.py")
-            try:
-                if (
-                    self.verify_path.resolve().is_relative_to(task.resolve())
-                    and not self.verify_path.is_symlink()
-                    and self.verify_path.stat().st_size <= MAX_FILE_BYTES
-                ):
-                    self.code = self.verify_path.read_text(encoding="utf-8")
-                    self.tree = ast.parse(self.code)
-                else:
-                    self.diagnostics.append(
-                        {"code": "VERIFIER_SOURCE_BUDGET_SKIPPED", "path": str(self.verify_path)}
-                    )
-            except (OSError, UnicodeError, SyntaxError) as exc:
-                self.diagnostics.append(
-                    {"code": "VERIFIER_SOURCE_UNAVAILABLE", "error_type": type(exc).__name__}
                 )
         candidates = []
         for entry in self.evidence.get("artifacts", []):
@@ -137,21 +130,29 @@ class _Review:
             if (
                 entry.get("scope") == "trial"
                 and rel.startswith("artifacts/")
-                and path.suffix.lower() in {".json", ".csv"}
+                and path.suffix.lower() in {".json", ".csv", ".md"}
+                and trial is not None
+                and path.resolve().is_relative_to(trial.resolve() / "artifacts")
             ):
                 candidates.append(path)
-        for path in sorted(set(candidates))[:MAX_FILES]:
+        for path in sorted(set(candidates), key=lambda p: (p.suffix.lower() == ".md", p))[
+            :MAX_FILES
+        ]:
             text = self.read(path, "submitted_artifacts")
             if text is None:
                 continue
             try:
-                value = (
-                    json.loads(text)
-                    if path.suffix == ".json"
-                    else list(csv.DictReader(io.StringIO(text)))
-                )
+                if path.suffix.lower() == ".md":
+                    fenced = _FENCED_JSON.fullmatch(text)
+                    if not fenced and not text.lstrip().startswith("{"):
+                        continue
+                    value = json.loads(fenced[1] if fenced else text)
+                elif path.suffix.lower() == ".json":
+                    value = json.loads(text)
+                else:
+                    value = list(csv.DictReader(io.StringIO(text)))
                 self.submitted.append((path, value))
-            except (ValueError, csv.Error) as exc:
+            except (ValueError, csv.Error, RecursionError) as exc:
                 self.diagnostics.append(
                     {
                         "code": "SUBMITTED_PARSE_FAILED",
@@ -164,8 +165,23 @@ class _Review:
                 {"code": "SUBMITTED_FILE_LIMIT", "omitted_count": len(set(candidates)) - MAX_FILES}
             )
         if trial:
-            for name in ("verification.json", "test-stdout.txt", "verify.log"):
+            normalized = self.evidence.get("verifier_report") or {}
+            names = dict.fromkeys(
+                [
+                    "verification.json",
+                    "test-stdout.txt",
+                    "verify.log",
+                    *(
+                        source["rel_path"]
+                        for source in normalized.get("source_files") or []
+                        if source.get("role") != "historical"
+                    ),
+                ]
+            )
+            for name in list(names)[:MAX_FILES]:
                 path = trial / "verifier" / name
+                if not path.resolve().is_relative_to(trial.resolve() / "verifier"):
+                    continue
                 text = self.read(path, "failure_artifacts")
                 if text:
                     # JSON unescaping preserves actual failure message fragments.
@@ -174,6 +190,14 @@ class _Review:
                     except ValueError:
                         pass
                     self.failures.append((path, text))
+
+    def use_source(self, task: Path, source: VerifierSource) -> None:
+        self.verifier_source = source
+        self.verify_path = task / source.path
+        self.code = source.text
+        self.tree = ast.parse(source.text)
+        self.parents.clear()
+        self.sites.clear()
         for node in ast.walk(self.tree):
             for child in ast.iter_child_nodes(node):
                 self.parents[child] = node
@@ -182,8 +206,11 @@ class _Review:
             parent = self.parents.get(node)
             message = None
             if isinstance(node, ast.Call) and node.args:
-                if _name(node.func) in {"fail", "check"} or isinstance(parent, ast.Raise):
-                    message = node.args[-1] if _name(node.func) == "check" else node.args[0]
+                fn = _name(node.func)
+                if fn in {"require", "need", "ensure", "check"}:
+                    message = node.args[-1]
+                elif fn == "fail" or isinstance(parent, ast.Raise):
+                    message = node.args[0]
             elif (
                 isinstance(node, ast.Return)
                 and isinstance(node.value, ast.Tuple)
@@ -224,6 +251,15 @@ class _Review:
             "line_end": getattr(node, "end_lineno", node.lineno),
             "excerpt": text[:3000],
             "excerpt_truncated": len(text) > 3000,
+            **(
+                {
+                    "archive_path": self.verifier_source.container,
+                    "archive_member": self.verifier_source.member,
+                    "source_sha256": self.verifier_source.sha256,
+                }
+                if self.verifier_source and self.verifier_source.container
+                else {}
+            ),
         }
 
     def doc_refs(self, terms: list[str]) -> list[dict]:
@@ -1408,7 +1444,489 @@ class _Review:
         return writes
 
 
-def audit_contract_review(evidence: dict) -> dict:
+def _schema_for_file(document, document_path: Path, filename: str):
+    stem = Path(filename).stem
+    for key in (stem + "_schema", stem + "_json_schema", filename):
+        node = document.get(key)
+        if isinstance(node, dict) and ("properties" in node or "required" in node):
+            return node, "$." + key
+    if document_path.stem in {stem + ".schema", stem + "-schema", stem + "_schema"} and (
+        "properties" in document or "required" in document
+    ):
+        return document, "$"
+    return None
+
+
+def _json_type(value):
+    return {
+        type(None): "null",
+        bool: "boolean",
+        int: "integer",
+        float: "number",
+        str: "string",
+        list: "array",
+        dict: "object",
+    }.get(type(value))
+
+
+def _public_schema_comparison(location: dict, public: list[tuple[Path, str]]) -> list[dict]:
+    """Compare a uniquely located submitted field against explicit public JSON declarations."""
+    actual = location.get("submitted_field") or location.get("key_set_difference")
+    if not actual or actual.get("truncated"):
+        return []
+    comparisons = []
+    for path, text in public:
+        if path.suffix != ".json":
+            continue
+        try:
+            document = json.loads(text)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        selected = _schema_for_file(document, path, Path(actual["source"]).name)
+        if not selected:
+            continue
+        node, pointer = selected
+        for key, _index in re.findall(r"\.([\w-]+)|\[(\d+)\]", actual["pointer"]):
+            if key:
+                properties = node.get("properties")
+                node = properties.get(key) if isinstance(properties, dict) else None
+                pointer += f".properties.{key}"
+            else:
+                node = node.get("items")
+                pointer += ".items"
+            if not isinstance(node, dict):
+                break
+        if not isinstance(node, dict):
+            continue
+        record = {"source": str(path), "pointer": pointer, "submitted_pointer": actual["pointer"]}
+        if "value" in actual:
+            declared_type = node.get("type")
+            types = [declared_type] if isinstance(declared_type, str) else declared_type
+            if isinstance(types, list) and all(isinstance(kind, str) for kind in types):
+                observed = _json_type(actual["value"])
+                record.update(
+                    declared_types=types,
+                    submitted_type=observed,
+                    type_matches=observed in types or (observed == "integer" and "number" in types),
+                )
+            allowed = node.get("enum")
+            if (
+                isinstance(allowed, list)
+                and len(allowed) <= 32
+                and all(
+                    item is None or isinstance(item, (str, bool, int, float)) for item in allowed
+                )
+            ):
+                record.update(
+                    declared_enum=allowed,
+                    enum_matches=any(
+                        item == actual["value"] and type(item) is type(actual["value"])
+                        for item in allowed
+                    ),
+                )
+        else:
+            required = node.get("required")
+            if isinstance(required, list) and all(isinstance(k, str) for k in required):
+                record.update(
+                    required_keys=required[:50],
+                    missing_required_keys=sorted(set(required) - set(actual["submitted_keys"]))[
+                        :50
+                    ],
+                    verifier_missing_public_required_keys=sorted(
+                        set(required) - set(actual["expected_keys"])
+                    )[:50],
+                )
+            properties = node.get("properties")
+            closed = (
+                node.get("additionalProperties", node.get("additionalProperties_allowed")) is False
+            )
+            if closed and isinstance(properties, dict):
+                record.update(
+                    closed_key_set=True,
+                    unexpected_public_keys=sorted(
+                        set(actual["submitted_keys"]) - properties.keys()
+                    )[:50],
+                )
+        if len(record) > 3:
+            comparisons.append(record)
+        if len(comparisons) == 4:
+            break
+    return comparisons
+
+
+def _public_output_excerpts(location: dict, public: list[tuple[Path, str]]) -> list[dict]:
+    """Retain named output declarations without interpreting prose or YAML."""
+    actual = location.get("submitted_field") or location.get("key_set_difference")
+    if not actual:
+        return []
+    name = Path(actual["source"]).name
+    pattern = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])")
+    field_names = re.findall(r"\.([\w-]+)", actual.get("pointer", ""))
+    if field_names:
+        field_pattern = re.compile(r"(?<![\w.-])" + re.escape(field_names[-1]) + r"(?![\w.-])")
+    else:
+        field_pattern = None
+    excerpts = []
+    for path, text in public:
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if pattern.search(line) or (field_pattern and field_pattern.search(line)):
+                end = index + 4 if path.suffix in {".yaml", ".yml"} else index + 1
+                excerpts.append(
+                    {
+                        "source": str(path),
+                        "line": index + 1,
+                        "excerpt": "\n".join(lines[index:end])[:580],
+                    }
+                )
+                break
+        if len(excerpts) >= 4:
+            break
+    return excerpts
+
+
+def _markdown_required_fields(text, name):
+    """Read a named Markdown section's explicit required top-level field table."""
+    lines = text.splitlines()
+    for start, heading in enumerate(lines):
+        if not re.fullmatch(r"#{1,6}\s+`?" + re.escape(name) + r"`?\s*", heading):
+            continue
+        for index in range(start + 1, min(start + 12, len(lines))):
+            if "必需字段如下" not in lines[index] and "required fields" not in lines[index].lower():
+                continue
+            fields = {}
+            for row in lines[index + 1 : index + 24]:
+                entry = re.match(r"\s*\|\s*`([\w.-]+)`\s*\|\s*(.*?)\s*\|\s*$", row)
+                if entry:
+                    fields[entry[1]] = entry[2][:320]
+                elif fields:
+                    break
+            if fields:
+                return fields, index + 1
+    return {}, None
+
+
+def _public_yaml_fields(text, name):
+    """Locate immediate literal field names under artifacts/<filename> in a block mapping."""
+    lines = text.splitlines()
+    root = None
+    indent = None
+    fields = []
+    for index, line in enumerate(lines, 1):
+        if root is None:
+            if re.fullmatch(r"artifacts:\s*(?:#.*)?", line):
+                root = 0
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        padding = len(line) - len(line.lstrip(" "))
+        if padding == 0:
+            break
+        if root == 0:
+            if line.strip() == name + ":":
+                root = index
+                indent = padding
+            continue
+        if padding <= indent:
+            break
+        match = re.match(r" +([\w.-]+):", line)
+        if match:
+            fields.append((padding, match[1]))
+    if not fields or not root:
+        return [], None
+    first = min(padding for padding, _ in fields)
+    return [key for padding, key in fields if padding == first], root
+
+
+def _captured_markdown_shape(location, review):
+    """Connect the recorded shape check and one explicitly declared JSON report."""
+    detail = location["detail"]
+    match = re.fullmatch(r"([\w.-]+): (expected a list|field set differs)", detail)
+    if not match or not location.get("matching_rule") or not review.evidence.get("trial_dir"):
+        return None
+    trial = Path(review.evidence["trial_dir"])
+    choices = []
+    for path, value in review.submitted:
+        if path.suffix.lower() != ".md" or not isinstance(value, dict):
+            continue
+        for doc, text in review.public:
+            fields, line = _markdown_required_fields(text, path.name)
+            if fields and (match[1] in fields or match[2] == "field set differs"):
+                choices.append((path, value, doc, fields, line))
+    if len(choices) != 1:
+        return None
+    path, value, doc, fields, line = choices[0]
+    if match[2] == "expected a list":
+        if match[1] not in value or isinstance(value[match[1]], list):
+            return None
+        actual = {
+            "source": str(path.relative_to(trial)),
+            "pointer": "$." + match[1],
+            "observed_type": _json_type(value[match[1]]),
+        }
+        if isinstance(value[match[1]], dict):
+            actual["submitted_keys"] = sorted(value[match[1]])[:50]
+        public = {"source": str(doc), "line": line, "declaration": fields[match[1]]}
+        return actual, [public]
+    if not isinstance(value, dict):
+        return None
+    # The table states required keys. A key not listed may still be optional.
+    return (
+        {
+            "source": str(path.relative_to(trial)),
+            "pointer": "$",
+            "observed_type": "object",
+            "submitted_keys": sorted(value)[:50],
+        },
+        [
+            {
+                "source": str(doc),
+                "line": line,
+                "required_keys": sorted(fields),
+                "missing_required_keys": sorted(fields.keys() - value.keys()),
+                "keys_unlisted_in_required_table": sorted(value.keys() - fields.keys())[:50],
+            }
+        ],
+    )
+
+
+def _sealed_replay_shape(detail, review):
+    """Read an available retained candidate result only when its receipt verifies the bytes."""
+    pointer = next(iter(_JSON_SHAPE_PATH.findall(detail)), None)
+    if not pointer or not review.evidence.get("trial_dir"):
+        return None
+    trial = Path(review.evidence["trial_dir"])
+    verifier = trial / "verifier"
+    if verifier.is_symlink() or not verifier.resolve().is_relative_to(trial.resolve()):
+        return None
+    receipts = [p for p in verifier.glob("candidate-*.result.json.record") if p.is_file()]
+    if len(receipts) != 1:
+        return None
+    receipt = receipts[0]
+    try:
+        if receipt.is_symlink() or receipt.stat().st_size > 4096:
+            return None
+        seal = json.loads(receipt.read_text())
+        name = seal["snapshot"]
+        size = seal["size_bytes"]
+        if (
+            not isinstance(name, str)
+            or Path(name).name != name
+            or not re.fullmatch(r"candidate-\d+\.[a-f0-9]+\.result\.json", name)
+            or type(size) is not int
+            or not 1 <= size <= MAX_FILE_BYTES
+        ):
+            return None
+        result = verifier / name
+        if result.is_symlink() or not result.is_file() or result.stat().st_size != size:
+            return None
+        with result.open("rb") as stream:
+            raw = stream.read(size + 1)
+        if len(raw) != size or hashlib.sha256(raw).hexdigest() != seal["sha256"]:
+            return None
+        value = json.loads(raw)
+        for key, index in re.findall(r"\.([\w-]+)|\[(\d+)\]", pointer):
+            value = value[key] if key else value[int(index)]
+        output = {
+            "source": str(result.relative_to(trial)),
+            "pointer": pointer,
+            "observed_type": _json_type(value),
+            "scope": "verifier_retained_replay",
+            "receipt": str(receipt.relative_to(trial)),
+            "sha256": seal["sha256"],
+        }
+        if isinstance(value, dict):
+            output["submitted_keys"] = sorted(value)[:50]
+        return output
+    except (OSError, ValueError, TypeError, KeyError, IndexError, RecursionError):
+        return None
+
+
+def _declared_comparator_shape(pointer, rule, parsed):
+    """Read explicit names at the unique optional-record comparison for this pointer."""
+    calls = []
+    for source, tree, parents in parsed:
+        if source.path != rule["source"]:
+            continue
+        for call in ast.walk(tree):
+            if not (
+                isinstance(call, ast.Call)
+                and _name(call.func) == "compare_optional_record"
+                and len(call.args) >= 4
+                and isinstance(call.args[3], ast.Constant)
+                and call.args[3].value == pointer
+                and isinstance(call.args[1], ast.Name)
+                and isinstance(call.args[2], ast.Set)
+            ):
+                continue
+            scope = call
+            while scope in parents and not isinstance(scope, ast.FunctionDef):
+                scope = parents[scope]
+            assignments = [
+                node
+                for node in ast.walk(scope)
+                if isinstance(node, ast.Assign)
+                and node.lineno < call.lineno
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == call.args[1].id
+            ]
+            if len(assignments) == 1 and isinstance(assignments[0].value, ast.Dict):
+                keys = assignments[0].value.keys
+                optional = call.args[2].elts
+                if all(
+                    isinstance(k, ast.Constant) and isinstance(k.value, str)
+                    for k in keys + optional
+                ):
+                    calls.append(
+                        (
+                            sorted(k.value for k in keys),
+                            sorted(k.value for k in optional),
+                            call.lineno,
+                        )
+                    )
+    if len(calls) != 1:
+        return {}
+    expected, optional, line = calls[0]
+    return {"expected_keys": expected, "optional_keys": optional, "comparator_call_line": line}
+
+
+def _structured_contract_item(location, review, parsed):
+    """Emit a reviewable three-way comparison for a recorded structural rejection."""
+    rule = location.get("matching_rule")
+    if not rule:
+        return None
+    detail = location["detail"]
+    actual = location.get("key_set_difference") or location.get("submitted_field")
+    scorer_types = location.get("scorer_expected_types") or []
+    public = list(location.get("public_schema_comparison") or [])
+    described_type = re.search(
+        r"expected type (integer|number|object|array|boolean|string|null)(?:\b|$)", detail
+    )
+    if described_type:
+        scorer_types = [described_type[1]]
+    mark = _captured_markdown_shape(location, review)
+    if mark:
+        actual, markdown_refs = mark
+        public.extend(markdown_refs)
+    replay_shape = {}
+    if not actual and re.search(
+        r"output schema or values are invalid: \$.*object keys mismatch", detail
+    ):
+        actual = _sealed_replay_shape(detail, review)
+        if actual:
+            replay_shape = _declared_comparator_shape(actual["pointer"], rule, parsed)
+            if replay_shape:
+                required = set(replay_shape["expected_keys"]) - set(replay_shape["optional_keys"])
+                actual["missing_keys"] = sorted(required - set(actual["submitted_keys"]))
+                actual["unexpected_keys"] = sorted(
+                    set(actual["submitted_keys"]) - set(replay_shape["expected_keys"])
+                )
+            leaf = actual["pointer"].rsplit(".", 1)[-1]
+            public.extend(review.doc_refs([leaf])[:4])
+    if not (
+        mark
+        or location.get("key_set_difference")
+        or public
+        or (
+            scorer_types
+            and actual
+            and not actual.get("truncated")
+            and "value" in actual
+            and _json_type(actual["value"]) not in scorer_types
+        )
+        or re.search(r"output schema or values are invalid: \$.*object keys mismatch", detail)
+    ):
+        return None
+    if actual:
+        name = Path(actual["source"]).name
+        for path, text in review.public:
+            if path.suffix.lower() in {".yaml", ".yml"}:
+                fields, line = _public_yaml_fields(text, name)
+                if fields:
+                    public.append(
+                        {"source": str(path), "line": line, "listed_keys": sorted(fields)}
+                    )
+        for excerpt in (location.get("public_output_excerpts") or [])[:4]:
+            if not any(entry["source"] == excerpt["source"] for entry in public):
+                public.append(excerpt)
+    actual = dict(actual) if actual else {}
+    if "value" in actual and not actual.get("truncated"):
+        actual["observed_type"] = _json_type(actual["value"])
+    if "source" in actual:
+        actual["path"] = actual["source"]
+    rule_source = {"path": rule["source"], "line_start": rule["line"], **rule}
+    explicit = any(
+        entry.get("declared_types")
+        or entry.get("required_keys")
+        or entry.get("listed_keys")
+        or entry.get("declared_enum")
+        or entry.get("declaration")
+        for entry in public
+    )
+    public_status = (
+        "observed_declaration"
+        if explicit
+        else "excerpt_only"
+        if public
+        else "not_located_in_bounded_scan"
+    )
+    return {
+        "category": "semantic_rejection",
+        "subtype": "structured_contract_difference",
+        "field": actual.get("pointer") or next(iter(_JSON_SHAPE_PATH.findall(detail)), "$"),
+        "status": "review_required",
+        "automatic_attribution_eligible": False,
+        "summary": "Compare the recorded scorer condition, captured submission, and available public declarations.",
+        "summary_zh": "核对评分条件、已采集提交物与读到的公开约定。",
+        "verifier_requirement": rule.get("condition") or detail,
+        "actual_submitted_representation": [actual] if actual else [],
+        "public_requirement_evidence": public,
+        "verifier_source_evidence": [rule_source],
+        "source_refs": list(
+            filter(
+                None,
+                (
+                    rule.get("source_ref") or rule.get("source"),
+                    location["source"],
+                    actual.get("source"),
+                ),
+            )
+        ),
+        "failure_binding": {
+            "status": "source_and_field_bound" if actual else "reported_shape_only",
+            "refs": [location["ref"]] if location.get("ref") else [],
+            "source": rule_source,
+        },
+        "public_requirement_coverage": {
+            "status": public_status,
+            "absence_is_proven": False,
+        },
+        "structured_comparison": {
+            "scorer": {
+                "location": rule,
+                "reported_rejection": detail,
+                **({"expected_types": scorer_types} if scorer_types else {}),
+                **({"expected_keys": actual["expected_keys"]} if "expected_keys" in actual else {}),
+                **replay_shape,
+            },
+            "submission": {"status": "captured" if actual else "unavailable", **actual},
+            "public": {
+                "status": public_status,
+                "evidence": public,
+                "absence_is_proven": False,
+            },
+        },
+        "uncertainty": "The stored rejection is bound to a scorer condition. Check the effective replay artifact and task revision before assigning responsibility.",
+    }
+
+
+_JSON_SHAPE_PATH = re.compile(r"\$(?:\.[\w-]+|\[\d+\])+")
+
+
+def audit_contract_review(evidence: dict, *, verifier_sources=None) -> dict:
     """Inspect saved paths in collector evidence; return suggestions without mutation.
 
     Required keys: task_dir, trial_dir, artifacts (collector artifact records).
@@ -1418,30 +1936,78 @@ def audit_contract_review(evidence: dict) -> dict:
     """
     review = _Review(evidence)
     review.load()
-    review.review()
-    execution_findings = review.execution_scope_review()
-    coverage_findings = review.requirement_coverage_review()
+    task = Path(evidence["task_dir"]) if evidence.get("task_dir") else None
+    snapshot = verifier_sources if verifier_sources is not None else collect_verifier_sources(task)
+    review.diagnostics.extend(snapshot.diagnostics)
+    execution_findings, coverage_findings, parsed = [], [], []
+    site_count = 0
+    for source in snapshot.sources:
+        try:
+            review.use_source(task, source)
+        except (SyntaxError, ValueError, RecursionError) as exc:
+            review.diagnostics.append(
+                {
+                    "code": "VERIFIER_SOURCE_UNAVAILABLE",
+                    "path": source.path,
+                    "error_type": type(exc).__name__,
+                }
+            )
+            continue
+        parsed.append((source, review.tree, review.parents.copy()))
+        site_count += len(review.sites)
+        if not review.sites:
+            continue
+        review.review()
+        execution_findings.extend(review.execution_scope_review())
+        coverage_findings.extend(review.requirement_coverage_review())
+    locations = locate_failures(
+        evidence,
+        ast.Module(body=[], type_ignores=[]),
+        {},
+        None,
+        review.submitted,
+        review.failures,
+        parsed_sources=parsed,
+    )
+    compared = set()
+    for location in locations:
+        comparison = _public_schema_comparison(location, review.public)
+        if comparison:
+            location["public_schema_comparison"] = comparison
+        excerpts = _public_output_excerpts(location, review.public)
+        if excerpts:
+            location["public_output_excerpts"] = excerpts
+        item = _structured_contract_item(location, review, parsed)
+        if item is not None:
+            key = (item["field"], item["verifier_source_evidence"][0]["source"], location["detail"])
+            if key not in compared:
+                compared.add(key)
+                item["review_id"] = f"contract_review:{len(review.items) + 1}"
+                review.items.append(item)
     return {
         "schema_version": 1,
-        "failure_locations": locate_failures(
-            evidence,
-            review.tree,
-            review.parents,
-            review.verify_path,
-            review.submitted,
-            review.failures,
-        ),
+        "failure_locations": locations,
         "review_items": review.items,
         "execution_scope_findings": execution_findings,
         "requirement_coverage_findings": coverage_findings,
         "coverage": review.coverage,
         "source_inspection": {
             "mode": "static_ast_only",
-            "verifier_path": str(review.verify_path) if review.verify_path else None,
-            "parsed": bool(review.tree.body),
-            "failure_sites_matched": len(review.sites),
-            "encoded_source_decoded": False,
-            "encoded_source_policy": "Unsupported wrappers are not executed; only visible AST is inspected.",
+            "verifier_path": str(task / parsed[0][0].path) if parsed else None,
+            "parsed": bool(parsed),
+            "source_files": [
+                {
+                    "path": source.path,
+                    "sha256": source.sha256,
+                    "archive_path": source.container,
+                    "archive_member": source.member,
+                }
+                for source, _, _ in parsed
+            ],
+            "failure_sites_matched": site_count,
+            "encoded_source_detected": snapshot.encoded_source_detected,
+            "encoded_source_decoded": snapshot.encoded_source_decoded,
+            "encoded_source_policy": "Verified archives are bounded and read in memory. Current source may differ from the recorded execution version.",
         },
         "diagnostics": review.diagnostics,
         "verdict_policy": "Review suggestions only; original verdict, reward and scientific checks remain unchanged.",

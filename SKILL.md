@@ -1,193 +1,46 @@
 ---
 name: case-failure-analyzer
-description: Analyze failed scientific-computing benchmark cases from job artifacts, agent trajectories, task definitions, and verifier code; attribute failures across four peer-level categories (Agent decisions, Verifier rules, Case design, or Infrastructure environment). Locate the recorded failure, its scoring rule or runtime interruption, and the implicated agent decision when the evidence supports one. Report in the requested language with evidence pointers.
+description: Audit scientific-computing benchmark failures from saved job artifacts, task requirements, verifier code, and agent trajectories. Locate the recorded rejection or interruption and assess responsibility across Agent decisions, Verifier rules, Case design, and Infrastructure. Review specific failure mechanisms and cross-task patterns when requested.
 metadata:
   short-description: Audit scientific benchmark case failures across 4 peer categories with concise reports
 ---
 
-# case failure analyzer
+# Case failure analyzer
 
-Diagnose why scientific-computing benchmark cases (`jobs/<job_name>` + `tasks/<task_name>`) failed via evidence-backed causal attribution across four peer-level root cause categories:
-1. **`agent` (Agent Decisions & Execution)**: Method selection, parameter/cutoff settings, task contract comprehension, workflow orchestration, tool calling, code syntax, or post-processing errors.
-2. **`verifier` (Verifier Rules & Scoring)**: Overly strict tolerance, type incompatibility, regex/AST parsing defect, hidden private contract, or verifier recompute crash.
-3. **`case` (Benchmark & Task Design)**: Missing/damaged assets, task ambiguity, contradictory reference truth, or unreasonable timeout/compute quota.
-4. **`infra` (Runtime & Infrastructure)**: Container/pre-startup failure, missing system dependencies, network timeout, or hardware OOM.
+Use Python 3.9+ and resolve `scripts/` and `references/` from this skill's directory. Supply benchmark and report locations at invocation time.
 
-## Harness-independent operation
+Read saved evidence. Do not run a verifier, simulation, Docker container, or replacement calculation. Keep benchmark inputs read-only and use the audit's output isolation checks.
 
-Use this skill from any agent that can read its files and run Python 3.9+. Native invocation varies by client (for example `$case-failure-analyzer` in Codex or `/case-failure-analyzer` in Claude Code); direct instructions to read `SKILL.md` also work. `agents/openai.yaml` is optional client UI metadata, not a runtime dependency. Resolve all `scripts/...` examples against the actual skill installation directory, not the benchmark working directory.
+## Quick audit
 
-Analyze existing evidence only. Do not launch a verifier, simulation, Docker container, or replacement calculation as part of this workflow. Existing benchmark verification can include independent recomputation; inspect what it actually checked and retained rather than assuming every verifier recomputes everything.
-
-## Task-ID Quick Answer (Recommended)
-
-When invoked with a **task number** — e.g. `$case-failure-analyzer task208`, `task 220`, or a full trial name `task 208__jaekojA` — do NOT make the user open a file. Run one command and **answer in the conversation with the verdict card it prints to stdout**.
+For a task number or trial reference, run the audit and answer in the conversation from the printed verdict card.
 
 ```bash
-python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout> --lang zh
-# or equivalently:
-python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkout> --lang zh
+python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang zh
 ```
 
-- **Choose report language explicitly**: use `--lang bilingual` when both languages are requested, `--lang en` for English, and `--lang zh` for Chinese. The example above uses Chinese only; `report.md` is not an English filename. Verify the generated edition before linking it.
-- `--jobs-root` is optional: it falls back to `$CFA_JOBS_ROOT`, then the current directory, then its parent. Pass it explicitly when the benchmark checkout is elsewhere.
-- The resolver finds the newest trial for that task and the task definition folder (`task.toml`). `--report-dir <path>` overrides the output location; `--no-verdict-stdout` suppresses the printed answer.
-- **Output landing**: reports land in `<bench_root>/failure-report/<job>/<task_id>/`, with an auto-updated global board `<bench_root>/failure-report/INDEX.md`:
+Select `zh`, `en`, or `bilingual` for the requested report language. The task number selects the newest matching trial. The card is written to `summary.md` alongside the full report and `data/`. Use the printed `REPORT_DIR` to find and link the requested edition.
 
-  ```text
-  failure-report/
-  ├── INDEX.md                          # 全局看板（三态评测统计、占未通过比例归一化、自然排序、置信度指标与直达链接）
-  └── <job>/
-      ├── INDEX.md
-      ├── task207/
-      │   ├── task207.md                    # 主归因报告（干净 Markdown，单语模式无重复 .zh.md）
-      │   ├── summary.md                    # 根因速览卡片与关键因果链锚点（与 stdout 完全一致）
-      │   └── data/                         # 机器数据下沉，保持顶层整洁
-      │       ├── evidence.json             # 规整化证据、轨迹事件流、验证器日志
-      │       ├── analysis.json             # 结构化归因结论与判定门控
-      │       ├── summary.json              # 结构化速览卡片元数据
-      │       └── candidate-hypotheses.json # 候选假设及证据支持度
-      └── task208/
-          ├── task208.md
-          ├── summary.md
-          └── data/
-              ├── evidence.json
-              ├── analysis.json
-              ├── summary.json
-              └── candidate-hypotheses.json
-  ```
+For a failure, give the conclusion level and concrete stopping event or rejected check first. Then give the four peer categories with their evidence-backed statuses. Follow with the selected subtype, code and heuristic confidence, any supported trial-level capability diagnosis, and the report link. `unknown` records insufficient evidence. An unselected rule leaves its category open until evidence rules it out.
 
-  - **顶层保持 Clean Markdown**：仅保留主报告 `{task_id}.md`、速览卡片 `summary.md`（跨案例技能指导单独输出）；
-  - **消除单语重复**：请求 `zh` 仅输出中文主报告，不再产生字节完全相同的 `.zh.md`；
-  - **多试次轻量归档**：多试次输出到 `trials/<trial_name>/`，仅存储 `summary.md`、`analysis.json` 与 `summary.json`，避免复制 200KB+ 的全量证据；可通过 `--archive-evidence` 按需开启全量保存；
-  - **只读脱敏检视**：使用 `python3 scripts/cfa.py inspect <task_id> [--section verdict|report|errors|confidence|evidence|anchors|artifacts|step|data] [--step <id>] [--raw]` 安全检视结果，默认自动脱敏家目录路径与敏感凭据：
-    - `--section errors`：直观展示裁决、主因、验证器诊断性与具名失败检查明细（层级、偏差、比较与复算散度）；
-    - `--section confidence`：展示置信度、证据强度、`points/denominator` 动态分值、正负因子收据与待提升项；
-    - `--section evidence`：输出紧凑人读摘要（运行态、检查计数、因果锚点、科学观测与行为信号）；
-    - `--section artifacts`：汇总已采集 `artifacts`、`missing_deliverables`、`contract_observations`、交付物完整性诊断（`deliverable_diagnostics`）以及逐项 `artifact_comparison` / `scale_or_sign_hint` / `stale_deliverable_sync`；
-    - `--section step [--step <id>]`：按步骤编号或事件前缀（如 `--step 43` 或 `--step trajectory:step:43`）过滤展示时间线思考、工具调用、命令、退出码、观测与代码载荷（省略 `--step` 时显示最近 5 步索引）；
-    - `--raw`：直接输出对应段落的无格式原生 JSON / 文本；
-  - **跨任务与多试次对比**：`python3 scripts/cfa.py diff <task_a> [<task_b>] [--trials <t1> <t2>] [--jobs-root <path>] [--report-dir <path>] [--raw] [--no-redact]` 对比已有审计报告中的两个任务或同一任务两个试次（省略 `task_b` 与 `--trials` 时，按 `trials/` 归档报告文件的修改时间选取最近两份；轻量归档缺失的证据不会自动补齐）的运行态、主根因、失败检查差异及因果锚点（含 `parameter_evolution`）。
-  - **全量用例自动发现与批量审计**：`python3 scripts/cfa.py audit --all --jobs-root <benchmark checkout>` 自动发现全量用例，按自然数序（`task98` < `task194`）依序审计并原子生成 `<bench_root>/failure-report/INDEX.md` 全局看板。
+## Evidence boundaries
 
-### Required Answer Shape (answer order is load-bearing)
+- Locate the recorded stop or rejection and its source line or field before assigning responsibility. Keep runner interruptions, scoring outcomes, and submission-only checks separate. Use `score_produced` to establish whether a final score exists.
+- A pre-startup failure is an infrastructure candidate when a fatal setup fault is recorded. Otherwise preserve the cause as unknown. A pre-verifier collection fault can explain the stop even when a required artifact is missing.
+- Agent attribution requires a concrete execution action or deviation linked to the public requirement, effective inputs or submission, and recorded outcome. A generic failure, missing capture, or partial trajectory leaves that link unresolved.
+- Treat static scorer matches, reconstructed source, and numerical differences as leads. Verify applicability to the saved run. Distinguish a recorded result, a rule-selected candidate, and an evidence-supported review.
 
-For a quick audit, relay the stdout verdict card in the order below. When the user asks for the specific cause or a capability investigation, follow the observed rejection to the public task, effective artifact and decision. Complete the evidence review when these records support it. In the answer cite the reviewed report or name the remaining competing explanations and the particular missing record.
+## Read only the reference needed for this request
 
-1. **Conclusion level, candidate cause, and why it failed** — distinguish observation, rule candidate, and supported evidence review; one line: verdict, primary peer category, `subtype`, `code`, confidence, and the concrete failure reason (named failing check / deviation value, not a generic message).
-2. **Four peer categories** — the `## 1. 四大类裁决` table: `agent` / `verifier` / `case` / `infra` each with its status (`主因` / `伴随因素` / `尚未独立排除` / `已排除` / `未选为主因`) and an evidence-backed reason. A rule not firing does not independently exclude its category. Preserve unresolved alternatives.
-3. **Subcategory under the winning category** — the `## 2. 主因大类下的小分类` table: `subtype` → `code` → confidence → basis, plus contributing/candidate subcategories, named failing checks, evidence refs, and recommended actions.
-   When the primary category is `agent`, relay the trial-scoped capability diagnosis beneath its subcategory, including the status, reason and source.
-4. **Link the report** — e.g. `[task208.md](<REPORT_DIR>/task208.md)` using the `REPORT_DIR:` line printed after the card.
+When a link names a section, start with that section and follow its references as needed.
 
-Do not add a fifth category: `unknown` is an auxiliary "insufficient evidence" bucket, not a peer cause. Do not present a subcategory before the four-category table. If the card shows `unknown` as primary, say plainly that the evidence cannot isolate a cause and show what is missing.
+| Request or evidence | Read |
+|---|---|
+| Audit a job or trial path, run a batch, inspect a saved audit, or compare trials | [CLI workflows](references/cli.md) |
+| Locate a specific decision or review an unresolved Agent candidate | [Dossier and causal review](references/evidence-review.md#dossier-for-a-specific-decision) |
+| Investigate a missing deliverable, an isolated replay, or an apparent contract mismatch | [Missing outputs](references/evidence-review.md#missing-outputs) or [contracts and replay](references/evidence-review.md#contracts-and-replay), as applicable |
+| Explain why a gate selected or deferred a category | [Attribution protocol](references/attribution-protocol.md#2-causal-precedence-timeline--gate-evaluation-order) |
+| Diagnose a capability or aggregate completed reviews | [Capability scope](references/evidence-review.md#capability-scope) or [review summary](references/evidence-review.md#review-summary) |
+| Check output fields, report layout, or a software-specific failure signature | [Reference index](references/README.md) |
 
-### CLI & Input Contract
-
-Entrypoint: `python3 scripts/analyze_case.py`
-- Required (choose one mode):
-  - **Task-ID mode**: `--task-id task208` (locates job/trial/task automatically).
-  - **Path mode**: `--job <path>` (job directory `jobs/<job_name>` or a specific trial directory) **and** `--output <path>` (isolated; inputs are strictly read-only and must not overlap with `--output`).
-- Optional:
-  - `--task-id <ref>` / `--jobs-root <path>` / `--report-dir <path>` / `--no-verdict-stdout`: see Task-ID Quick Answer above.
-  - `--task <path>`: Task definition directory (`tasks/<task_name>`); auto-discovered if omitted.
-  - `--trial <name|all>`: Target specific trial name or all trials (default: `all`).
-  - `--lang {bilingual,zh,en}`: Report language edition (default: `bilingual`).
-  - `--format {both,json,markdown}`: Output format (default: `both`).
-  - `--phase {all,collect}`: `all` for full pipeline + attribution + reports (default); `collect` for evidence & candidate hypotheses only.
-  - `--replay {none}`: Post-hoc audit mode (default: `none`).
-  - `--max-log-bytes <n>`: Maximum bytes per log file read; must be a positive integer (default: `120000`).
-  - `--include-session-files`: Include agent session files in inventory.
-
-### Output Standards
-
-- **Single-Trial Artifacts (path mode)**:
-  - `evidence.json`: Normalized runtime state, trajectory timeline, contract audit, and scientific error observations.
-  - `candidate-hypotheses.json`: Competing causal hypotheses scored by evidence strength.
-  - `analysis.json`: Structured attribution (`failure-analysis-v1`) with root cause code, failure stage, and evidence pointers.
-  - `report.md` (bilingual), `report.zh.md` (Chinese), `report.en.md` (English): High-signal audit reports with evidence file pointers (lightweight 2-section view < 30 lines for passed trials).
-  - `skill_prescription`: Per-trial value remains null. Proposed guidance is stored under `causal_assessment.capability`; the separate cross-case `review capability` output can contain scoped, reviewed guidance.
-- **Task-ID artifacts**: `<bench_root>/failure-report/<job>/<task_id>/` holds clean top-level Markdown (`<task_id>.md` and `summary.md`) plus all machine JSON under `data/` (see Task-ID Quick Answer). The verdict card printed to stdout is `summary.md`.
-- **Multi-Trial Batch Board**:
-  - `job_summary.md`: Markdown summary dashboard table showing verdicts, categories, root causes, and failure stages across all trials.
-  - `job_summary.json`: Batch aggregated statistics and per-trial summary records.
-
-### Harbor Protocol Specifics
-
-For harbor jobs (`jobs/<timestamp>/<trial>/` + sibling `task.toml`, `artifacts/`, `verifier/`), the analyzer adds:
-
-- **Declared deliverables**: `task.toml` → `artifacts` (e.g. `["/app/final"]`) is the authoritative output contract, not a hardcoded `results.json`. `sig:premature_completion` fires only when a declared path is genuinely missing, reconciled against harbor's collected `<trial>/artifacts/app/<path>` tree. Evidence exposes `metadata.declared_deliverables` and `missing_deliverables`.
-- **Not-scored trials**: harbor `docker cp` runs *after* the agent and *before* the verifier. A missing declared path raises `Engine cp failed ... Could not find the file /app/...` and aborts the trial with `reward=None` (`verifier_started == false`). Gate 1c attributes these to `infra` (`INFRA_ARTIFACT_COLLECTION_CRASH`, `INFRA_RUNNER_INTERRUPTED`, or causal `INFRA_AGENT_TIMEOUT` with priority over the downstream collection crash), keeping the agent's incomplete deliverables as a contributing factor — **never** `AGENT_PREMATURE_TERMINATION`.
-- **Three-state batch board**: `job_summary.md` reports Scored Passed / Scored Failed / Not Scored plus a **scored pass rate** (`passed / scored`), alongside the overall rate (`passed / total`). Not-scored trials are not agent failures.
-- **Verifier report normalization**: the five harbor verifier JSON families (layered `core/verify.json`, `scientific/verify.json`, `raw-verifier.json` `criteria[]`, `science.json` `checks[]`, `verify.json` envelopes with `failure_origin`) are normalized into `evidence.verifier_report` with named `failed_checks`, `core_failures`, `failure_origin`, and `diagnosability`. `diagnosability == "low"` flags a terse generic message with no named check or numeric deviation. Report Section 2 renders this block.
-- **Trajectory, Cross-Check & Provenance Pipeline**:
-  - Recognized ATIF JSON and OpenAI/Anthropic JSON/JSONL message structures are normalized via `resolve_trajectory_path` and `_convert_messages_to_steps`. Tool-call IDs link calls and results. Truncation can retain up to 6 diagnostic/metric lines from the middle of an observation. Static script output targets (`script_targets`) are added to `written_files` when a matching shell invocation has no detected error; this is inferred output, not proof that the file exists.
-  - Named-metric artifact pairing has no numerical-deviation ceiling; unnamed values still use proximity thresholds. `scale_or_sign_hint` matches numerical ratios to known factors and sets `unit_token_corroborated` when expected unit tokens appear in the metric name or verifier text. `stale_deliverable_sync` requires an on-disk deliverable holding `reported_value` (without `recomputed_value`) plus an error-free `observation` stdout line containing `recomputed_value` (ignoring `tool_calls` input code). Treat both as leads: check units, actual outputs, and write ordering before concluding a conversion error or unsaved result.
-  - `deliverable_diagnostics` scans JSON/CSV/TSV within file, size, row, and node limits. Missing `checked_keys` are checked against the union of keys in discovered `results.json` files; absent files and skipped content require separate review.
-  - Causal anchor ranking adds `+15` for candidates associated with implicated artifacts. `parameter_evolution` is scoped per target script file (`file`, `initial`, `final`, `from_event`, `to_event`) and filtered to the selected anchor's `target_path`; it does not establish effective runtime values or a complete intermediate change history. Details and limits are in [evidence-schema.md](references/evidence-schema.md).
-
-### Missing deliverables and causal review
-
-1. Read `deliverable_audit` before blaming an absent output. Separate captured presence, absence from a completely scanned capture tree, collection failure, and unresolved mapping/coverage. A missing capture is not proof of non-production. A directory declaration does not define required child filenames.
-2. Read `trajectory_normalization`: unknown or partial format coverage is an evidence gap, not proof that the agent skipped an action. Caller harness and recorded trajectory format are separate compatibility questions.
-3. Inspect saved verifier reports, named checks, numerical comparisons, `verification_coverage`, and `coverage_limits`. A saved discrepancy supports an outcome finding; it does not alone prove a wrong scientific method or a reusable capability deficit.
-4. Use `cfa.py review plan` and `review apply` to bind a concrete decision to actual execution, effective inputs/outputs, an applicable requirement, terminal outcome evidence, and reviewed alternatives. These commands only read existing records. If evidence is missing, keep the cause as a candidate and list the specific missing records; do not invent a review or trigger a rerun.
-5. A single-trial review cannot generate a confirmed reusable skill prescription. `review capability` requires supported reviews of independent tasks and explicit reasons for generality, independence, nontriviality, and avoidance of verifier workarounds or answer substitution. Keep any conclusion scoped to those reviewed cases.
-
-Field definitions, missing-output examples, and commands: [evidence-review.md](references/evidence-review.md).
-
-### Locate the failure before assigning responsibility
-
-For each failed or interrupted trial, state the recorded stopping event, source file and line or field. Use `causal_assessment.failure_detail` in the report or `inspect --section errors`. When the grader and runner both emitted errors, explain their order and what each checked. A unique static rule match identifies the condition to inspect. Compare it with the public requirement, the effective input and an agent action before attributing responsibility. An unresolved trial should name the rejected check and the specific missing link.
-
-### Agent capability diagnosis
-
-For a failed trial attributed to `agent`, inspect the first consequential decision, the public requirement or scientific basis, the input or output actually used and the recorded failure. Use the [eight capability dimensions and their boundaries](references/taxonomy.md#agent-capability-dimensions). Report one primary dimension for the reviewed decision. Keep downstream effects and competing interpretations in the rationale. An isolated submission mismatch, timeout or hidden scoring convention can leave the dimension unassigned.
-
-When a rule leaves the cause unresolved but a saved action and its consequence identify an agent decision, use the existing `proposed_attribution` review to establish its category and diagnose that same decision.
-
-The audit reports `causal_assessment.capability.diagnosis`. A structured trace match yields a candidate; `needs_review` invites inspection of the underlying records. When diagnosing capabilities, use the [decision review](references/evidence-review.md#capability-scope) to record the dimension or document the missing evidence in a fresh review bundle. Report supported diagnoses within the reviewed trial. For a recurring mechanism, use the separate cross-task review.
-
-### 3-Step Core Workflow
-
-1. **Run Analysis**: For a task number use the one-line Task-ID command; for an explicit path use path mode:
-   ```bash
-   python3 scripts/cfa.py audit task208 --jobs-root <benchmark checkout>
-   # or via analyze_case:
-   python3 scripts/analyze_case.py --task-id task208 --jobs-root <benchmark checkout>
-   python3 scripts/analyze_case.py --job jobs/<job_name>/<trial_name> --task tasks/<task_name> --output failure-report/<job_name>/<task_id>
-   ```
-2. **Answer / Review Reports**: In Task-ID mode, relay the stdout verdict card as the answer (see Required Answer Shape). Otherwise inspect `report.md` (or `job_summary.md` for batch jobs), then referenced evidence files via file pointers.
-3. **Validate & Refine (Optional Model-in-the-Loop)**: When modifying hypotheses or refining attributions, edit `analysis.json` and validate machine-checkable hard rules:
-   ```bash
-   python3 scripts/validate_analysis.py --evidence <dir>/evidence.json --analysis <dir>/analysis.json [--report <dir>/report.md]
-   python3 scripts/render_report.py --evidence <dir>/evidence.json --analysis <dir>/analysis.json --output-report <dir>/report.md --lang bilingual
-   ```
-
-### Contract rejection and report language
-
-When a saved verifier rejects text, JSON shape, enum values, paths, or derived labels, compare the exact failed rule with all available public contract files and the submitted representation. Read `contract_review`: `semantic_rejection`, `hidden_format_requirement`, and `definition_ambiguity` are review tags under the existing case/verifier categories, not automatic verdict changes. Do not assume a number is wrong because a structural check failed. A first rejection does not establish the outcome of later checks.
-
-Inspect `execution_scope_findings` before treating a captured file as missing: a verifier may have checked a fresh replay directory. Inspect `requirement_coverage_findings` before concluding sample coverage is absent: labels may occur in nested maps even if direct keys fail a check. Mathematical differences such as maximum force component versus maximum per-atom norm are not semantic aliases; inspect the saved applied code and the public definition.
-
-Keep runtime failures separate from output defects. A terminal harness context/output limit, a timeout, and a contract mismatch can coexist. `verifier_started` does not mean a score was produced; use `score_produced` and retain named `reward_metrics` without relabeling a submission check as scientific accuracy.
-
-Request `--lang bilingual` when the user needs both languages. In path mode, `report.md` is the selected primary edition, `report.zh.md` is Chinese, and `report.en.md` is English; a Chinese primary plus its Chinese alias is not an English report. Generated narrative follows the selected language. Preserve untranslatable source text as a clearly labeled quotation, and use explicit `summary_en` / `summary_zh` or corresponding localized fields for reviewed prose.
-
-### Core Attribution Hard Rules
-
-- **Pre-startup Boundary**: When `runtime.agent_started == false`, attribution MUST be `infra` (if fatal setup error) or `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`). Blaming `agent` is **STRICTLY FORBIDDEN**.
-- **Verifier-Not-Run Boundary**: When the verifier never started (`verifier_started == false` / `reward == null`), a `sig:premature_completion` trajectory heuristic alone is NOT positive agent evidence. A post-agent, pre-verifier runner fault (Gate 1c) MUST be `infra` primary with the missing deliverable as a contributing factor; a causal `INFRA_AGENT_TIMEOUT` outranks the downstream collection crash. Never report "verifier ran to completion" when `verifier_started == false`.
-- **Deliverable Contract**: On harbor tasks, judge completion against `task.toml` `artifacts`, not `results.json`. A named failing verifier check outranks a generic completion heuristic in Gate 6. A confirmed remote-delivery interruption can still be attributed to premature termination when a successful final scheduler query shows running jobs, the agent returns `end_turn` without a trial exception, and both the public contract and the verifier identify the same missing file under a collected directory.
-- **Verifier Crash Priority**: An unhandled verifier crash/exception (`FileNotFoundError`, syntax error, recompute crash) MUST be attributed to `verifier` (`VERIFIER_RECOMPUTE_DEFECT`), never `agent`. This also covers structured `verify.json` reports with `status: ERROR` / `ENV_INVALID`, `scorable: false` and `reward: null` (Harbor then raises `RewardFileNotFoundError` because no `reward.txt` is written); CFA normalizes these into a `ver:internal_crash` observation so Gate 3 fires.
-- **Positive Agent Evidence Requirement**: Attributing failure to `agent` requires explicit positive deviation (`behavioral_signals`, contract violation, unrecovered trajectory scientific error). `reward == 0` or verifier `FAIL` alone is insufficient.
-- **Cross-Source Corroboration**: Review task requirements, saved verifier rules/results, actual execution, and delivered records together. A recorded numerical discrepancy does not alone identify a scientific decision or independently exclude a verifier defect. Preserve candidate status and coverage limits until the evidence review supports more.
-- **Delta Divergence Integrity**: A verifier delta (`differs from ... by <delta> beyond bound <tol>`) is a deviation, **not** the agent's delivered value. Bind `agent_reported_value` only from a structured deliverable record (`artifacts/**/*.csv|tsv|json`) whose row carries every identifier named in the verifier message; corroboration/FUD may point only to tool calls, file writes, or command outputs — never `final_response` / `agent_thought`. With no unique delivered value, abstain instead of reusing the verifier's delta.
-- **Self-check coverage**: Review `causal_anchors.self_check_executions` and the matching timeline source events. Cite the executed version, its own result (including partial results), the public criterion and the recorded terminal rejection. A missing check name in source is insufficient for a coverage diagnosis. Preserve the production error separately when a later self-check merely let it through. The older `self_check` anchor remains readable in saved bundles. Use the [evidence review](references/evidence-review.md) for larger cited sources and scoped cross-task review.
-- **Causal Anchor FUD**: For Agent attributions, `first_unrecovered_deviation.event_ref` must be an execution anchor (`deliverable_generation` or `algorithm_or_param_definition`), never a final-answer step.
-- **Skill Prescription Scope**: an `agent` candidate is necessary but insufficient. Per-trial `skill_prescription` remains null; proposed guidance stays under `causal_assessment.capability` until a separate cross-case review supports reusable guidance.
-- **Evidence Pointer Integrity**: All `evidence_refs` in `analysis.json` must resolve to valid observation IDs in `evidence.json`.
-
-### References (Progressive Disclosure)
-
-Use the [reference index](references/README.md) for causal rules, evidence schemas and scientific software notes. The [script map](scripts/README.md) lists the entry points and implementation by function.
+For a specific mechanism, use the dossier to bind the relevant action, requirements, artifacts, and alternatives. Apply the structured review when the sources support it. In the answer distinguish the verified defect, quantitative sufficiency, and overall attribution. Name the missing evidence when the cause remains open.

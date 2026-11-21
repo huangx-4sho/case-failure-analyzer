@@ -1214,6 +1214,62 @@ def _load_report_bundle(report_dir: Path, basename_hint: Optional[str] = None) -
     }
 
 
+def cmd_dossier(args: argparse.Namespace) -> int:
+    from tempfile import TemporaryDirectory
+
+    from dossier import build_dossier, render_dossier
+    from review_cause import plan
+    from staging import paths_overlap, publish_staging_to_output
+
+    def redact_value(value):
+        if isinstance(value, str):
+            return redact_sensitive(value)
+        if isinstance(value, list):
+            return [redact_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: redact_value(item) for key, item in value.items()}
+        return value
+
+    try:
+        source, basename = _resolve_saved_report(
+            args.target, args.jobs_root, args.report_dir, args.job
+        )
+        bundle = _load_report_bundle(source, basename)
+        evidence, analysis = bundle["evidence"], bundle["analysis"]
+        if not evidence.get("trial_dir") or not analysis:
+            raise ValueError("dossier requires a saved audit with full single-trial evidence")
+        output = args.output.resolve() if args.output else None
+        if output:
+            protected = [source] + [
+                Path(evidence[key])
+                for key in ("job_dir", "trial_dir", "task_dir")
+                if evidence.get(key)
+            ]
+            if any(paths_overlap(output, path) for path in protected):
+                raise ValueError("dossier output overlaps the audit or benchmark inputs")
+        pack = redact_value(build_dossier(evidence, analysis, with_oracle=args.with_oracle))
+        payload = json.dumps(pack, indent=2, ensure_ascii=False) + "\n"
+        markdown = render_dossier(pack)
+        if output is None:
+            print(payload if args.raw else markdown, end="")
+            return 0
+        with TemporaryDirectory() as temp:
+            stage = Path(temp)
+            (stage / "dossier.json").write_text(payload, encoding="utf-8")
+            (stage / "dossier.md").write_text(markdown, encoding="utf-8")
+            if analysis.get("verdict") not in {"passed", "pending"}:
+                review = plan(evidence, analysis)
+                (stage / "review-plan.json").write_text(
+                    json.dumps(review, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+                )
+            publish_staging_to_output(stage, output, is_multi_trial=False, manifest_key="dossier")
+        print(output / "dossier.md")
+        return 0
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
 def _safe_normalize_task_id(raw: str) -> Optional[str]:
     try:
         return normalize_task_ref(raw)
@@ -2037,6 +2093,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers.add_parser(
         "review", help="Review existing benchmark evidence without executing calculations"
     )
+    dossier_parser = subparsers.add_parser(
+        "dossier", help="Slice saved evidence for a single-trial causal review"
+    )
+    dossier_parser.add_argument("target", help="Task ID, trial name or saved audit directory")
+    dossier_parser.add_argument("--jobs-root", type=Path, help="Benchmark checkout root")
+    dossier_parser.add_argument("--report-dir", type=Path, help="Locate the saved audit here")
+    dossier_parser.add_argument("--job", help="Select a job by name or path")
+    dossier_parser.add_argument("--output", type=Path, help="Write a dossier bundle outside inputs")
+    dossier_parser.add_argument("--raw", action="store_true", help="Print structured JSON")
+    dossier_parser.add_argument(
+        "--with-oracle",
+        action="store_true",
+        help="Include optional private reference source slices",
+    )
     # inspect subcommand
     inspect_parser = subparsers.add_parser(
         "inspect", help="Read-only inspection of audit conclusions and anchors"
@@ -2124,7 +2194,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--report-root", type=Path, default=None, help="Path to failure-report/ root"
     )
 
-    if not argv or "-h" in argv or "--help" in argv and len(argv) == 1:
+    if not argv or len(argv) == 1 and argv[0] in {"-h", "--help"}:
         parser.print_help()
         return 0
 
@@ -2138,6 +2208,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         from review_cause import main as review_main
 
         return review_main(argv[1:])
+    elif subcommand == "dossier":
+        return cmd_dossier(dossier_parser.parse_args(argv[1:]))
     elif subcommand == "inspect":
         args = inspect_parser.parse_args(argv[1:])
         return cmd_inspect(args)

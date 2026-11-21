@@ -16,6 +16,51 @@ DIMENSIONS = {
     "conclusion_calibration": ("科学结论与不确定性判断", "Scientific conclusions and uncertainty"),
 }
 
+MECHANISM_TAGS = {
+    "observable_definition": {
+        "norm_or_metric_mismatch",
+        "reference_state_or_baseline_wrong",
+        "sign_or_unit_convention_wrong",
+    },
+    "physical_model": {
+        "simplified_or_decoupled_model",
+        "protonation_or_state_enumeration_wrong",
+        "surrogate_model_inaccurate",
+    },
+    "numerical_adequacy": {
+        "fitting_model_or_residual_mismatch",
+        "sampling_sequence_or_seed_divergence",
+        "convergence_or_grid_inadequate",
+    },
+    "workflow_state": {
+        "entrypoint_path_contract_wrong",
+        "stage_flag_or_ordering_wrong",
+        "replay_input_assumption_hardcoded",
+        "unfinished_remote_delivery",
+    },
+    "execution_recovery": {
+        "reasoning_token_runaway",
+        "context_overflow_by_large_read",
+        "unproductive_retry_or_timeout_burn",
+    },
+    "postprocessing_provenance": {
+        "identifier_normalization_loss",
+        "wrong_derived_column_mapping",
+        "evidence_or_hash_provenance_gap",
+    },
+    "independent_validation": {
+        "self_check_missed_nested_schema",
+        "self_check_reused_buggy_assumption",
+        "self_check_missed_stage_criterion",
+        "no_self_check_on_deliverable",
+    },
+    "conclusion_calibration": {
+        "feasible_set_overconstrained",
+        "cross_stage_evidence_overreach",
+        "statistical_applicability_or_claim_error",
+    },
+}
+
 
 def unassigned() -> dict:
     return {"status": "needs_review", "dimension": None, "evidence_refs": []}
@@ -26,10 +71,11 @@ def static_diagnosis(evidence: dict, analysis: dict, events: set) -> dict:
     code = (analysis.get("primary_root_cause") or {}).get("code")
     cited = set(analysis.get("evidence_refs") or [])
 
-    def candidate(dimension, event, refs, zh, en):
+    def candidate(dimension, event, refs, zh, en, mechanism_tag):
         return {
             "status": "candidate",
             "dimension": dimension,
+            "mechanism_tag": mechanism_tag,
             "event_ref": event,
             "evidence_refs": list(dict.fromkeys([event, *refs])),
             "rationale_zh": zh,
@@ -61,6 +107,7 @@ def static_diagnosis(evidence: dict, analysis: dict, events: set) -> dict:
                     contracts,
                     "实际停止条件取最大力分量。公开协议写“最大原子力”，评分器取每原子受力向量模长的最大值。",
                     "The stopping test used the largest force component. The public protocol specifies maximum atomic force, and the scorer takes the largest per-atom force norm.",
+                    "norm_or_metric_mismatch",
                 )
 
     for signal in evidence.get("behavioral_signals") or []:
@@ -76,6 +123,7 @@ def static_diagnosis(evidence: dict, analysis: dict, events: set) -> dict:
                 [ref],
                 "末次调度查询仍显示作业运行，Agent 已结束本轮，声明的交付文件随后被记录为缺失。",
                 "The final scheduler query showed active jobs when the agent ended the turn; the required deliverable was subsequently recorded missing.",
+                "unfinished_remote_delivery",
             )
         if (
             code == "AGENT_ERROR_DIAGNOSIS"
@@ -106,6 +154,7 @@ def static_diagnosis(evidence: dict, analysis: dict, events: set) -> dict:
                         [obs["source_ref"], ref, obs["sci_id"]],
                         "相同命令再次返回已记录的科学计算错误。需核对两次生效的输入和恢复方案。",
                         "The repeated command returned the same recorded scientific error. Compare effective inputs and recovery choices across the two attempts.",
+                        "unproductive_retry_or_timeout_burn",
                     )
     return unassigned()
 
@@ -118,6 +167,8 @@ def reviewed_diagnosis(annotation: dict, decision: dict, level: str, events: set
     fields = {"dimension", "rationale_zh", "rationale_en", "evidence_refs"}
     if abstain:
         fields = {"status", "rationale_zh", "rationale_en"}
+    elif "mechanism_tag" in annotation:
+        fields.add("mechanism_tag")
     if set(annotation) != fields:
         raise ValueError(f"capability_dimension requires {', '.join(sorted(fields))}")
     if not all(
@@ -133,6 +184,11 @@ def reviewed_diagnosis(annotation: dict, decision: dict, level: str, events: set
         raise ValueError("capability_dimension requires a reviewed agent decision")
     if not isinstance(annotation["dimension"], str) or annotation["dimension"] not in DIMENSIONS:
         raise ValueError("Unknown capability dimension")
+    if "mechanism_tag" in annotation and (
+        not isinstance(annotation["mechanism_tag"], str)
+        or annotation["mechanism_tag"] not in MECHANISM_TAGS[annotation["dimension"]]
+    ):
+        raise ValueError("Unknown mechanism_tag for the reviewed capability dimension")
     refs = annotation["evidence_refs"]
     event = decision.get("event_ref")
     if (
@@ -195,4 +251,5 @@ def render_diagnosis(analysis: dict, lang: str) -> str:
         else ("本次审查支持" if supported else "候选")
     )
     refs = ", ".join(f"`{r}`" for r in diagnosis["evidence_refs"])
-    return f"{header} · {DIMENSIONS[dimension][int(en)]} ({status}) · {diagnosis['rationale_en' if en else 'rationale_zh']} {refs}"
+    mechanism = f" · `{diagnosis['mechanism_tag']}`" if diagnosis.get("mechanism_tag") else ""
+    return f"{header} · {DIMENSIONS[dimension][int(en)]} ({status}){mechanism} · {diagnosis['rationale_en' if en else 'rationale_zh']} {refs}"

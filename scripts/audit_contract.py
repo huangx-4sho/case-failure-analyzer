@@ -390,7 +390,13 @@ def inspect_verifier_code(verify_py_path: Optional[Path]) -> Dict[str, Any]:
             "diagnostics": [],
         }
 
-    code_text = verify_py_path.read_text(encoding="utf-8", errors="replace")
+    return _inspect_verifier_text(
+        verify_py_path.read_text(encoding="utf-8", errors="replace"),
+        "tests/verify.py",
+    )
+
+
+def _inspect_verifier_text(code_text: str, source_file: str) -> Dict[str, Any]:
     visitor = VerifierASTVisitor()
     diagnostics: List[Dict[str, Any]] = []
     try:
@@ -405,8 +411,8 @@ def inspect_verifier_code(verify_py_path: Optional[Path]) -> Dict[str, Any]:
                 stage="audit_contract.inspect_verifier_code",
                 code="VERIFIER_AST_PARSE_FAILED",
                 severity=WARNING,
-                message="tests/verify.py could not be parsed; AST-derived parser hazards were not collected.",
-                source_ref="task:tests/verify.py",
+                message=f"{source_file} could not be parsed; AST-derived parser hazards were not collected.",
+                source_ref="task:" + source_file,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
                 impact=(
@@ -730,12 +736,99 @@ def inspect_delivered_artifacts(
     return result
 
 
+def _contract_log_text(text: str) -> str:
+    """Use failure records from pytest, excluding displayed source and fixture values."""
+    if text.startswith("{"):
+        try:
+            report = json.loads(text)
+        except ValueError:
+            report = None
+        if isinstance(report, dict):
+            messages = []
+            checks = [report]
+            for key in ("checks", "criteria"):
+                group = report.get(key)
+                if isinstance(group, list):
+                    checks.extend(group)
+                elif isinstance(group, dict):
+                    checks.extend(group.values())
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
+                status = str(check.get("status") or "").upper()
+                if (
+                    check is not report
+                    and status not in {"FAIL", "FAILED", "ERROR"}
+                    and not any(check.get(key) is False for key in ("ok", "passed", "pass"))
+                ):
+                    continue
+                messages.extend(
+                    check[key]
+                    for key in ("message", "reason", "detail", "error", "summary")
+                    if isinstance(check.get(key), str)
+                )
+            return "\n".join(dict.fromkeys(messages))
+    if "test session starts" not in text and "short test summary info" not in text:
+        return text
+    return "\n".join(
+        re.sub(r"^E\s+", "", line)
+        for line in text.splitlines()
+        if re.match(r"^(?:E\s+|FAILED\s+|ERROR\s+)", line)
+    )
+
+
+def _missing_file(name: str, text: str) -> bool:
+    escaped = r"(?<![\w./-])" + re.escape(name) + r"(?![\w./-])"
+    decoration = r"[\s:\x60'\"]*"
+    missing = r"(?:missing(?: required)?(?: output| file| deliverable)?|not found|no such file(?: or directory)?)"
+    return any(
+        re.search(
+            missing
+            + decoration
+            + escaped
+            + r"|"
+            + escaped
+            + decoration
+            + r"(?:(?:is|was)\s+)?"
+            + missing,
+            line,
+            re.I,
+        )
+        for line in text.splitlines()
+    )
+
+
+def _internal_failure(text: str, checked_files: List[str], pytest_scored: bool):
+    if pytest_scored:
+        return None
+    traceback = "Traceback (most recent call last):" in text
+    exceptions = (
+        r"^(?:FileNotFoundError|OSError|IOError|KeyError|AttributeError|ImportError|"
+        r"ModuleNotFoundError|RuntimeError|TypeError|SyntaxError|ValueError):(?P<detail>.*)$"
+    )
+    for line, record in reversed(list(enumerate(text.splitlines(), 1))):
+        match = re.fullmatch(exceptions, record)
+        if not match:
+            continue
+        detail = match.group("detail")
+        if re.search(r"(?:/tmp/|/tests/|refs\.json|verify\.py)", detail) or (
+            traceback and not any(_missing_file(f, record) for f in checked_files)
+        ):
+            return line, record
+    return None
+
+
 def audit_contract(
     task_dir: Optional[Path],
     trial_dir: Optional[Path],
     normalized_traj: Optional[Dict[str, Any]] = None,
+    *,
+    runtime: Optional[Dict[str, Any]] = None,
+    verifier_sources=None,
 ) -> Dict[str, Any]:
-    from runtime_state import resolve_verifier_script_path
+    from deliverable_audit import captured_container_path
+    from runtime_state import compute_runtime_state, score_was_produced
+    from verifier_source import collect_verifier_sources
 
     instruction_path = task_dir / "instruction.md" if task_dir else None
     instruction_exists = bool(instruction_path and instruction_path.is_file())
@@ -745,8 +838,27 @@ def audit_contract(
     prompt_info = extract_prompt_contract(
         instruction_text, task_dir, instruction_exists=instruction_exists
     )
-    verify_py_path = resolve_verifier_script_path(task_dir)
-    verifier_info = inspect_verifier_code(verify_py_path)
+    sources = (
+        verifier_sources if verifier_sources is not None else collect_verifier_sources(task_dir)
+    )
+    verifier_info = inspect_verifier_code(None)
+    owners = {"checked_files": {}, "checked_keys": {}}
+    for source in sources.sources:
+        info = _inspect_verifier_text(source.text, source.path)
+        for key in ("checked_files", "checked_keys", "regex_patterns"):
+            for check in info[key]:
+                if check not in verifier_info[key]:
+                    verifier_info[key].append(check)
+                if key in owners:
+                    owners[key].setdefault(check, source.path)
+        verifier_info["hazards"].extend(
+            {**hazard, "source_file": source.path} for hazard in info["hazards"]
+        )
+        verifier_info["diagnostics"].extend(info["diagnostics"])
+    verifier_info["exists"] = bool(sources.sources)
+    verifier_info["checks_instantaneous_trajectory"] = any(
+        hazard["subtype"] == "instantaneous_trajectory_rmsd" for hazard in verifier_info["hazards"]
+    )
     deliverable_diagnostics = inspect_delivered_artifacts(
         trial_dir,
         checked_keys=verifier_info.get("checked_keys"),
@@ -754,6 +866,7 @@ def audit_contract(
     diagnostics: List[Dict[str, Any]] = list(verifier_info.get("diagnostics") or [])
 
     verify_log_text = ""
+    log_source = "verifier/verify.log"
     if trial_dir:
         for rel_vlog in (
             "verifier/verify.log",
@@ -764,10 +877,25 @@ def audit_contract(
         ):
             vpath = trial_dir / rel_vlog
             if vpath.is_file():
-                text_cand = vpath.read_text(encoding="utf-8", errors="replace").strip()
+                with vpath.open("r", encoding="utf-8", errors="replace") as stream:
+                    text_cand = stream.read(1_000_000).strip()
                 if text_cand:
                     verify_log_text = text_cand
+                    log_source = rel_vlog
                     break
+
+    contract_log = _contract_log_text(verify_log_text)
+    if runtime is None:
+        try:
+            trial_result_path = trial_dir / "result.json" if trial_dir else None
+            record = (
+                json.loads(trial_result_path.read_text())
+                if trial_result_path and trial_result_path.is_file()
+                else {}
+            )
+        except (OSError, ValueError):
+            record = {}
+        runtime = compute_runtime_state({}, record, trial_dir)
 
     contract_observations: List[Dict[str, Any]] = []
     verifier_observations: List[Dict[str, Any]] = []
@@ -797,18 +925,16 @@ def audit_contract(
             or (vfile in prompt_files)
             or any(vfile.endswith(pf) or pf.endswith(vfile) for pf in prompt_files)
         )
-        missing_in_verify = bool(
-            f"Missing: {vfile}" in verify_log_text
-            or (
-                vfile in verify_log_text
-                and re.search(
-                    r"(?:FileNotFoundError|No such file|not found|missing)",
-                    verify_log_text,
-                    re.IGNORECASE,
-                )
-            )
+        log_reports_missing = _missing_file(vfile, contract_log)
+        captured = captured_container_path(trial_dir, vfile) if log_reports_missing else None
+        missing_in_verify = log_reports_missing and not captured
+        status = (
+            "present_in_capture"
+            if captured
+            else "missing_at_verify"
+            if missing_in_verify
+            else "not_reported_missing"
         )
-        status = "missing_at_verify" if missing_in_verify else "present"
         if not in_prompt:
             alignment = (
                 "verifier_hidden_requirement" if missing_in_verify else "implicit_consistent"
@@ -827,7 +953,12 @@ def audit_contract(
                 "details": (
                     f"File `{vfile}` required by verifier; prompt_declared={in_prompt}, agent_status={status}."
                 ),
-                "source_refs": ["task:instruction.md", "task:tests/verify.py"],
+                "source_refs": [
+                    "task:instruction.md",
+                    "task:" + owners["checked_files"][vfile],
+                    *([log_source] if log_reports_missing else []),
+                    *([captured] if captured else []),
+                ],
             }
         )
         cid += 1
@@ -837,12 +968,12 @@ def audit_contract(
     for vkey in verifier_info["checked_keys"]:
         in_prompt = (not prompt_keys) or (vkey in prompt_keys)
         missing_key = bool(
-            f"missing key: {vkey}" in verify_log_text
-            or f"KeyError: '{vkey}'" in verify_log_text
-            or f'KeyError: "{vkey}"' in verify_log_text
-            or (
-                vkey in verify_log_text
-                and re.search(r"(?:KeyError|missing key)", verify_log_text, re.IGNORECASE)
+            re.search(
+                r"(?:missing (?:required )?key\s*:\s*|KeyError:\s*)[\"'\x60]?"
+                + re.escape(vkey)
+                + r"(?![\w.-])",
+                contract_log,
+                re.I,
             )
         )
         if not in_prompt:
@@ -860,7 +991,11 @@ def audit_contract(
                 "agent_output_status": "missing" if missing_key else "present",
                 "alignment": alignment,
                 "details": f"JSON key `{vkey}` checked by verifier (in_prompt={in_prompt}).",
-                "source_refs": ["task:instruction.md", "task:tests/verify.py"],
+                "source_refs": [
+                    "task:instruction.md",
+                    "task:" + owners["checked_keys"][vkey],
+                    *([log_source] if missing_key else []),
+                ],
             }
         )
         cid += 1
@@ -873,36 +1008,37 @@ def audit_contract(
                 "type": "verifier_fail_message",
                 "summary": verify_log_text.splitlines()[0][:240],
                 "matched_text": verify_log_text[:500],
-                "source_file": "verifier/verify.log",
+                "source_file": log_source,
                 "source_pointer": "L1",
             }
         )
 
-        # Check if verifier crashed internally (e.g. missing verifier temp/ref file `/tmp/...`, `/tests/...`, or unhandled exception)
-        internal_crash_match = re.search(
-            r"(?:FileNotFoundError|OSError|IOError|KeyError|AttributeError|ImportError|RuntimeError)"
-            r".*?(?:/tmp/|/tests/|refs\.json|verify\.py)",
+        crash = _internal_failure(
             verify_log_text,
-            re.DOTALL,
-        ) or (
-            "Traceback (most recent call last):" in verify_log_text
-            and not any(f in verify_log_text for f in verifier_info["checked_files"])
+            verifier_info["checked_files"],
+            score_was_produced(runtime)
+            and (
+                "test session starts" in verify_log_text
+                or "short test summary info" in verify_log_text
+            )
+            and bool(re.search(r"^FAILED\s+", verify_log_text, re.MULTILINE)),
         )
-        if internal_crash_match:
+        if crash:
+            line, message = crash
             verifier_observations.append(
                 {
                     "obs_id": "ver:internal_crash",
                     "type": "verifier_internal_crash",
                     "subtype": "recompute_defect",
                     "code": "VERIFIER_RECOMPUTE_DEFECT",
-                    "summary": f"Verifier crashed due to internal file/runtime error: {verify_log_text.splitlines()[-1][:200]}",
-                    "matched_text": verify_log_text[:400],
+                    "summary": f"Verifier crashed due to internal file/runtime error: {message[:200]}",
+                    "matched_text": message[:400],
                     "hazard_detected": True,
                     "failure_binding": "direct",
                     "binding_evidence": ["ver:fail_log"],
                     "triggered": True,
-                    "source_file": "verifier/verify.log",
-                    "source_pointer": "L1",
+                    "source_file": log_source,
+                    "source_pointer": f"L{line}",
                 }
             )
 
@@ -1084,19 +1220,27 @@ def audit_contract(
                 "affected_input": affected_input,
                 "affected_parser": affected_parser,
                 "triggered": triggered,
-                "source_file": "tests/verify.py",
+                "source_file": h["source_file"],
                 "source_pointer": "AST",
             }
         )
 
     # 5. Deliverable content integrity observations (only when verify_log_text confirms the failure)
-    if verify_log_text:
+    if contract_log:
         if deliverable_diagnostics["empty_deliverables"] and re.search(
             r"\b(?:empty|no rows|0 rows|zero rows|no data|EmptyDataError)\b",
-            verify_log_text,
+            contract_log,
             re.IGNORECASE,
         ):
             for ed in deliverable_diagnostics["empty_deliverables"]:
+                if not any(
+                    Path(ed["file"]).name in line
+                    and re.search(
+                        r"\b(?:empty|no rows|0 rows|zero rows|no data|EmptyDataError)\b", line, re.I
+                    )
+                    for line in re.split(r"[;\n]", contract_log)
+                ):
+                    continue
                 contract_observations.append(
                     {
                         "contract_id": f"contract:{cid}",
@@ -1116,11 +1260,21 @@ def audit_contract(
 
         if deliverable_diagnostics["nan_or_inf_values"] and re.search(
             r"\b(?:nan|inf|infinity|non-finite|not finite)\b",
-            verify_log_text,
+            contract_log,
             re.IGNORECASE,
         ):
             seen_non_finite: Set[Tuple[str, str]] = set()
             for item in deliverable_diagnostics["nan_or_inf_values"]:
+                leaf = item["key"].rsplit(".", 1)[-1]
+                if not any(
+                    (
+                        Path(item["file"]).name in line
+                        or re.search(r"(?<![\w.-])" + re.escape(leaf) + r"(?![\w.-])", line)
+                    )
+                    and re.search(r"\b(?:nan|inf|infinity|non-finite|not finite)\b", line, re.I)
+                    for line in re.split(r"[;\n]", contract_log)
+                ):
+                    continue
                 pair = (item["file"], item["key"])
                 if pair in seen_non_finite:
                     continue
@@ -1144,7 +1298,7 @@ def audit_contract(
 
         if deliverable_diagnostics["missing_checked_keys"] and re.search(
             r"(?:KeyError|missing (?:required )?(?:key|field|column)|schema mismatch)",
-            verify_log_text,
+            contract_log,
             re.IGNORECASE,
         ):
             already_flagged = {
@@ -1156,7 +1310,7 @@ def audit_contract(
             for mk in deliverable_diagnostics["missing_checked_keys"]:
                 if f"results.json:values.{mk}" in already_flagged:
                     continue
-                if mk not in verify_log_text and "results.json" not in verify_log_text:
+                if mk not in contract_log and "results.json" not in contract_log:
                     continue
                 in_prompt = (not prompt_keys) or (mk in prompt_keys)
                 contract_observations.append(

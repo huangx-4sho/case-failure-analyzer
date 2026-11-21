@@ -136,6 +136,7 @@ def gate3_verifier_defect(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         subtype = "hidden_contract"
         summary = vd["details"] if vd else "Verifier hidden contract rejected output."
 
+    preflight = bool(vc and vc.get("scoring_reached") is False)
     ev_refs = []
     if vc:
         ev_refs.append(vc["obs_id"])
@@ -212,12 +213,12 @@ def gate3_verifier_defect(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
             "subtype": "result_validation",
             "claim": "Agent produced invalid or missing simulation results.",
             "evidence_for": [],
-            "evidence_against": ev_refs,
+            "evidence_against": [] if vc else ev_refs,
             "missing_evidence": [],
             "counterfactual_test": "Inspect agent's workspace outputs against `instruction.md` requirements.",
         },
         direct_causal_evidence=0,
-        contradicting_evidence=1,
+        contradicting_evidence=0 if vc else 1,
     )
 
     ctx.trace.record(
@@ -247,27 +248,29 @@ def gate3_verifier_defect(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
         "failure_manifestation": {
             "type": "verifier_internal_crash" if vc else "verifier_false_rejection",
             "summary": fail_summary,
+            **({"scoring_reached": False} if preflight else {}),
         },
         "primary_root_cause": prc,
         "contributing_factors": contributing,
         "competing_hypotheses": [h1, h2],
         "evidence_refs": ev_refs,
-        "excluded_hypotheses": [
+        "excluded_hypotheses": []
+        if vc
+        else [
             {
                 "hypothesis_id": "H2",
                 "category": "agent",
-                "reason": (
-                    "Verifier crashed internally on its own reference/temp file before validating agent output."
-                    if vc
-                    else "Agent's simulation outputs satisfied the prompt contract before hitting the causally bound verifier parser/header defect."
-                ),
+                "reason": "Agent's simulation outputs satisfied the prompt contract before hitting the causally bound verifier parser/header defect.",
             }
         ],
         "recommended_actions": [
             {
                 "owner": "Verifier",
                 "action": (
-                    f"Fix `tests/verify.py` ({code}): ensure internal reference paths exist and use robust namelist/float/header parsing."
+                    "Trace the verifier's effective packaged input and expected digest in the run-time "
+                    "bundle, including any staged or embedded copy."
+                    if preflight
+                    else f"Fix `tests/verify.py` ({code}): ensure internal reference paths exist and use robust namelist/float/header parsing."
                 ),
             }
         ],

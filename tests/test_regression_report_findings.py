@@ -111,9 +111,20 @@ class TestReportRegressionFindings(unittest.TestCase):
                                     {
                                         "tool_call_id": "c1",
                                         "function_name": "Write",
-                                        "arguments": {"file_path": "/workspace/results.json"},
+                                        "arguments": {
+                                            "file_path": "/workspace/results.json",
+                                            "content": '{"ENERGY": 999.0}',
+                                        },
                                     }
                                 ],
+                                "observation": {
+                                    "results": [
+                                        {
+                                            "source_call_id": "c1",
+                                            "content": "File created successfully at /workspace/results.json",
+                                        }
+                                    ]
+                                },
                             }
                         ],
                     }

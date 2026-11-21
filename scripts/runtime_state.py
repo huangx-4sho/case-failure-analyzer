@@ -39,6 +39,8 @@ VERIFIER_SCRIPT_REL_PATHS = (
     "verify.py",
 )
 
+COMPLETENESS_REWARD_SCOPE = "evidence_completeness_only"
+
 
 def score_was_produced(record: Dict[str, Any]) -> bool:
     """Starting a verifier is not evidence that it returned a score."""
@@ -95,6 +97,8 @@ def extract_trial_reward(
             raw_text = reward_txt_path.read_text(encoding="utf-8", errors="replace").strip()
             if raw_text:
                 reward_val = float(raw_text.splitlines()[0].strip())
+                if not math.isfinite(reward_val):
+                    raise ValueError("non-finite reward")
         except Exception as exc:
             # Recovery is correct (the caller falls back to result.json), but an
             # unparseable reward silently changes Gate 0's pass detection, so the
@@ -122,14 +126,18 @@ def extract_trial_reward(
         vr = trial_result.get("verifier_result")
         if isinstance(vr, dict):
             rewards = vr.get("rewards")
-            if isinstance(rewards, dict) and isinstance(rewards.get("reward"), (int, float)):
+            if isinstance(rewards, dict) and _is_numeric_reward(rewards.get("reward")):
                 reward_val = float(rewards["reward"])
-            elif isinstance(vr.get("reward"), (int, float)):
+            elif _is_numeric_reward(vr.get("reward")):
                 reward_val = float(vr["reward"])
-        if reward_val is None and isinstance(trial_result.get("reward"), (int, float)):
+        if reward_val is None and _is_numeric_reward(trial_result.get("reward")):
             reward_val = float(trial_result["reward"])
 
     return reward_val
+
+
+def _is_numeric_reward(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _safe_int(val: Any) -> int:
@@ -144,12 +152,12 @@ def _safe_int(val: Any) -> int:
 def _review_receipts(trial_dir):
     """Only top-level saved verifier status, never nested review criteria.
 
-    Canonical verification.json takes precedence over stale transport stdout.
+    Canonical verifier envelopes take precedence over stale transport stdout.
     """
     receipts = []
     if not trial_dir:
         return receipts
-    for rel in ("verifier/verification.json", "verifier/test-stdout.txt"):
+    for rel in ("verifier/verify.json", "verifier/verification.json", "verifier/test-stdout.txt"):
         path = trial_dir / rel
         try:
             with path.open("rb") as handle:
@@ -163,25 +171,40 @@ def _review_receipts(trial_dir):
             report = json.loads(text)
         except ValueError:
             report = None
-        status = report.get("status") if isinstance(report, dict) else None
-        final_statuses = {"FAIL", "FAILED", "PASS", "PASSED", "ERROR", "ENV_INVALID"}
-        if (
-            rel == "verifier/verification.json"
-            and isinstance(status, str)
-            and status.upper() in final_statuses
-        ):
+        report = report if isinstance(report, dict) else {}
+        status = str(report.get("status") or "").upper()
+        final_statuses = {"FAIL", "FAILED", "PASS", "PASSED", "ERROR", "ENV_INVALID", "SCORED"}
+        if rel.endswith(".json") and status in final_statuses:
             return []
-        if status == "REVIEW_REQUIRED" or re.match(r"^REVIEW_REQUIRED(?:\s*:|$)", text):
+        if status in {"REVIEW_REQUIRED", "REQUIRE_REVIEW"} or re.match(
+            r"^(?:REVIEW_REQUIRED|REQUIRE_REVIEW)(?:\s*:|$)", text
+        ):
+            scoped_reward = {}
+            if (
+                report.get("reward_scope") == COMPLETENESS_REWARD_SCOPE
+                and "scientific_score" in report
+                and report["scientific_score"] is None
+                and _is_numeric_reward(report.get("reward"))
+            ):
+                scoped_reward = {
+                    "reward_scope": COMPLETENESS_REWARD_SCOPE,
+                    "reward": report["reward"],
+                }
             receipts.append(
                 {
                     "source_file": rel,
-                    "source_pointer": "/status" if isinstance(report, dict) else "L1",
-                    "status": "REVIEW_REQUIRED",
-                    "reason": str(report.get("reason") or report.get("error") or "")
-                    if isinstance(report, dict)
+                    "source_pointer": "/status" if report else "L1",
+                    "status": status or "REVIEW_REQUIRED",
+                    "reason": str(
+                        report.get("reason") or report.get("error") or report.get("summary") or ""
+                    )
+                    if report
                     else text[:500],
+                    **scoped_reward,
                 }
             )
+            if rel.endswith(".json"):
+                break
     return receipts
 
 
@@ -262,13 +285,40 @@ def compute_runtime_state(
         trial_dir is None and _safe_int(stats.get("n_errored_trials", 0)) > 0
     )
 
+    verifier_result = trial_res.get("verifier_result")
+    if not isinstance(verifier_result, dict):
+        verifier_result = {}
+    raw_metrics = verifier_result.get("rewards")
+    reward_metrics = (
+        {str(k): v for k, v in list(raw_metrics.items())[:32] if _is_numeric_reward(v)}
+        if isinstance(raw_metrics, dict)
+        else {}
+    )
     reward_val = extract_trial_reward(trial_res, trial_dir, diagnostics)
+    # When Harbor saved only a named submission metric, reward.txt is diagnostic
+    # output. A conventional scalar remains valid for jobs without that metric.
+    submission_only = (
+        "submission_checks" in reward_metrics
+        and not _is_numeric_reward(raw_metrics.get("reward"))
+        and not _is_numeric_reward(verifier_result.get("reward"))
+        and not _is_numeric_reward(trial_res.get("reward"))
+    )
+    if submission_only:
+        reward_val = None
     exc_info = trial_res.get("exception_info")
     has_trial_exception = bool(
         exc_info is not None or exception_txt_exists or job_abort_without_trial_dir
     )
 
     review_receipts = _review_receipts(trial_dir)
+    reward_scope = "submission_checks_only" if submission_only else None
+    if review_receipts:
+        receipt = review_receipts[0]
+        scoped_value = receipt.get("reward")
+        if scoped_value is not None and reward_val in (None, scoped_value):
+            reward_scope = receipt["reward_scope"]
+            reward_metrics.setdefault("reward", scoped_value)
+            reward_val = None
     pending_review = bool(review_receipts and reward_val is None)
     verifier_started = verifier_started or bool(review_receipts)
     state_conflicts: List[str] = []
@@ -291,6 +341,8 @@ def compute_runtime_state(
     elif reward_val is not None and reward_val >= 1.0:
         verification_status = "passed"
     elif reward_val is not None and reward_val < 1.0:
+        verification_status = "failed"
+    elif submission_only and reward_metrics["submission_checks"] == 0:
         verification_status = "failed"
     elif verifier_started and has_trial_exception:
         verification_status = "errored"
@@ -333,18 +385,6 @@ def compute_runtime_state(
     if not isinstance(stats, dict):
         stats = {}
 
-    verifier_result = trial_res.get("verifier_result") or {}
-    raw_metrics = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
-    reward_metrics = (
-        {
-            str(k): v
-            for k, v in list(raw_metrics.items())[:32]
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-        }
-        if isinstance(raw_metrics, dict)
-        else {}
-    )
-
     return {
         "started_at": trial_res.get("started_at")
         or (agent_exec_stage.get("started_at") if isinstance(agent_exec_stage, dict) else None)
@@ -357,6 +397,7 @@ def compute_runtime_state(
         "verdict": verdict,
         "exit_status": exit_status,  # Deprecated alias kept for schema compatibility
         "reward": reward_val,
+        **({"reward_scope": reward_scope} if reward_scope else {}),
         "reward_metrics": reward_metrics,
         "diagnostics": diagnostics,
         "agent_started": agent_started,

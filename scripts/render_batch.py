@@ -15,7 +15,7 @@ Structure:
      (with proper handling for collect-phase trials)
 
 Security & Portability:
-  Never outputs machine-specific local absolute paths (e.g. `/Users/...` or `/tmp/...`).
+  Never outputs machine-specific local absolute paths.
   Uses relative anchors and job identifiers.
 """
 
@@ -58,6 +58,12 @@ def _scoring_coverage(
         "scored": scored,
         "not_scored": max(0, total_trials - scored),
         "pending_review": int(verdict_counts.get("pending", 0)),
+        "submission_failed": sum(
+            t.get("verdict") == "failed"
+            and t.get("reward_scope") == "submission_checks_only"
+            and not score_was_produced(t)
+            for t in trials
+        ),
         "scored_passed": scored_passed,
         "scored_failed": max(0, scored - scored_passed),
         "scored_pass_rate": (scored_passed / scored * 100.0) if scored > 0 else 0.0,
@@ -73,7 +79,15 @@ def _render_coverage_block(
 ) -> List[str]:
     """Three-state scoring coverage subsection (additive under Section 1)."""
     pending = cov.get("pending_review", 0)
-    ns = max(0, cov["not_scored"] - pending)
+    submission = cov.get("submission_failed", 0)
+    ns = max(0, cov["not_scored"] - pending - submission)
+    submission_row = ""
+    if submission:
+        submission_row = (
+            f"| Submission Check Failed | `{submission}` | Submission rejected; scientific verdict unset |\n"
+            if lang == "en"
+            else f"| 提交检查失败 (Submission Check Failed) | `{submission}` | 提交被拒绝，科学结论尚无裁定 |\n"
+        )
     sp = cov["scored_passed"]
     sf = cov["scored_failed"]
     sr = cov["scored_pass_rate"]
@@ -85,6 +99,7 @@ def _render_coverage_block(
             f"| 已评分·通过 (Scored Passed) | `{sp}` | 已产出分数且通过 |\n",
             f"| 已评分·失败 (Scored Failed) | `{sf}` | 已产出分数但未通过 |\n",
             f"| 待复核 (Pending Review) | `{pending}` | 已请求独立复核，尚无评分 |\n",
+            submission_row,
             f"| 未评分 (Not Scored) | `{ns}` | 未产出有效分数（可能在验证器启动前或评分过程中中止） |\n",
             f"| **可评分通过率 (Scored Pass Rate)** | **{sr:.1f}%** | 通过 / (通过 + 已评分失败) |\n\n",
             f"> **口径说明**: 全量通过率 **{overall_pass_rate:.1f}%** = 通过 / 总 Trial 数；"
@@ -98,6 +113,7 @@ def _render_coverage_block(
             f"| Scored Passed | `{sp}` | Score recorded; passed |\n",
             f"| Scored Failed | `{sf}` | Score recorded; not passed |\n",
             f"| Pending Review | `{pending}` | Independent review requested; no score |\n",
+            submission_row,
             f"| Not Scored | `{ns}` | No valid score produced (before verification or during scoring) |\n",
             f"| **Scored Pass Rate** | **{sr:.1f}%** | Passed / (Passed + Scored Failed) |\n\n",
             f"> **Rate definitions**: overall pass rate **{overall_pass_rate:.1f}%** = "
@@ -111,6 +127,7 @@ def _render_coverage_block(
             f"| 已评分·通过 (Scored Passed) | `{sp}` | 已产出分数且通过 / score recorded; passed |\n",
             f"| 已评分·失败 (Scored Failed) | `{sf}` | 已产出分数但未通过 / score recorded; not passed |\n",
             f"| 待复核 (Pending Review) | `{pending}` | 已请求独立复核，尚无评分 |\n",
+            submission_row,
             f"| 未评分 (Not Scored) | `{ns}` | 未产出有效分数（可能在验证器启动前或评分过程中中止） / no valid score produced |\n",
             f"| **可评分通过率 (Scored Pass Rate)** | **{sr:.1f}%** | 通过 / (通过 + 已评分失败) |\n\n",
             f"> **口径说明 (Rate definitions)**: 全量通过率 / Overall **{overall_pass_rate:.1f}%** "
