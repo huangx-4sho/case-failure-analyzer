@@ -145,14 +145,14 @@ Harbor 在 Agent 执行之后、验证之前，用 `docker cp` 采集已声明�
 
 | 编码 | 子类 | 说明 |
 |---|---|---|
-| `INFRA_ARTIFACT_COLLECTION_CRASH` | `artifact_collection_crash` | `RuntimeError: Engine cp failed ('<container>:/app/final' ...): Could not find the file /app/final in container ...` —— 已声明路径缺失，Runner 中止整个 Trial |
+| `INFRA_ARTIFACT_COLLECTION_CRASH` | `artifact_collection_crash` | `RuntimeError: Engine cp failed ('<container>:/app/final' ...): Could not find the file /app/final in container ...`：已声明路径缺失，运行器中止整个试次 |
 | `INFRA_RUNNER_INTERRUPTED` | `runner_interrupted` | Runner 日志止于 `Collecting main service artifacts`，既无验证器输出也无完成记录（静默中断） |
 | `INFRA_AGENT_TIMEOUT` | `agent_timeout` | 来自 `exception_info` / `trial.log` 的 `AgentTimeoutError`。Harbor 在已声明交付物完成前终止了 Agent；短时限属于基础设施 / 作业配置故障，而非 Agent 决策 |
 | `AGENT_MISSING_DECLARED_DELIVERABLE` | `deliverable_not_written` | **伴随因素**（非主根因）：Agent 未在容器内留下某个已声明交付物。Gate 1c 将其显式保留，而 Runner 侧故障仍为主根因 |
 
-**验证前窗口内的因果优先级：** 作为因果项的 `INFRA_AGENT_TIMEOUT` 优先于下游的 `INFRA_ARTIFACT_COLLECTION_CRASH`，因为 Agent 在来得及写出这些路径之前就已被停止；采集崩溃随后记为伴随因素。若验证器确已启动（例如超时但 Trial 仍评分 `reward=0`），裁定仍为 `failed` 且 `detection_stage: verifier_execution`，但主根因依旧是 `infra`。
+**验证前窗口内的因果优先级：** 作为因果项的 `INFRA_AGENT_TIMEOUT` 优先于下游的 `INFRA_ARTIFACT_COLLECTION_CRASH`，因为 Agent 在来得及写出这些路径之前就已被停止；采集崩溃随后记为伴随因素。若验证器确已启动（例如超时但试次仍评分 `reward=0`），裁定仍为 `failed` 且 `detection_stage: verifier_execution`，但主根因依旧是 `infra`。
 
-**三态裁定：** `passed` 与已评分的 `failed` 属于*已评分*状态；在该窗口内中止的 Trial 属于*未评分*（`reward=None`、`verifier_started == false`）。批次看板必须同时给出总体通过率（`passed / total`）与已评分通过率（`passed / (passed + scored_failed)`）；未评分 Trial 绝不能被计为 Agent 失败。
+**三态裁定：** `passed` 与已评分的 `failed` 属于*已评分*状态；在该窗口内中止的试次属于*未评分*（`reward=None`、`verifier_started == false`）。批次看板必须同时给出总体通过率（`passed / total`）与已评分通过率（`passed / (passed + scored_failed)`）；未评分试次不能计为智能体失败。
 
 ## 4. 表示与契约复核标签
 
@@ -177,4 +177,4 @@ Harbor 在 Agent 执行之后、验证之前，用 `docker cp` 采集已声明�
 | `independent_validation` 独立验证与自检 | 定位实际执行的自检准则或按目标值选择验证数据的行为，将覆盖范围与公开要求、漏过的缺陷相对照。注明检查对象是格式契约、科学有效性还是证据独立性。 |
 | `conclusion_calibration` 科学结论与不确定性判断 | 对照证据可识别的范围与实际声明。包括从不同计算阶段的网格断言未收敛，以及推断不确定性时擅自缩小允许的协方差集合。 |
 
-遇到同一个错误数值，分别检查对物理量的定义、数值近似和写入结果的过程。公开要求含糊时，评分器采用的特定约定只能用于解释评分行为。保留这种竞争解释并记录缺失材料。[能力审查](evidence-review.md#能力判断) · [CompChemWorld 试标记录](agent-capability-pilot.md)
+遇到同一个错误数值，分别检查对物理量的定义、数值近似和写入结果的过程。公开要求含糊时，评分器采用的特定约定只能用于解释评分行为。保留这种竞争解释并记录缺失材料。复核时使用的 `D1`–`D8` 细粒度机制标签见[智能体机制标签](../../references/agent-mechanisms.md)。[能力审查](evidence-review.md#能力判断) · [CompChemWorld 试标记录](agent-capability-pilot.md)

@@ -29,15 +29,22 @@ python3 scripts/export_skill.py --dest /path/to/skills/case-failure-analyzer
 
 ```bash
 python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang zh
+
+# 提取单试次调查包、应用结构化复核，或汇总多个复核目录
+python3 scripts/cfa.py dossier task208 --jobs-root /path/to/benchmark --output /path/to/dossiers/task208
+python3 scripts/cfa.py review apply --evidence /path/to/evidence.json --analysis /path/to/analysis.json --review /path/to/dossiers/task208/review-plan.json --output /path/to/reviewed/task208
+python3 scripts/cfa.py review summary --audit-root /path/to/failure-report --review-root /path/to/reviewed --dossier-root /path/to/dossiers --output /path/to/review-summary
 ```
 
 需要独立英文版时使用 `--lang bilingual`：任务号模式输出 `<task_id>.en.md`，显式路径模式输出 `report.en.md`；无语言后缀的文件是主报告，不代表英文版。
 
-将示例路径换成包含 `jobs/` 与 `tasks/` 的基准仓库路径。任务编号默认匹配修改时间最新的试次。指定试次、批量分析、结果检视、对比与更新方法见[使用指南](docs/zh/guide.md)。
+将示例路径换成包含 `jobs/` 与 `tasks/` 的基准仓库路径。任务编号默认匹配修改时间最新的试次。指定试次、批量分析、结果检视、对比与因果复核流程见[使用指南](docs/zh/guide.md)与 [CLI 命令流程](references/cli.md)。
 
 ## 输出
 
 按任务号审计时，报告写入 `<benchmark>/failure-report/<job>/<task_id>/`，终端或聊天中会显示归因摘要。用 `inspect --section errors` 可查看运行中断或评分拒绝的原始记录。如果能唯一匹配，报告还会列出评分条件和提交值。
+
+需要追查具体决策时，运行 `cfa.py dossier` 提取失败检查项、评分函数、公开要求、提交物切片与还原源码，生成 `dossier.md`、`dossier.json` 和 `review-plan.json`。完成 `cfa.py review apply` 后，可用 `cfa.py review summary` 生成汇总表，并列展示证据支持的主因、人工复核候选、运行分诊线索与[智能体机制标签](references/agent-mechanisms.md)复发统计。
 
 ![报告阅读路径：摘要、完整报告与原始证据](docs/images/cfa-reports.zh.svg)
 
@@ -45,8 +52,8 @@ python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang zh
 
 ## 文档
 
-[安装与调用](docs/zh/guide.md#安装与调用) · [根因分类](docs/zh/taxonomy.md) · [归因规则](docs/zh/attribution-protocol.md)
+[安装与调用](docs/zh/guide.md#安装与调用) · [CLI 命令流程](references/cli.md) · [根因分类](docs/zh/taxonomy.md) · [归因规则](docs/zh/attribution-protocol.md)
 
-[证据字段](docs/zh/evidence-schema.md) · [报告格式](docs/zh/report-schema.md) · [技能处方](docs/zh/skill-prescription-policy.md) · [已有证据审查](docs/zh/evidence-review.md) · [技能定义](SKILL.md)
+[证据字段](docs/zh/evidence-schema.md) · [报告格式](docs/zh/report-schema.md) · [技能处方](docs/zh/skill-prescription-policy.md) · [已有证据审查](docs/zh/evidence-review.md) · [智能体机制标签](references/agent-mechanisms.md) · [技能定义](SKILL.md)
 
 [脚本职责](scripts/README.md) · [随技能导出的参考索引](references/README.md)

@@ -14,11 +14,11 @@
 
 **仅当以下 5 项条件全部满足时**，才可进入跨案例能力审查：
 
-1. **主根因为 Agent (`Agent Root Cause`)**：`primary_root_cause.category == "agent"`。
-2. **非偶发性能力缺口 (`Non-Trivial Capability Gap`)**：该失败并非一次性拼写笔误、偶然的 Shell 命令失误或基础设施抖动。
-3. **跨用例可复用性 (`Cross-Case Reusability`)**：所缺失的领域知识适用于一整类科学计算任务（例如：LAMMPS `read_restart` 续算规范、Quantum ESPRESSO `scf` -> `bands` 电荷密度复用规范、CP2K SCF 不收敛诊断与恢复策略）。
-4. **可操作协议 (`Actionable Protocol`)**：指导方案可以表达为确定性的决策树、执行前核查清单（Pre-flight Checklist）或诊断协议。
-5. **严禁封装评测器缺陷 (`No Verifier Bug Encapsulation`)**：处方绝不能教导 Agent 去迎合错误的评测器正则表达式或伪造数据。
+1. **主根因为 Agent**：`primary_root_cause.category == "agent"`。
+2. **非偶发性能力缺口**：该失败不是一次性拼写笔误、偶然的 Shell 命令失误或基础设施抖动。
+3. **跨用例可复用性**：所缺失的领域知识适用于一类科学计算任务（例如 LAMMPS `read_restart` 续算规范、Quantum ESPRESSO `scf` -> `bands` 电荷密度复用规范、CP2K SCF 不收敛诊断与恢复策略）。
+4. **可操作协议**：指导方案可以表达为确定性的决策树、执行前核查清单或诊断协议。
+5. **不封装评测器缺陷**：处方不能教导智能体迎合错误的验证器正则表达式或伪造数据。
 
 <a id="2-非准入情况的修复分流表-routing-table-for-non-eligible-cases"></a>
 
@@ -26,13 +26,13 @@
 
 任一准入条件不满足时，都不能确认可复用指导。每个试次的 `skill_prescription` 始终为空；修复建议按以下规则分流至 `recommended_actions`：
 
-| 主根因大类 (`Category`) | `recommended_actions` 责任分流方向 | 是否可进入跨案例指导审查？ |
+| 主根因类别 | `recommended_actions` 责任分流方向 | 是否可进入跨案例指导审查 |
 |---|---|---|
-| `case` | 修正 Prompt 说明、补充资产文件或调整 `task.toml` 规范 | **否** |
-| `infra` | 修复 Runner 调度器、Docker 镜像源、网络、超时配置或容器环境 | **否** |
-| `verifier` | 修复 `tests/verify.py` 解析器/正则表达式/容差阈值并补充回归测试 | **否** |
+| `case` | 修正题目说明、补充资产文件或调整 `task.toml` 规范 | **否** |
+| `infra` | 修复运行器调度、Docker 镜像源、网络、超时配置或容器环境 | **否** |
+| `verifier` | 修复 `tests/verify.py` 解析器、正则表达式或容差阈值并补充回归测试 | **否** |
 | `unknown` | 输出补充取证核查清单 | **否** |
-| `agent`（具备可复用科学/工程能力缺口） | 生成领域 Skill 处方 + Agent 策略改进建议 | **是** |
+| `agent`（具备可复用科学或工程能力缺口） | 生成领域 Skill 处方与 Agent 策略改进建议 | **是** |
 
 <a id="3-技能处方结构-prescription-schema"></a>
 

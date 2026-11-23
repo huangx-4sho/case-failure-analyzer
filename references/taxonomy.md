@@ -147,7 +147,7 @@ Harbor collects the declared deliverables (`task.toml` → `artifacts`) with `do
 
 | Code | Subtype | Meaning |
 |---|---|---|
-| `INFRA_ARTIFACT_COLLECTION_CRASH` | `artifact_collection_crash` | `RuntimeError: Engine cp failed ('<container>:/app/final' ...): Could not find the file /app/final in container ...` — declared path missing, runner aborts the whole trial |
+| `INFRA_ARTIFACT_COLLECTION_CRASH` | `artifact_collection_crash` | `RuntimeError: Engine cp failed ('<container>:/app/final' ...): Could not find the file /app/final in container ...`: declared path missing; runner aborts the whole trial |
 | `INFRA_RUNNER_INTERRUPTED` | `runner_interrupted` | Runner log ends at `Collecting main service artifacts` with no verifier output or completion record (silent interruption) |
 | `INFRA_AGENT_TIMEOUT` | `agent_timeout` | `AgentTimeoutError` from `exception_info` / `trial.log`. Harbor killed the agent before declared deliverables were complete; a short timeout is an infra / job-configuration fault, not an agent decision |
 | `AGENT_MISSING_DECLARED_DELIVERABLE` | `deliverable_not_written` | **Contributing factor** (not primary): the agent did not leave a declared deliverable in the container. Gate 1c keeps this explicit while the runner-side fault stays primary |

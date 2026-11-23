@@ -10,44 +10,48 @@
 
 失败报告按下面的顺序包含四个核心章节。标题以 `## <N>. <Title>` 顶格书写，各节正文不能为空，供人工和 `scripts/validate_analysis.py` 核验。通过试次采用后文规定的两节精简视图。
 
-评分明细放在可展开区域中，主表保留分数、评分方式和证据强度。完全重复的主因解释在偏离点和假设条目中省略，事件标识、支持证据和不同观点仍保留。JSON 数据链接按实际输出布局生成；缺失文件与运行器结果记录不应描述成已提交的计算产物。
-
-结论表列出评测结论、根因类别、子类、代码、发生阶段和置信度。运行中断和评分拒绝各有证据位置。若评分代码中只有一处条件与拒绝消息匹配，可沿行号核对。提交值也须能追到具体文件和字段。
-
-启动失败或容器异常中断时，报告显示相应运行状态。采集不完整时，第 1 节说明影响，第 2 节列出 `diagnostics` 中的警告或错误。证据索引使用相对路径，集中列出关键输入与交付物；假设的支持与反驳理由以文字说明。
-
-显式目录模式根据语言与格式选项生成对应版本：
-
-- `report.md` 是所选语言的主报告。双语模式使用中英对照标签，并输出独立英文版。
-- `report.zh.md`：独立中文版。
-- `report.en.md`：独立英文版。
-
-<a id="required-sections--visual-structure"></a>
-
 `report.md` 是按 `--lang` 选择的主报告，不代表英文版。显式目录模式使用 `--lang bilingual` 才会同时生成独立的 `report.zh.md` 与 `report.en.md`；`--lang zh` 的 `report.zh.md` 是中文别名。任务号模式对应的英文版为 `<task_id>.en.md`。生成的标题与说明遵守所选语言，未翻译的来源文字明确标为原文引用；审阅者可提供 `summary_en` / `summary_zh` 等字段。
 
 评分覆盖按实际产出分数统计，而不是按验证器启动次数统计。报告保留原始命名指标和运行异常；评分契约复核、重放范围和科学定义差异在证据节分别展示。
 
 验证器要求语义复核且尚未产分时，报告标为 `pending`，可按保存的评审条件继续核对。错因未隔离时，查看证据净分及按下限记 0 的说明。契约存在分歧时，规则也可能暂缓归因并记 0。已经复核的报告保留原规则分，并单列复核结论。
 
+<a id="required-sections--visual-structure"></a>
+
 ## 核心章节与呈现方式
+
+第 1 节用紧凑的 Markdown 属性表呈现实测裁决、主因类别 → 子类（`CODE`）、阶段与置信度，随后分别列出失败表现与归因机制。两者回答不同问题：前者说明验证在哪里失败，后者说明原因判断。
+
+证据索引使用相对路径，采用自然语言归纳，不直接输出 Python 列表语法。若所有日志缺失，用一行合并说明。只展示核心缺失输入与计算产物，略去无关的临时中间文件。省略正常的 `agent_started=True, verifier_started=True` 标志；仅在启动失败或容器异常中断时显示门控警示。
+
+评分明细放在可展开区域，主表保留分值、评估方式与证据强度。偏离点与假设条目中省略主因解释的重复文本，仅保留事件标识、支持证据和不同观点。JSON 数据链接按实际输出布局生成。缺失文件和运行器结果记录不应写成智能体提交的计算产物。
+
+若 `diagnostics` 包含 `warning` 或 `error`，证据降级必须清晰可见：第 1 节说明受影响的结论，第 2 节逐条列出诊断详情。
+
+显式目录模式按语言与格式选项生成报告文件：
+
+| 文件 | 说明 |
+| --- | --- |
+| `report.md` | 所选语言的主报告。双语模式采用对照标签，并另写一份英文版 |
+| `report.zh.md` | 独立中文版 |
+| `report.en.md` | 独立英文版 |
 
 <a id="1--1-归因结论-or--1-root-cause-verdict"></a>
 
 ### 1. 归因结论
 
 报告标题：`## 1. 归因结论` 或 `## 1. Root Cause Verdict`。
-以紧凑 Markdown 属性表（`项目 (Field) | 结论 (Finding)`）配合高亮引用呈现：
 
-- **评测结论 (Verdict)**：`failed` / `passed` / `pending` / `errored`（包含执行状态、验证状态、reward）
-- **主因 (Primary cause)**：【大类】➔ 【二级子类】(`CODE`)
-- **阶段 (Stages)**：发生阶段 ➔ 检出阶段
-- **置信度 (Confidence)**：数值、判定方式与证据强度
-- **运行门控警示 (Gate Warning)**：仅在未正常启动或容器异常中断时附带警示块，正常启动时不展示冗余门控状态。
-- **证据完整性警示 (Evidence Integrity Warning)**：仅当 `diagnostics` 中存在 `warning` / `error` 记录时出现，说明证据已降级及受影响结论，并指向第 2 节的明细。
-- **高亮结论卡片**：
-  - **失败表现 (Failure manifestation)**：验证器具名失败检查或数值偏差等直接失败现象。
-  - **归因判断 (Attribution)**：大类 · 子类层面的因果机制（模型盲区、契约歧义、判分缺陷或环境故障）。
+| 项目 | 内容要求 |
+| --- | --- |
+| 裁决（Verdict） | `failed`、`passed`、`pending` 或 `errored`，含执行状态、验证状态与 `reward` |
+| 主因（Primary cause） | 类别 → 子类（`CODE`） |
+| 阶段（Stages） | 发生阶段 → 检出阶段 |
+| 置信度（Confidence） | 分值、评估方式与证据强度 |
+| 运行门控警示 | 仅在启动失败或容器异常中断时出现 |
+| 证据完整性警示 | 仅当 `diagnostics` 含 `warning` / `error` 时出现，说明影响并指向第 2 节 |
+| 失败表现（Failure manifestation） | 验证器具名失败检查或数值偏差 |
+| 归因判断（Attribution） | 大类 · 子类层面的因果机制：智能体能力缺口、契约歧义、评分缺陷或环境故障 |
 
 <a id="2--2-失败证据链-or--2-failure-evidence-chain"></a>
 
@@ -55,14 +59,11 @@
 
 报告标题：`## 2. 失败证据链` 或 `## 2. Failure Evidence Chain`。
 
-- **关键失败报错摘要**：提炼最核心的 1~3 行验证器错误日志。
-- **首次不可恢复偏离点 (`first_unrecovered_deviation`)**：记录偏离事件 ref、时间戳与发生动作。
-- **核心证据引用代号 (`evidence_refs`)**。
-- **证据降级诊断 (Evidence Degradation Diagnostics)**：仅当存在 `warning` / `error` 诊断时出现，逐条列出 `code`、`stage`、`severity`、`message`、`impact` 与 `source_ref`；这些记录同样写入 `evidence.json` 并在 `job_summary.json` 中聚合计数。
-- **证据链来源文件索引 (Evidence File Pointers)**：
-  - **相对上下文锚点**：统一标明 `case`、`trial` 与 `task` 相对标识，消除长绝对路径折行与泄露噪音。
-  - **核心日志与产物**：交互轨迹（`agent/trajectory.json`）、评测日志（`verifier/verify.log`）、任务规范（`instruction.md`）、计算产物（`results.json`）。全缺时单行合并概括。
-  - **全量证据矩阵索引**：指引至 `evidence.json` 与 `analysis.json`。
+- 提炼最关键的 1~3 行验证器报错摘要。
+- 记录 `first_unrecovered_deviation` 的事件引用、时间戳与动作，以及核心 `evidence_refs`。
+- 若存在证据降级诊断，列出 `code`、`stage`、`severity`、`message`、`impact` 与 `source_ref`；这些记录同样保存在 `evidence.json` 并计入 `job_summary.json`。
+- 用相对标识指明 `case`、`trial` 与 `task`，避免输出冗长的本机绝对路径。索引核心材料：`agent/trajectory.json`、`verifier/verify.log`、`instruction.md` 和 `results.json`。全缺时合并成一行概括。
+- 链接完整的 `evidence.json` 与 `analysis.json`。
 
 <a id="3--3-假设检验与排除-or--3-hypothesis-audit"></a>
 
@@ -70,8 +71,7 @@
 
 报告标题：`## 3. 假设检验与排除` 或 `## 3. Hypothesis Audit`。
 
-- **竞争假设仲裁**：美化为自然文本的候选假设支持证据与排除假设反驳理由，杜绝 Python 列表语法泄露。
-- **伴随因素与异常信号**：次要伴随影响与行为信号条数统计（详细条目索引至 `evidence.json`）。
+用自然语言列出候选假设的支持证据与排除理由，不使用 Python 列表语法。附上伴随因素与行为信号计数；逐条明细索引至 `evidence.json`。
 
 <a id="4--4-改进建议-or--4-recommended-actions"></a>
 
@@ -79,15 +79,13 @@
 
 报告标题：`## 4. 改进建议` 或 `## 4. Recommended Actions`。
 
-- **针对性整改行动 (Action Items)**：按责任主体（Case/Infra/Verifier/Agent）给出明确对策。
-- 单次试次可提出改进建议。确认可复用的技能指导需另行比较多个独立任务。
-- **核心缺失产物清单**：仅展示关键核心输入与计算产物，收敛内部临时/中间文件。
+按责任方给出可落地的处理动作，并说明仍缺哪些输入或输出才能进一步定因。单次试次可以提出改进建议；确认可复用的指导需要另外对比多个独立任务。
 
 <a id="lightweight-view-for-passed-trials-通过案例精简版"></a>
 
 ## 通过试次的精简视图
 
-当评测判定为通过 (`verdict == "passed"`) 时，报告自动切换为轻量精简视图（严格预算控制在 30 行以内），仅保留通过裁定与验证证据，彻底移除失败根因、竞争失败假设、缺失产物清单与修复行动等无关噪音：
+当 `verdict == "passed"` 时，报告切换为 30 行以内的精简视图。仅保留通过裁定与验证证据，省略失败原因、竞争假设、缺失产物清单和整改建议。
 
 <a id="1--1-通过结论-or--1-verdict--pass-summary"></a>
 
@@ -95,8 +93,7 @@
 
 报告标题：`## 1. 通过结论` 或 `## 1. Verdict & Pass Summary`。
 
-- **通过属性表**：评测结论（`passed` · reward）、阶段（执行与验证均通过）、置信度（`1.00` · 规则判定）。
-- **通过依据**：无降级时标注评测规则全部通过，未检测到未恢复异常或规格违规。若存在 `warning` / `error` 证据降级诊断，则本节改述为“判定通过但证据采集降级”，并在通过依据之后输出证据完整性警示；逐条诊断仍放在第 2 节，不得继续声称“无任何偏离”。
+显示 `passed` 与 `reward`、执行与验证阶段、以及规则置信度 `1.00`。无降级时，说明验证全部通过且未检测到未恢复异常或契约违约。存在 `warning` / `error` 诊断时，说明验证虽通过但取证降级，附完整性警示并将明细列在第 2 节，不再声称无任何偏离。
 
 <a id="2--2-验证证据-or--2-verification-evidence"></a>
 
@@ -104,9 +101,7 @@
 
 报告标题：`## 2. 验证证据` 或 `## 2. Verification Evidence`。
 
-- **任务与试次**：`task`, `trial`, `case` 相对标识，不输出任何机器绝对路径。
-- **已验证产物记录**：仅展示实际存在的验证产物文件，不列出失败产物缺失项。
-- **全量验证矩阵索引**：指引至 `evidence.json` 与 `analysis.json`（若使用 `--format markdown` 则展示对应说明）。
+展示相对 `task`、`trial`、`case` 标识，不输出本机绝对路径。仅列出实际存在的验证产物，不列缺失产物表。链接 `evidence.json` 与 `analysis.json`（使用 `--format markdown` 时说明未生成的原因）。
 
 <a id="batch-summary-job_summarymd--job_summaryjson"></a>
 
@@ -122,9 +117,9 @@
 
 `degraded_evidence_trial_count` 统计证据采集至少出现一条 `warning` 或 `error` 的试次数量。它不等于失败数量，不得并入 `verdict_counts`。
 
-### 三态评分覆盖 (`### 1.1`)
+### 评分覆盖 (`### 1.1`)
 
-`job_summary.md` 在第 1 节下新增附加的 `### 1.1` 子节，包含四行：**已评分通过 (Scored Passed)**、**已评分失败 (Scored Failed)**、**未评分 (Not Scored)**（Runner 在验证器启动前中止，`reward=None`）以及**已评分通过率 (Scored Pass Rate)**。其中的说明区分总体通过率（`passed / total_trials`，仍保留在第 1 节表中）与已评分通过率（`passed / scored_trials`）。当 `low_diagnosability_trial_count > 0` 时，批次级警示会提示部分验证器结论只是简短泛化的消息，既无具名检查也无数值偏差。该子节是附加的：`report.md` 的四个强制 `## <N>.` 小节与现有的第 1 节表均保持不变。
+`job_summary.md` 在第 1.1 节列出已评分通过、已评分失败、待独立复核以及未评分试次，存在提交检查未通过记录时增加相应行。总体通过率为 `passed / total_trials`，已评分通过率为 `passed / scored_trials`。当 `low_diagnosability_trial_count > 0` 时，报告会标出缺少具名检查或数值细节的结论。
 
 ### 验证器报告区块（单 Trial `report.md`）
 
@@ -132,7 +127,7 @@
 
 ## 任务号快捷回答 (`--task-id task208`)
 
-以任务引用调用本技能（例如 `$case-failure-analyzer task208`）时会启用任务号模式。`scripts/task_ref.py` 会把该引用解析为最新匹配的 trial、其 job 目录，以及包含 `task.toml` 的任务定义目录。`--jobs-root`（或 `$CFA_JOBS_ROOT`，随后依次为当前目录及其父目录）限定搜索范围；数字匹配为精确匹配，因此 `task208` 绝不会解析成 `task2080`。
+以任务引用调用本技能（例如 `$case-failure-analyzer task208`）时会启用任务号模式。`scripts/task_ref.py` 会把该引用解析为最新匹配的 trial、其 job 目录，以及包含 `task.toml` 的任务定义目录。`--jobs-root`（或 `$CFA_JOBS_ROOT`，随后依次为当前目录及其父目录）限定搜索范围；数字匹配为精确匹配，因此 `task208` 不会解析成 `task2080`。
 
 **输出落点**：报告统一落到 `<bench_root>/failure-report/<job>/<task_id>/`。`bench_root` 由解析出的 trial 路径推导（`<bench>/<case>/jobs/<job>/<trial>` → `<bench>`；扁平 `<bench>/jobs/...` → `<bench>`）。bench 级目录下包含一个全局看板，各 job 各有一个目录，目录内按任务编号存放报告：
 
@@ -172,29 +167,30 @@
 
 ### 全局看板 (`INDEX.md`)
 
-基准级全局看板聚合全量已分析任务的归因统计数据：
+基准级全局看板汇总全量已分析任务的归因结果：
 
-- **三态评测统计**：顶部引用块追踪 `总用例 / Total`、`通过 / Passed`、`已评分失败 / Failed`、`未评分或异常 / Errored & Unscored`，以及**可评分通过率 / Scored Pass Rate**（`通过 / (通过 + 已评分失败)`）。
-- **根因大类归一化**：第 1 节各失败大类占比以未通过用例总数（`non_passed = sum(cat_counts)`）为分母计算，确保 5 个失败桶（`agent`、`verifier`、`case`、`infra`、`unknown`）占比总和恒为 `100.0%`。
-- **自然数字排序**：用例清单按任务编号自然排序（`task98` 优先于 `task194` 与 `task207`），彻底解决字典序颠倒问题。
-- **置信度视觉强度标识**：清单直观呈现置信度强度信号：`🟢`（`>= 0.65`）、`🟡`（`0.40..0.64`）、`🔴`（`< 0.40`）以及通过试次的 `✅ 1.00`。
-- 清单提供 `summary.md`、任务报告和 `data/` 的链接。旧报告可能保留 `skill-prescription.md`；新生成的跨任务指导保存在独立复核结果中。
+- **试次统计**：统计总用例数、已评分通过、已评分失败、待独立复核、未评分或异常数，以及已评分通过率。
+- **类别分布**：展示已分类未通过试次在四类根因与 `unknown` 桶中的占比；已通过与待复核试次不计入该分布分母。
+- **自然数字排序**：任务清单按任务编号自然排序（`task98` 在 `task194` 和 `task207` 之前），避免按字符序排乱。
+- **置信度视觉标识**：`🟢` 表示 `>= 0.65`，`🟡` 表示 `0.40..0.64`，`🔴` 表示 `< 0.40`，通过试次显示 `✅ 1.00`。
+- **直达链接**：提供 `[速览]`（`summary.md`）、`[报告]`（`{task_id}.md`）和 `[数据]`（`data/`）链接；历史报告可能保留 `skill-prescription.md`，新的跨任务指导保存在独立复核结果中。
 
 ### 一目了然错误矩阵与证据摘要检视
 
-`scripts/cfa.py inspect` 提供聚焦、只读的安全检视工具，默认自动脱敏凭据与家目录路径：
+`scripts/cfa.py inspect` 提供聚焦、只读的检视功能，默认自动脱敏凭据与家目录路径：
 
-- **一目了然错误矩阵** (`cfa inspect <task_id> --section errors`)：以终端友好的 Markdown 表格呈现裁决、主因大类、验证器可诊断性及每一项具名失败检查（`[<layer>] <name>`、`failure_kind`、`detail`，以及产物对比或复算散度数值）。传入 `--raw` 输出原生 JSON 字典。
-- **置信度收据与因子明细** (`cfa inspect <task_id> --section confidence`)：清晰展示启发式置信度、证据强度、动态分值标尺（`points / denominator`）、带正负符号的证据因子明细、提升置信度所需补充证据，以及竞争假设得分。传入 `--raw` 输出结构化收据 JSON。
-- **规整化证据人读摘要** (`cfa inspect <task_id> --section evidence`)：提供紧凑的人类可读运行状态摘要、失败检查计数、因果锚点、科学观测、行为信号计数及核心证据引用，无需向终端倾倒 200KB+ 的全量 JSON。传入 `--raw` 导出原始 `evidence.json`。
-- **全量用例自动发现与批量审计** (`cfa audit --all --jobs-root <bench_root>`)：自动扫描基准仓库（兼顾 Harbor 多套件布局与扁平布局），在各 job 内按任务编号审计每个任务的最新试次并输出单行进度状态，最终生成 `<bench_root>/failure-report/INDEX.md`。
+- **一目了然错误矩阵** (`cfa inspect <task_id> --section errors`)：以终端友好的 Markdown 表格呈现裁决、主因大类、验证器可诊断性及每一项具名失败检查（`[<layer>] <name>`、`failure_kind`、`detail`，以及产物对比或复算散度数值）。传入 `--raw` 输出原始 JSON。
+- **置信度收据与因子明细** (`cfa inspect <task_id> --section confidence`)：展示启发式置信度、证据强度、动态分值标尺（`points / denominator`）、带正负符号的证据因子明细、提升置信度所需补充证据，以及竞争假设得分。传入 `--raw` 输出结构化收据 JSON。
+- **规整化证据摘要** (`cfa inspect <task_id> --section evidence`)：输出紧凑的运行状态摘要、失败检查计数、因果锚点、科学观测、行为信号计数及核心证据引用，无需展开完整 JSON。传入 `--raw` 输出原始 `evidence.json`。
+- **全量用例自动发现与批量审计** (`cfa audit --all --jobs-root <bench_root>`)：自动扫描基准仓库（支持 Harbor 多套件布局与扁平布局），在各 job 内自然排序并审计每个任务的最新试次，随后更新 `<bench_root>/failure-report/INDEX.md`。
 
 ### 结论卡 (`summary.md` / stdout)
 
-该卡**就是**直接回答；CLI 将其打印到 stdout，随后追加 `REPORT_DIR: <path>`，因此调用方无需打开任何文件即可作答。其顺序为刚性约束（承载结论语义）：
+该卡就是直接回答；CLI 将其打印到 stdout，随后输出 `REPORT_DIR: <path>`，调用方无需打开文件即可作答。输出顺序固定：
 
-1. **主因与失败原因** —— 单行给出裁定、主因大类、`subtype`、`code`、置信度，以及具体的失败原因（具名失败检查 / 偏差数值）。内嵌的原始验证器 JSON 大块会被剥离。
-2. **四大类裁决**（`## 1. 四大类裁决`）—— `agent`、`verifier`、`case`、`infra`，每一类都带状态（`主因` / `伴随因素` / `已排除` / `未选为主因` / `候选假设`）及有证据支撑的理由。`unknown` 是辅助归类桶，并非第五个并列大类。
-3. **主因大类下的小分类**（`## 2. 主因大类下的小分类`）—— `subtype` → `code` → 置信度 → 依据，另附伴随/候选子类、具名失败检查、`evidence_refs` 与 `recommended_actions`。
+1. **结论等级与失败原因**：给出评测结论、候选或复核后的类别、`subtype`、`code`、启发式置信度，以及具体的运行中断或被拒检查项。
+2. **四大类裁决**：并列给出 `agent`、`verifier`、`case`、`infra` 的状态与依据；未被规则选中的替代假设保持未定或排除理由。
+3. **选中大类下的子类**：列出子类、代码、置信度、依据、伴随因素、证据与改进建议；主因指向 `Agent` 时附上单试次能力诊断。
+4. **报告链接**：使用输出的 `REPORT_DIR` 及所请求语言版本对应的文件名。
 
-当主因大类为 `unknown` 时，结论卡会直白说明证据无法定位出原因，并列出所缺失的内容；绝不臆造子类。结论卡采用中英双语标签，并遵循 `--lang`（默认中文，`--lang en` 时为英文）。
+当主因类别为 `unknown` 时，结论卡说明仍需哪些证据才能锁定原因，不猜测子类；已通过或待复核试次使用对应的简短回答。结论卡使用所选报告语言（`--lang zh` 或 `--lang en`）。

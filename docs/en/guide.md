@@ -97,7 +97,7 @@ Require or automatically discover:
 
 - **Read-only by default**: Never modifies `tasks/`, `jobs/`, or `tests/verify.py`.
 - **Deterministic Evidence Extraction + Model Causal Reasoning**: Deterministic scripts extract `evidence.json` and `candidate-hypotheses.json`; `--phase all` emits a conservative deterministic draft `analysis.json` that can be overridden and validated by an Agent/model per [attribution-protocol.md](attribution-protocol.md).
-- **Evidence-first attribution**: Never assigns a root cause from a single keyword match. Strictly separates **failure manifestation (symptom)**, **detection stage**, and **primary root cause**.
+- **Evidence-first attribution**: Never assigns a root cause from a single keyword match. Keeps **failure manifestation (symptom)**, **detection stage**, and **primary root cause** separate.
 - **Positive-evidence gate for Agent blame**: Never defaults to `agent` when other gates do not fire. Requires positive agent evidence (`behavioral_signals`, `agent_mismatch` contract violation, or agent-caused `scientific_observations`).
 - When the records cannot distinguish competing causes, the root category is `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`). The recorded rejection is still available for review.
 - **Report languages**. `--lang bilingual` produces `report.md`, `report.zh.md`, and `report.en.md` in path mode. Task-ID mode uses `<task_id>.md` and `<task_id>.en.md`.
@@ -106,7 +106,7 @@ Require or automatically discover:
 
 ### 1. Run the audit
 
-Use the unified CLI (`scripts/cfa.py`) for task-ID auditing, read-only inspection, and cross-case diffing, or invoke `scripts/analyze_case.py` directly for path-based jobs:
+Use the unified CLI (`scripts/cfa.py`) for task-ID auditing, read-only inspection, trial comparison, dossier extraction, and review summaries, or invoke `scripts/analyze_case.py` directly for path-based jobs ([CLI workflows](../../references/cli.md)):
 
 ```bash
 SKILL_DIR="/path/to/skills/case-failure-analyzer"
@@ -115,6 +115,8 @@ python3 "$SKILL_DIR/scripts/cfa.py" audit task208 --jobs-root "$BENCH_ROOT" --la
 python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --jobs-root "$BENCH_ROOT" --section artifacts
 python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --jobs-root "$BENCH_ROOT" --section step --step 43
 python3 "$SKILL_DIR/scripts/cfa.py" diff task207 task208 --jobs-root "$BENCH_ROOT"
+python3 "$SKILL_DIR/scripts/cfa.py" dossier task208 --jobs-root "$BENCH_ROOT" --output /path/to/dossiers/task208
+python3 "$SKILL_DIR/scripts/cfa.py" review summary --audit-root "$BENCH_ROOT/failure-report" --review-root /path/to/reviewed --dossier-root /path/to/dossiers --output /path/to/review-summary
 # Or by explicit job/task directory:
 python3 "$SKILL_DIR/scripts/analyze_case.py" \
   --job "$BENCH_ROOT/jobs/run-001/task208__abc" \
@@ -127,23 +129,23 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 
 ### 2. Establish runtime state
 
-Scripts: `scripts/runtime_state.py` · `scripts/extract_runtime_errors.py`
+Scripts: `scripts/runtime_state.py` · `scripts/extract_runtime_errors.py` · `scripts/attribution/runtime_triage.py`
 
-Read `runtime.agent_started`, `runtime.verifier_started`, the execution and verification statuses, and `error_observations` together. A model-service quota can stop the agent before a verifier later scores missing deliverables. Keep the recorded score and both events. Job-wide error counts do not change a passing trial.
+Read `runtime.agent_started`, `runtime.verifier_started`, the execution and verification statuses, and `error_observations` together. A model-service quota or timeout can stop the agent before a verifier later scores missing deliverables; `runtime_triage` records bounded observations and leads (`configured_budget_vs_workload`, `reasoning_token_runaway`, `context_overflow_by_large_read`) separately from upstream blame. Keep the recorded score and both events. Job-wide error counts do not change a passing trial.
 
 ### 3. Reconstruct the trajectory
 
-Scripts: `scripts/normalize_trajectory.py` · `scripts/trace_causal_anchors.py`
+Scripts: `scripts/normalize_trajectory.py` · `scripts/trace_causal_anchors.py` · `scripts/self_check_execution.py` · `scripts/trajectory_source.py`
 
-Trace chronological events across runner setup, agent steps (`ATIF-v1.7`, `.jsonl`, OpenAI/Anthropic `tool_use`/`tool_result` folding), tool calls, file writes, two-phase script output target tracking (`script_targets`), salience-preserving truncation, and verifier execution. `trace_causal_anchors.py` applies backward provenance scoring for scripts producing implicated failed artifacts and extracts `parameter_evolution` across steps.
+Trace chronological events across runner setup, agent steps (`ATIF-v1.7`, `.jsonl`, OpenAI/Anthropic `tool_use`/`tool_result` folding), tool calls, file writes, two-phase script output target tracking (`script_targets`), salience-preserving truncation, and verifier execution. `trace_causal_anchors.py` applies backward provenance scoring for scripts producing implicated failed artifacts and extracts `parameter_evolution` across steps. `trajectory_source.py` reconstructs literal source versions from full writes, unambiguous edits, and quoted heredocs, while `self_check_execution.py` pairs self-check runs with their scripts and outputs in `causal_anchors.self_check_executions`.
 
 For an agent self-check, inspect `causal_anchors.self_check_executions`. Match the command that ran to the script version and its output. To attribute a coverage gap, identify a public requirement that this check missed and the rejection that followed. [Evidence review](evidence-review.md#failure-location-and-self-check-evidence)
 
 ### 4. Audit contracts and deliverables
 
-Scripts: `scripts/audit_contract.py`
+Scripts: `scripts/audit_contract.py` · `scripts/deliverable_audit.py` · `scripts/contract_review.py` · `scripts/verifier_source.py` · `scripts/attribution/failure_location.py`
 
-Inspect `contract_observations`, `deliverable_diagnostics` (empty tables, `NaN`/`Inf` values, missing `checked_keys` in `artifacts/`), and `verifier_observations` (`failure_binding: direct | indirect | none`, `verifier_internal_crash`) to distinguish genuine agent contract violations from causally bound verifier parser defects or internal verifier crashes.
+Inspect `deliverable_audit`, `contract_observations`, `deliverable_diagnostics` (empty tables, `NaN`/`Inf` values, missing `checked_keys` in `artifacts/`), and `verifier_observations` (`failure_binding: direct | indirect | none`, `verifier_internal_crash`, `dependency_preflight_failed`) to distinguish genuine agent contract violations from causally bound verifier parser defects or internal verifier crashes. `verifier_source.py` resolves both multi-file `tests/` suites and packed read-only `tests/refs.json` verifiers, and `failure_location.py` binds rejections in `contract_review.failure_locations` to matching scorer lines and submitted values when uniquely identifiable.
 
 ### 5. Extract scientific errors
 
@@ -163,18 +165,18 @@ Compare structured hypotheses (`H1`, `H2`, ...) with `evidence_for`, `evidence_a
 
 ### 8. Validate and render reports
 
-Scripts: `scripts/validate_analysis.py` · `scripts/render_report.py`
+Scripts: `scripts/validate_analysis.py` · `scripts/render_report.py` · `scripts/dossier.py` · `scripts/review_cause.py` · `scripts/review_summary.py`
 
-Validate `evidence.json`, `analysis.json`, and the Markdown report. The per-trial audit keeps `skill_prescription` null. Use `cfa.py review capability` to review proposed reusable guidance across independent tasks. [Existing-evidence review](evidence-review.md#capability-scope)
+Validate `evidence.json`, `analysis.json`, and the Markdown report. For an unresolved failure needing deeper investigation, generate a task dossier with `cfa.py dossier`, fill `review-plan.json` (including optional [agent mechanism tags](../../references/agent-mechanisms.md)), apply it with `cfa.py review apply`, and aggregate validated bundles with `cfa.py review summary`. The per-trial audit keeps `skill_prescription` null. Use `cfa.py review capability` to review proposed reusable guidance across independent tasks. [Existing-evidence review](evidence-review.md#capability-scope)
 
 ## Attribution Constraints (Hard Rules)
 
 1. **Do not classify solely from an error string or bare keyword.** A `Connection failed`, `SCF NOT CONVERGED`, or bare `chaotic` string is only causal if supported by structured evidence and unrecovered downstream impact.
 2. **Distinguish symptom, detection point, and root cause.**
 3. **Pre-startup rule (`runtime.agent_started == false`):**
-   - If `runtime.agent_started == false` AND fatal infrastructure evidence exists -> `primary_root_cause.category` MUST be `infra`.
-   - If `runtime.agent_started == false` AND no infrastructure/exception logs exist -> `primary_root_cause.category` MUST be `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`).
-   - If `runtime.agent_started == false` -> `primary_root_cause.category` is **STRICTLY FORBIDDEN** from being `agent`.
+   - If `runtime.agent_started == false` and fatal infrastructure evidence exists, `primary_root_cause.category` must be `infra`.
+   - If `runtime.agent_started == false` and no infrastructure or exception logs exist, `primary_root_cause.category` must be `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`).
+   - If `runtime.agent_started == false`, `primary_root_cause.category` cannot be `agent`.
 4. **Positive evidence is required for `agent` attribution.** `reward == 0` or `FAIL` in `verify.log` alone is NOT positive agent evidence.
 5. **A static verifier hazard must be causally bound (`failure_binding == "direct"`).**
 6. **Use `unknown` when evidence cannot distinguish competing hypotheses.**
@@ -206,7 +208,7 @@ See [existing-evidence review](evidence-review.md) for missing-output diagnosis,
 
 Task-ID mode first matches common Harbor layouts, then falls back to a depth-limited search that prunes heavy directories. It supports flat `jobs/<job>/task208__<trial>` and suite-based `<suite>/jobs/<job>/task208__<trial>` layouts, with task definitions at the suite root or under `tasks/`. Duplicate task numbers prefer a definition from the selected trial's suite. Remaining ambiguity raises an error instead of choosing lexically.
 
-Analysis reads job/trial `result.json` and logs, `agent/trajectory.json` or recognized JSONL trajectories, `verifier/` results, task instructions, and verifier scripts. It checks collected `artifacts/` against paths declared in `task.toml`. Numeric task IDs are this project's shortcut convention; use explicit `--job`, `--task`, and `--output` paths for arbitrary task names.
+Analysis reads job/trial `result.json` and logs, `agent/trajectory.json` or recognized JSONL trajectories, `verifier/` results (including CTRF outputs, `score_breakdown.json`, and MLRS failure records), task instructions, and verifier scripts (both multi-file `tests/` suites and packed read-only `tests/refs.json` verifiers). It checks collected `artifacts/` against paths declared in `task.toml`, and preserves `failure_manifestation.runtime_triage` observations for timeouts or SDK-limit stops without treating them as automatic upstream blame. Numeric task IDs are this project's shortcut convention; use explicit `--job`, `--task`, and `--output` paths for arbitrary task names.
 
 ### Supported scope
 

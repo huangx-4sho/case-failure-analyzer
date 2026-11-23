@@ -16,7 +16,7 @@
 
 ## 1. `evidence.json` 客观证据模式
 
-`evidence.json` 仅存储由确定性脚本（`discover_artifacts.py`、`runtime_state.py`、`normalize_trajectory.py`、`extract_runtime_errors.py`、`audit_contract.py`、`extract_scientific_errors.py`）提取的客观事实与观测，绝不包含任何主观根因裁决标签。
+`evidence.json` 仅存储由确定性脚本（`discover_artifacts.py`、`runtime_state.py`、`normalize_trajectory.py`、`extract_runtime_errors.py`、`audit_contract.py`、`extract_scientific_errors.py`）提取的客观事实与观测，不包含任何主观根因裁决标签。
 
 <details>
 <summary>展开 evidence.json 字段示例</summary>
@@ -173,7 +173,7 @@
 
 **证据完整性字段：**
 
-- `trial_dir` / `task_dir` 为采集阶段解析出的绝对输入路径；报告只渲染相对锚点，绝不暴露这些绝对路径。
+- `trial_dir` / `task_dir` 为采集阶段解析出的绝对输入路径；报告只渲染相对锚点，不暴露这些绝对路径。
 - `metadata` 保留原始 runner 元数据（`job_stats`、`agent_info`、解析后的 `task.toml`）供审计，不作为证据解释。
 - `diagnostics` 为结构化恢复记录列表（`diagnostics-v1`）。`severity="warning"` 表示证据已降级，结论可能建立在比表面更弱的基础上；`severity="error"` 表示必需输入无法读取。`warning` / `error` 记录会在 `report.md` 第 1 节警示，并在第 2 节逐条列出；汇总行与 `job_summary.json` 会聚合其计数。
 - `verifier_check_stats` 为**可选字段**，仅当存在 verifier 日志时出现。对于 fail-fast 验证器，`total_checks` 是下界（其通过的检查不打印标记）。只有 `single_failure` 可视为检查定位（localization）；`counterfactual_candidate`（恰好一个失败检查）只是*候选*，无法区分“唯一失败的检查”与“唯一运行过的检查”，门控必须将其与指标级证据独立绑定后，才能给予反事实置信度。
@@ -311,10 +311,10 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 
 </details>
 
-- **`metadata.task_toml.artifacts`** 是权威的已声明交付物集合，`metadata.declared_deliverables` 将其镜像为扁平列表。`normalize_trajectory(..., expected_deliverables=[...])` 用它来判定 `sig:premature_completion` 是否真实成立：仅当某个*已声明*路径在轨迹中缺失时该信号才触发，绝不会因为硬编码的 `results.json` 未写出而触发。当 `task.toml` 不可用时该列表为空，回退到旧有的 `results.json` 启发式。
-- **`missing_deliverables`** 是从未产出的已声明路径的对账（reconciled）列表。轨迹匹配本身是启发式的，因此 `collect_case_evidence.py` 会交叉核对 `<trial>/artifacts/app/<已声明路径>`（Harbor 的 `docker cp` 输出，无法凭空想象），并剔除任何实际已被采集到的路径。`premature_completion` 信号会携带 `declared_deliverables` / `missing_deliverables` 两个数组；当所有已声明路径都已被采集时，该信号会被整体移除。
-- **`verifier_report`** 将五类 Harbor 验证器 JSON 家族（分层式 `core/verify.json`、带 `ACADEMIC_INTEGRITY_VETO` 的 `scientific/verify.json`、`raw-verifier.json` 的 `criteria[]`、`science.json` 的 `checks[]`、以及带 `failure_origin` 的 `verify.json` 信封）归一化为统一形态：带 `layer`、`name`、`detail`、`core`、`source` 的具名 `failed_checks`；`core_failures`；`failure_origin`；`scorable`；`reward`；以及 `diagnosability` 标记。`diagnosability == "low"` 表示验证器只给出一条简短、泛化的消息，既无具名检查也无数值偏差——报告会显式点明这一点，而不会假装证据是完整的。存在报告时，`build_check_stats_from_report()` 也会填充 `verifier_check_stats`，使检查定位与置信度评分同样适用于 Harbor 报告。
-- **`error_observations`** 可携带 Harbor 运行阶段条目，附带 `stage: "runner"`、`runner_phase: "post_agent_execution"`、`scoring_reached` 与 `missing_deliverable` 等字段。相关码：`INFRA_ARTIFACT_COLLECTION_CRASH`（`Engine cp failed ... Could not find the file /app/...`）、`INFRA_RUNNER_INTERRUPTED`（日志止于 `Collecting main service artifacts`），以及作为因果项的 `INFRA_AGENT_TIMEOUT`。这些在时间上位于 Agent 执行*之后*、验证*之前*，因此绝不可被归入 `environment_build` / `container_build` 阶段。无害的 `Cannot estimate Claude cost ... litellm.BadRequestError: LLM Provider NOT provided` 行是遥测信息，在成功 Trial 中同样存在，故刻意不设为其错误规则。
+- **`metadata.task_toml.artifacts`** 是权威的已声明交付物集合，`metadata.declared_deliverables` 将其镜像为扁平列表。`normalize_trajectory(..., expected_deliverables=[...])` 用它来判定 `sig:premature_completion` 是否真实成立：仅当某个*已声明*路径在轨迹中缺失时该信号才触发，不会因为硬编码的 `results.json` 未写出而触发。当 `task.toml` 不可用时该列表为空，回退到旧有的 `results.json` 启发式。
+- **`missing_deliverables`** 列出审查未能与已观测写入或采集产物对上的已声明路径。轨迹匹配只是启发式方法；在推断产物未生成前，应先核查 `deliverable_audit` 中的采集目录映射状态与扫描覆盖范围。当所有已声明路径均已采集时，提前结束信号会被移除。
+- **`verifier_report`** 将可识别的分层验证报告、判据或检查列表、得分信封、CTRF 结果、得分明细（`score_breakdown.json`）和 MLRS 失败记录归一化为统一结构：包含带来源指针的具名 `failed_checks`、`core_failures`、`failure_origin`、`scorable`、`reward` 与 `diagnosability`。`diagnosability == "low"` 表示验证器检查细节有限。正式评分结局仍以得分信封和单试次运行时记录为准。
+- **`error_observations`** 可携带 Harbor 运行阶段条目，附带 `stage: "runner"`、`runner_phase: "post_agent_execution"`、`scoring_reached` 与 `missing_deliverable` 等字段。相关码：`INFRA_ARTIFACT_COLLECTION_CRASH`（`Engine cp failed ... Could not find the file /app/...`）、`INFRA_RUNNER_INTERRUPTED`（日志止于 `Collecting main service artifacts`），以及作为因果项的 `INFRA_AGENT_TIMEOUT`。这些在时间上位于 Agent 执行*之后*、验证*之前*，因此不能归入 `environment_build` / `container_build` 阶段。无害的 `Cannot estimate Claude cost ... litellm.BadRequestError: LLM Provider NOT provided` 行是遥测信息，在成功 Trial 中同样存在，故不设为其错误规则。
 
 <a id="4-附加交叉核对交付物完整性与因果溯源扩展"></a>
 
@@ -394,6 +394,8 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 | `causal_assessment.capability.diagnosis` | 失败试次归因于智能体时，记录该决策涉及的能力维度、证据与审查等级 |
 | `causal_assessment.existing_verification` | 既有检查及数值记录、声明覆盖和限制；`new_calculation_performed` 为 false |
 | `causal_assessment.decision` | 具体决策、实际执行、有效输入输出、适用依据、最终观测和推理 |
+| `causal_assessment.defect_verification` | `"verified_in_trial"` 或 `"unverified"`，记录具体缺陷是否已绑定到执行记录、公开要求和提交产物 |
+| `causal_assessment.quantitative_sufficiency` | `"sufficient"`、`"unverified_without_recompute"` 或 `"not_applicable"`，记录是否有隔离对照证据支持所引定量偏差 |
 | `causal_assessment.alternatives` | 各替代解释的状态、理由和证据引用；未解决项保留 |
 | `causal_assessment.capability` | 当前试次范围内的疑似指导，不能单独确认模型能力不足 |
 
@@ -405,6 +407,7 @@ Harbor 作业（`jobs/<timestamp>/<trial>/`，含 `result.json`、`agent/traject
 | --- | --- |
 | `runtime.score_produced` | 是否实际产出可识别分数；验证器启动不等于评分完成 |
 | `runtime.reward_metrics` | 原始命名的数值指标，如 `submission_checks`；不改称科学准确率 |
+| `failure_manifestation.runtime_triage` | 超时与 SDK 上限中断的结构化分诊记录（含状态、终端引用、末尾工具事件与复核线索 `leads`），不直接等同于上游归因 |
 | `contract_review.review_items` | `semantic_rejection`、`hidden_format_requirement`、`definition_ambiguity`，保留公开要求、实际提交、失败规则和覆盖限制 |
 | `contract_review.execution_scope_findings` | 原始采集产物与隔离重放产物的检查范围差异 |
 | `contract_review.requirement_coverage_findings` | 直接标签键、嵌套标签出现位置与原文中的核验状态，避免只按表层结构推断覆盖缺失 |

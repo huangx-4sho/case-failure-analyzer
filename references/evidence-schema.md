@@ -386,6 +386,8 @@ The following is a partial field illustration, not a captured run.
 | `causal_assessment.capability.diagnosis` | The dimension, decision evidence and support level for a failed trial attributed to the agent |
 | `causal_assessment.existing_verification` | Saved checks/numerical records, declared coverage and limits; `new_calculation_performed` is false |
 | `causal_assessment.decision` | Specific decision, execution, effective inputs/outputs, applicable basis, terminal observation, and reasoning |
+| `causal_assessment.defect_verification` | `"verified_in_trial"` or `"unverified"`, recording whether a concrete defect was bound to execution, public requirements, and submitted artifacts |
+| `causal_assessment.quantitative_sufficiency` | `"sufficient"`, `"unverified_without_recompute"`, or `"not_applicable"`, recording whether a retained isolated comparison supports the cited scoring gap |
 | `causal_assessment.alternatives` | Status, rationale, and evidence for alternatives; unresolved items remain explicit |
 | `causal_assessment.capability` | This-trial suspected guidance; not independent confirmation of model incapacity |
 
@@ -397,6 +399,7 @@ Review records bind input JSON and saved-source digests; see [existing-evidence 
 | --- | --- |
 | `runtime.score_produced` | Whether a recognizable score was actually produced; verifier startup is insufficient |
 | `runtime.reward_metrics` | Original named numeric metrics, such as `submission_checks`; not relabeled as scientific accuracy |
+| `failure_manifestation.runtime_triage` | Ordered observations for timeout and SDK-limit stops (`status`, `terminal_ref`, `last_tool_events`, and review `leads`) |
 | `contract_review.review_items` | `semantic_rejection`, `hidden_format_requirement`, and `definition_ambiguity`, with public requirements, submissions, failed rules, and coverage limits |
 | `contract_review.execution_scope_findings` | Differences between checking original capture and isolated replay outputs |
 | `contract_review.requirement_coverage_findings` | Direct label keys, nested occurrences, and quoted verification status; avoids inferring absent coverage from shallow structure alone |

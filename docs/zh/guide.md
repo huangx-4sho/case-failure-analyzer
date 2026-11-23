@@ -98,10 +98,10 @@ python3 scripts/export_skill.py --dest "$HOME/.claude/skills/case-failure-analyz
 
 ## 默认行为与边界
 
-- **默认严格只读**：绝不修改 `tasks/`、`jobs/` 或 `tests/verify.py`。
+- **默认严格只读**：不修改 `tasks/`、`jobs/` 或 `tests/verify.py`。
 - **确定性取证 + 模型因果推理**：确定性脚本负责生成客观 `evidence.json` 与候选假设 `candidate-hypotheses.json`；默认 `--phase all` 会输出保守的确定性草稿 `analysis.json`，可由 Agent/模型依据 [attribution-protocol.md](attribution-protocol.md) 覆盖式改写并核验。
-- **证据优先归因**：严禁仅凭单一关键词直接定性根因；严格区分**直接失败现象 (`failure_manifestation`)**、**暴露阶段 (`detection_stage`)** 与**根本原因 (`primary_root_cause`)**。
-- **指责 Agent 必须具备正面证据**：禁止采用“排除其他 Gate 后默认归因 Agent”的兜底逻辑。归因 `agent` 必须引用明确的正面证据（如 `behavioral_signals`、`agent_mismatch` 契约违约、或 Agent 操作引发的 `scientific_observations`）。
+- **证据优先归因**：不凭单一关键词直接定性根因；区分**直接失败现象 (`failure_manifestation`)**、**暴露阶段 (`detection_stage`)** 与**根本原因 (`primary_root_cause`)**。
+- **指责 Agent 必须具备正面证据**：不采用“排除其他门控后默认归因 Agent”的兜底逻辑。归因 `agent` 必须引用明确的正面证据（如 `behavioral_signals`、`agent_mismatch` 契约违约、或 Agent 操作引发的 `scientific_observations`）。
 - 如现有记录无法区分责任，主根因记为 `unknown`（`UNKNOWN_INSUFFICIENT_EVIDENCE`）。评分拒绝和现有证据仍可查阅。
 - **报告语言**。使用 `--lang bilingual` 时，路径模式生成 `report.md`、`report.zh.md` 和 `report.en.md`，任务 ID 模式生成 `<task_id>.md` 和 `<task_id>.en.md`。
 
@@ -111,7 +111,7 @@ python3 scripts/export_skill.py --dest "$HOME/.claude/skills/case-failure-analyz
 
 ### 1. 运行分析
 
-使用统一 CLI（`scripts/cfa.py`）执行任务 ID 审计、只读脱敏检视与跨任务/跨试次对比，或对已知路径调用 `scripts/analyze_case.py`：
+使用统一 CLI（`scripts/cfa.py`）执行任务 ID 审计、只读脱敏检视、试次对比、调查包切片和复核汇总，或对已知路径调用 `scripts/analyze_case.py`（详见 [CLI 命令流程](../../references/cli.md)）：
 
 ```bash
 SKILL_DIR="/path/to/skills/case-failure-analyzer"
@@ -120,6 +120,8 @@ python3 "$SKILL_DIR/scripts/cfa.py" audit task208 --jobs-root "$BENCH_ROOT" --la
 python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --jobs-root "$BENCH_ROOT" --section artifacts
 python3 "$SKILL_DIR/scripts/cfa.py" inspect task208 --jobs-root "$BENCH_ROOT" --section step --step 43
 python3 "$SKILL_DIR/scripts/cfa.py" diff task207 task208 --jobs-root "$BENCH_ROOT"
+python3 "$SKILL_DIR/scripts/cfa.py" dossier task208 --jobs-root "$BENCH_ROOT" --output /path/to/dossiers/task208
+python3 "$SKILL_DIR/scripts/cfa.py" review summary --audit-root "$BENCH_ROOT/failure-report" --review-root /path/to/reviewed --dossier-root /path/to/dossiers --output /path/to/review-summary
 # 或按显式目录路径运行：
 python3 "$SKILL_DIR/scripts/analyze_case.py" \
   --job "$BENCH_ROOT/jobs/run-001/task208__abc" \
@@ -131,29 +133,29 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 
 ### 2. 确认运行阶段
 
-脚本：`scripts/runtime_state.py` · `scripts/extract_runtime_errors.py`
+脚本：`scripts/runtime_state.py` · `scripts/extract_runtime_errors.py` · `scripts/attribution/runtime_triage.py`
 
-对照 `runtime.agent_started`、`runtime.verifier_started`、执行与验证状态和 `error_observations`。模型服务可能先因配额耗尽而中断，评分器随后仍会对缺少的交付物打分。两项事件和原始分数分别保留。单个试次通过后，作业级错误数不影响它的结论。
+对照 `runtime.agent_started`、`runtime.verifier_started`、执行与验证状态和 `error_observations`。模型服务配额或超时可能先中止运行，评分器随后仍会对缺少的交付物打分；`runtime_triage` 会单独整理超时、输出上限或上下文压缩循环下的分诊观测与线索（`configured_budget_vs_workload`、`reasoning_token_runaway`、`context_overflow_by_large_read`），不直接替代上游归因。两项事件和原始分数分别保留。单个试次通过后，作业级错误数不影响它的结论。
 
 ### 3. 重建轨迹与因果锚点
 
-脚本：`scripts/normalize_trajectory.py` · `scripts/trace_causal_anchors.py`
+脚本：`scripts/normalize_trajectory.py` · `scripts/trace_causal_anchors.py` · `scripts/self_check_execution.py` · `scripts/trajectory_source.py`
 
-将 `ATIF-v1.7`、`.jsonl` 及 OpenAI/Anthropic `tool_use`/`tool_result` 消息流跨步折叠标准化为时间线事件与行为信号（`behavioral_signals`），结合保留中段高显著性错误/指标行的截断策略与两阶段脚本输出目标图（`script_targets`）推断交付物写出路径（仍需核对已采集文件）；`trace_causal_anchors.py` 对关联失败产物的脚本执行/写入事件给予反向溯源加权，并提取关键科学参数的 `parameter_evolution` 演化轨迹。
+将 `ATIF-v1.7`、`.jsonl` 及 OpenAI/Anthropic `tool_use`/`tool_result` 消息流跨步折叠标准化为时间线事件与行为信号（`behavioral_signals`），结合保留中段高显著性错误/指标行的截断策略与两阶段脚本输出目标图（`script_targets`）推断交付物写出路径（仍需核对已采集文件）；`trace_causal_anchors.py` 对关联失败产物的脚本执行/写入事件给予反向溯源加权，并提取关键科学参数的 `parameter_evolution` 演化轨迹。`trajectory_source.py` 从完整写入、无歧义编辑与带引号 heredoc 还原脚本源码；`self_check_execution.py` 将自检命令、脚本版本与结果记录在 `causal_anchors.self_check_executions`。
 
 审查自检时，在 `causal_anchors.self_check_executions` 中找到实际运行的命令、脚本版本和输出。要认定漏检，还需指出该自检漏过了哪条公开要求，以及哪条评分记录确认了后果。[自检证据](evidence-review.md#具体失败位置与自检证据)
 
 ### 4. 核对契约与交付物
 
-脚本：`scripts/audit_contract.py`
+脚本：`scripts/audit_contract.py` · `scripts/deliverable_audit.py` · `scripts/contract_review.py` · `scripts/verifier_source.py` · `scripts/attribution/failure_location.py`
 
-比对 `Prompt <-> Verifier <-> Agent Output`，扫描 `artifacts/` 下的 JSON/CSV/TSV 交付物生成 `deliverable_diagnostics`（检测空表、`NaN`/`Inf` 数值与 `checked_keys` 缺失），并对 `tests/verify.py` 静态解析风险做因果绑定 (`failure_binding: direct | indirect | none`)，同时独立识别 Verifier 自身崩溃 (`verifier_internal_crash` / `VERIFIER_RECOMPUTE_DEFECT`)。
+对照任务要求、验证器规则与智能体交付物，检查 `deliverable_audit`、`contract_observations`、`deliverable_diagnostics`（检测空表、`NaN`/`Inf` 数值与 `checked_keys` 缺失）与 `verifier_observations`（`failure_binding: direct | indirect | none`、`verifier_internal_crash`、`dependency_preflight_failed`），区分智能体契约违约、直接因果绑定的验证器解析缺陷和验证器内部崩溃。`verifier_source.py` 支持多文件 `tests/` 与打包只读的 `tests/refs.json` 验证器，`failure_location.py` 在可唯一匹配时于 `contract_review.failure_locations` 记录对应评分行和提交值。
 
 ### 5. 提取科学错误
 
 脚本：`scripts/extract_scientific_errors.py`
 
-基于单一真值源 `references/error-families.json` 匹配 11 类科学计算与机器学习势套件的 60 类 `error_family`（支持 `.jsonl` 轨迹印证、不设数值偏差上限的具名指标配对，以及 `scale_or_sign_hint` 单位倍率/符号提示与 `stale_deliverable_sync` 待核实的未同步线索），并结合 `references/software/<software>.md` 判别证据要求。提示的触发条件、扫描限额和误读风险见[证据结构](evidence-schema.md#4-附加交叉核对交付物完整性与因果溯源扩展)。
+基于 `references/error-families.json` 匹配 11 类科学计算与机器学习势套件的 60 类 `error_family`（支持 `.jsonl` 轨迹印证、不设数值偏差上限的具名指标配对，以及 `scale_or_sign_hint` 单位倍率/符号提示与 `stale_deliverable_sync` 待核实的未同步线索），并结合 `references/software/<software>.md` 判别证据要求。提示的触发条件、扫描限额和误读风险见[证据结构](evidence-schema.md#4-附加交叉核对交付物完整性与因果溯源扩展)。
 
 ### 6. 定位首次不可恢复偏离
 
@@ -167,23 +169,23 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 
 ### 8. 校验与生成报告
 
-脚本：`scripts/validate_analysis.py` · `scripts/render_report.py`
+脚本：`scripts/validate_analysis.py` · `scripts/render_report.py` · `scripts/dossier.py` · `scripts/review_cause.py` · `scripts/review_summary.py`
 
-校验 `evidence.json`、`analysis.json` 与 Markdown 报告。单次试次审计中的 `skill_prescription` 为 `null`。使用 `cfa.py review capability` 对照独立任务的证据，复核建议的指引能否复用。[已有证据审查](evidence-review.md#能力判断)
+校验 `evidence.json`、`analysis.json` 与 Markdown 报告。需要追查具体失败试次时，用 `cfa.py dossier` 提取调查包，按证据填写 `review-plan.json`（可选配[智能体机制标签](../../references/agent-mechanisms.md)），再运行 `cfa.py review apply` 和 `cfa.py review summary` 输出汇总看板。单次试次审计中的 `skill_prescription` 为 `null`。使用 `cfa.py review capability` 对照独立任务的证据，复核建议的指引能否复用。[已有证据审查](evidence-review.md#能力判断)
 
 <a id="归因硬性约束-attribution-hard-rules"></a>
 
 ## 归因约束
 
-1. **严禁仅凭单一关键词定根因**：日志中孤立出现 `chaotic` 等词汇而无轨迹/系综统计对比数据时，严禁判定为数值发散容差问题（无充分对比数据时必须归因 `unknown`）。
-2. **严格区分失败现象、检测阶段与责任根因**。
-3. **Agent 未启动硬规则 (`runtime.agent_started == false`)**：
-   - 若 `agent_started == false` 且存在致命基础设施错误证据 → 必须归因 `infra`；
-   - 若 `agent_started == false` 且没有任何异常或构建日志证据 → 必须归因 `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`)；
-   - 若 `agent_started == false` → **绝对禁止**归因 `agent`。
+1. **不凭单一关键词定根因**：日志中出现 `chaotic` 等词汇而无轨迹或系综统计对比数据时，不判定为数值发散容差问题（缺少对比数据时归因 `unknown`）。
+2. **区分失败现象、检测阶段与责任根因**。
+3. **Agent 未启动规则 (`runtime.agent_started == false`)**：
+   - 若 `agent_started == false` 且存在致命基础设施错误证据，归因 `infra`；
+   - 若 `agent_started == false` 且没有任何异常或构建日志证据，归因 `unknown` (`UNKNOWN_INSUFFICIENT_EVIDENCE`)；
+   - 若 `agent_started == false`，不得归因 `agent`。
 4. **归因 `agent` 必须具备正面证据**：仅有 `reward=0` 或 `verify.log` 报错不构成 Agent 正面证据。
-5. **静态解析 Hazard 必须完成因果绑定 (`failure_binding == "direct"`)**：若 `verify.log` 仅在参考值中打印 `1.23D+03` 而 Agent 实际输出了错误数值 `9.99E+02`，严禁误判为 Verifier 正则缺陷；反之，若 Verifier 因自身临时文件缺失（如 `FileNotFoundError: /tmp/verify_tmp/refs.json`）崩溃，必须归因 `verifier` (`VERIFIER_RECOMPUTE_DEFECT`)。
-6. **证据不足或竞争假设无法区分时必须输出 `unknown`**。
+5. **静态解析缺陷须完成因果绑定 (`failure_binding == "direct"`)**：若 `verify.log` 仅在参考值中打印 `1.23D+03` 而 Agent 实际输出了错误数值 `9.99E+02`，不得判为 Verifier 正则缺陷；反之，若 Verifier 因自身临时文件缺失（如 `FileNotFoundError: /tmp/verify_tmp/refs.json`）崩溃，归因 `verifier` (`VERIFIER_RECOMPUTE_DEFECT`)。
+6. **证据不足或竞争假设无法区分时输出 `unknown`**。
 7. **可复用的 Agent 能力改进指引需经过独立的跨任务复核。** [技能处方规则](skill-prescription-policy.md)
 
 ## 科学软件错误签名
@@ -212,7 +214,7 @@ python3 "$SKILL_DIR/scripts/analyze_case.py" \
 
 任务编号模式先匹配常见 Harbor 目录，再在未命中时进行有深度限制、跳过重型目录的搜索。支持平铺的 `jobs/<job>/task208__<trial>` 和按套件组织的 `<suite>/jobs/<job>/task208__<trial>`；题目定义可放在套件根目录或 `tasks/` 下。同号任务优先绑定所选试次所在套件的定义；仍有多个候选时会报错，不按目录字母序猜测。
 
-分析会读取 job/trial 的 `result.json` 与日志、`agent/trajectory.json` 或可识别的 JSONL 轨迹、`verifier/` 判定、题目说明和验证脚本，并检查 `task.toml` 声明路径在 `artifacts/` 下的采集结果。数字任务编号是本项目的快捷约定；任意名称任务可通过 `--job`、`--task` 和 `--output` 显式指定。
+分析会读取 job/trial 的 `result.json` 与日志、`agent/trajectory.json` 或可识别的 JSONL 轨迹、`verifier/` 判定（包括 CTRF 结果、`score_breakdown.json` 与 MLRS 失败记录）、题目说明和验证脚本（支持多文件 `tests/` 与打包只读的 `tests/refs.json`）。分析会检查 `task.toml` 声明路径在 `artifacts/` 下的采集结果，并对超时或 SDK 上限停机记录 `failure_manifestation.runtime_triage` 分诊线索而不自动上推归责。数字任务编号是本项目的快捷约定；任意名称任务可通过 `--job`、`--task` 和 `--output` 显式指定。
 
 ### 支持范围
 

@@ -12,7 +12,7 @@ Requires Python 3.9+ with no third-party runtime dependencies. Reviews saved art
 
 ## Usage
 
-From this repository root, export to your client’s skill directory ([installation locations](docs/en/guide.md#installation-and-invocation)):
+From this repository root, export to your client's skill directory ([installation locations](docs/en/guide.md#installation-and-invocation)):
 
 ```bash
 python3 scripts/export_skill.py --dest /path/to/skills/case-failure-analyzer
@@ -30,15 +30,22 @@ Or run the CLI directly in a terminal:
 
 ```bash
 python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang en
+
+# Slice evidence into a review dossier, apply a review plan, or summarize validated reviews
+python3 scripts/cfa.py dossier task208 --jobs-root /path/to/benchmark --output /path/to/dossiers/task208
+python3 scripts/cfa.py review apply --evidence /path/to/evidence.json --analysis /path/to/analysis.json --review /path/to/dossiers/task208/review-plan.json --output /path/to/reviewed/task208
+python3 scripts/cfa.py review summary --audit-root /path/to/failure-report --review-root /path/to/reviewed --dossier-root /path/to/dossiers --output /path/to/review-summary
 ```
 
 Use `--lang bilingual` for a separate English edition: `<task_id>.en.md` in task-ID mode or `report.en.md` in path mode. The unsuffixed Markdown file is the primary report, not necessarily the English edition.
 
-Replace the example path with a benchmark checkout containing `jobs/` and `tasks/`. A task number selects the most recently modified matching trial. See the [guide](docs/en/guide.md) for specific trials, batch audits, inspection, comparisons, and updates.
+Replace the example path with a benchmark checkout containing `jobs/` and `tasks/`. A task number selects the most recently modified matching trial. See the [guide](docs/en/guide.md) and [CLI workflows](references/cli.md) for specific trials, batch audits, inspection, comparisons, and causal review workflows.
 
 ## Output
 
 A task-ID audit writes its reports to `<benchmark>/failure-report/<job>/<task_id>/` and prints a verdict card. Read the card for the candidate cause. Use `inspect --section errors` to see the recorded interruption or rejection, its source and, when available, the matching scorer condition and submitted value.
+
+When a failed trial needs deeper investigation, `cfa.py dossier` extracts the rejected check, matching scorer function, public requirement, submission slice, and traced agent source into `dossier.md`, `dossier.json`, and a `review-plan.json` template. After applying a structured review with `cfa.py review apply`, `cfa.py review summary` builds a batch table showing evidence-supported causes, reviewed candidates, runtime leads, and recurring [agent mechanism tags](references/agent-mechanisms.md).
 
 ![Report reading path: summary, full report, and evidence](docs/images/cfa-reports.en.svg)
 
@@ -46,8 +53,8 @@ In two CompChemWorld batches, CFA located a recorded interruption or scoring rej
 
 ## Documentation
 
-[Installation and invocation](docs/en/guide.md#installation-and-invocation) · [Taxonomy](docs/en/taxonomy.md) · [Attribution rules](docs/en/attribution-protocol.md)
+[Installation and invocation](docs/en/guide.md#installation-and-invocation) · [CLI workflows](references/cli.md) · [Taxonomy](docs/en/taxonomy.md) · [Attribution rules](docs/en/attribution-protocol.md)
 
-[Evidence fields](docs/en/evidence-schema.md) · [Report format](docs/en/report-schema.md) · [Skill prescriptions](docs/en/skill-prescription-policy.md) · [Evidence review](docs/en/evidence-review.md) · [Skill definition](SKILL.md)
+[Evidence fields](docs/en/evidence-schema.md) · [Report format](docs/en/report-schema.md) · [Skill prescriptions](docs/en/skill-prescription-policy.md) · [Evidence review](docs/en/evidence-review.md) · [Agent mechanisms](references/agent-mechanisms.md) · [Skill definition](SKILL.md)
 
 [Script map](scripts/README.md) · [Portable reference index](references/README.md)
