@@ -284,12 +284,35 @@ def unresolved_attribution(ctx: AttributionContext) -> Dict[str, Any]:
         direct_causal_evidence=0,
         missing_discriminating_evidence=2,
     )
+    locations = (ctx.evidence.get("contract_review") or {}).get("failure_locations")
+    if locations and locations[0].get("detail") and locations[0].get("source"):
+        check = locations[0]
+        source = " ".join(filter(None, (check.get("source"), check.get("pointer"))))
+        rule = check.get("matching_rule")
+        field = check.get("submitted_field")
+        if field:
+            target = f"{field['source']} {field['pointer']}"
+            gap = f"The decision that produced {target} and its public requirement remain to be established."
+            gap_zh = f"仍需核实写入 {target} 的决策及其公开要求。"
+        elif rule:
+            target = f"{rule['source']}:L{rule['line']}"
+            gap = f"The effective input to {target} and its public specification remain to be established."
+            gap_zh = f"仍需核实 {target} 实际读取的输入及对应的公开规格。"
+        else:
+            gap = "The records here do not bind the rejected value to its writer or scoring condition."
+            gap_zh = "该记录尚未把被拒的值与写入步骤、评分条件对应起来。"
+        prc["summary"] = f"{check['detail']} ({source}). {gap}"
+        prc["summary_zh"] = f"{check['detail']}（{source}）。{gap_zh}"
+        if check.get("ref") and check["ref"].startswith("verifier_report.failed_checks["):
+            avail_refs.append(check["ref"])
 
     return {
         "schema_version": "failure-analysis-v1",
         "case_id": ctx.case_id,
         "trial_name": ctx.trial_name,
-        "verdict": "failed",
+        "verdict": "errored"
+        if ctx.runtime.get("reward_scope") == "invalid_evaluation"
+        else "failed",
         "failure_stage": "unknown",
         "detection_stage": "verifier_execution" if ctx.verifier_started else "runner",
         "first_unrecovered_deviation": {

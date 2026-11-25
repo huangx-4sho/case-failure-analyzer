@@ -149,7 +149,7 @@ def _safe_int(val: Any) -> int:
         return 0
 
 
-def _review_receipts(trial_dir):
+def _verifier_receipts(trial_dir):
     """Only top-level saved verifier status, never nested review criteria.
 
     Canonical verifier envelopes take precedence over stale transport stdout.
@@ -173,13 +173,51 @@ def _review_receipts(trial_dir):
             report = None
         report = report if isinstance(report, dict) else {}
         status = str(report.get("status") or "").upper()
-        final_statuses = {"FAIL", "FAILED", "PASS", "PASSED", "ERROR", "ENV_INVALID", "SCORED"}
+        if rel.endswith(".json") and status == "ENV_INVALID":
+            return [{"source_file": rel, "source_pointer": "/status", "status": status}]
+        final_statuses = {"FAIL", "FAILED", "PASS", "PASSED", "ERROR", "SCORED"}
         if rel.endswith(".json") and status in final_statuses:
             return []
         if status in {"REVIEW_REQUIRED", "REQUIRE_REVIEW"} or re.match(
             r"^(?:REVIEW_REQUIRED|REQUIRE_REVIEW)(?:\s*:|$)", text
         ):
             scoped_reward = {}
+            reason = report.get("reason") or report.get("error") or report.get("summary")
+            diagnostics = report.get("diagnostics")
+            review = report.get("review")
+            review_reason = review.get("reason") if isinstance(review, dict) else None
+            checks = (diagnostics if isinstance(diagnostics, dict) else report).get("checks")
+            all_passed = (
+                isinstance(checks, list)
+                and bool(checks)
+                and all(isinstance(c, dict) and c.get("passed") is True for c in checks)
+            )
+            review_confirmed = (
+                report.get("reward_status") == "PENDING_REVIEW"
+                and (checks is None or all_passed)
+                or (
+                    isinstance(diagnostics, dict)
+                    and diagnostics.get("status") == "SCIENTIFIC_REVIEW_REQUIRED"
+                    and isinstance(review_reason, str)
+                    and all_passed
+                )
+            )
+            if rel.endswith(".json") and review_confirmed:
+                scoped_reward = {"reward_scope": "pending_review_placeholder", "reward": 0}
+                reason = report.get("review_note") or review_reason or reason
+                if isinstance(review_reason, str) and "review-error.json" in review_reason:
+                    try:
+                        sidecar = path.with_name("review-error.json")
+                        if not sidecar.is_symlink() and sidecar.stat().st_size <= 65536:
+                            error = json.loads(sidecar.read_text(encoding="utf-8"))
+                            if (
+                                isinstance(error, dict)
+                                and error.get("status") == status
+                                and isinstance(error.get("error_code"), str)
+                            ):
+                                reason = f"{error['error_code']} (review-error.json) · {reason}"
+                    except (OSError, ValueError):
+                        pass
             if (
                 report.get("reward_scope") == COMPLETENESS_REWARD_SCOPE
                 and "scientific_score" in report
@@ -195,11 +233,7 @@ def _review_receipts(trial_dir):
                     "source_file": rel,
                     "source_pointer": "/status" if report else "L1",
                     "status": status or "REVIEW_REQUIRED",
-                    "reason": str(
-                        report.get("reason") or report.get("error") or report.get("summary") or ""
-                    )
-                    if report
-                    else text[:500],
+                    "reason": str(reason or "")[:500] if report else text[:500],
                     **scoped_reward,
                 }
             )
@@ -310,18 +344,28 @@ def compute_runtime_state(
         exc_info is not None or exception_txt_exists or job_abort_without_trial_dir
     )
 
-    review_receipts = _review_receipts(trial_dir)
+    receipts = _verifier_receipts(trial_dir)
+    invalid_evaluation = bool(receipts and receipts[0]["status"] == "ENV_INVALID")
+    review_receipts = [] if invalid_evaluation else receipts
     reward_scope = "submission_checks_only" if submission_only else None
+    if invalid_evaluation and reward_val in (None, 0):
+        reward_scope = "invalid_evaluation"
+        if reward_val is not None:
+            reward_metrics.setdefault("reward", reward_val)
+        reward_val = None
     if review_receipts:
         receipt = review_receipts[0]
         scoped_value = receipt.get("reward")
         if scoped_value is not None and reward_val in (None, scoped_value):
             reward_scope = receipt["reward_scope"]
-            reward_metrics.setdefault("reward", scoped_value)
+            if reward_val is not None or receipt["reward_scope"] == COMPLETENESS_REWARD_SCOPE:
+                reward_metrics.setdefault("reward", scoped_value)
             reward_val = None
     pending_review = bool(review_receipts and reward_val is None)
-    verifier_started = verifier_started or bool(review_receipts)
+    verifier_started = verifier_started or bool(receipts)
     state_conflicts: List[str] = []
+    if invalid_evaluation and reward_val is not None:
+        state_conflicts.append("ENV_INVALID receipt conflicts with a nonzero recorded reward.")
     if review_receipts and reward_val is not None:
         state_conflicts.append(
             "REVIEW_REQUIRED receipt conflicts with a numeric reward; preserve the recorded scored outcome for review."
@@ -338,6 +382,8 @@ def compute_runtime_state(
     # Verification status strictly reflects trial verification outcome
     if pending_review:
         verification_status = "pending"
+    elif reward_scope == "invalid_evaluation":
+        verification_status = "errored"
     elif reward_val is not None and reward_val >= 1.0:
         verification_status = "passed"
     elif reward_val is not None and reward_val < 1.0:
@@ -360,6 +406,9 @@ def compute_runtime_state(
         execution_status = "errored" if agent_exception else "completed"
         verdict = "pending"
         exit_status = "pending"
+    elif reward_scope == "invalid_evaluation":
+        execution_status = "errored"
+        verdict = exit_status = "errored"
     elif verification_status == "passed":
         execution_status = "completed"
         verdict = "passed"

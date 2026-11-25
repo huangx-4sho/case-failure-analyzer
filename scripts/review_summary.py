@@ -114,6 +114,9 @@ def _report(folder):
 
 def _reason(analysis, *, reviewed):
     assessment = analysis.get("causal_assessment") or {}
+    deep = assessment.get("deep_review") or {}
+    if not reviewed and deep.get("status") in ("traced", "open"):
+        return deep["mechanism"] + " " + deep["gap"]
     root = analysis.get("primary_root_cause") or {}
     decision = assessment.get("decision") or {}
     detail = assessment.get("failure_detail") or {}
@@ -296,6 +299,16 @@ def build_summary(audit_root, review_roots=(), dossier_root=None):
             best_level = "无需失败归因"
         elif direct_stop and not selected:
             best_level = "已定位运行或预检中断"
+        elif not selected:
+            deep_status = ((analysis.get("causal_assessment") or {}).get("deep_review") or {}).get(
+                "status"
+            )
+            best_level = {
+                "traced": "已深查，定位到具体步骤",
+                "open": "已深查，仍缺关键证据",
+                "review_pending": "深查待完成",
+                "review_incomplete": "深查未完成",
+            }.get(deep_status, best_level)
         row = {
             "job": Path(evidence.get("job_dir") or folder.parent).name,
             "task_id": folder.name,
@@ -308,6 +321,9 @@ def build_summary(audit_root, review_roots=(), dossier_root=None):
             "trial_name": evidence.get("trial_name"),
             "outcome": _status(evidence, analysis),
             "base_category": base_category,
+            "deep_review_status": (
+                (analysis.get("causal_assessment") or {}).get("deep_review") or {}
+            ).get("status"),
             "attribution": best_level,
             "supported_category": selected["category"] if resolved else None,
             "candidate_category": candidate,

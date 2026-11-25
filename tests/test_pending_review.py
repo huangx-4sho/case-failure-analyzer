@@ -100,6 +100,41 @@ class PendingReviewTests(unittest.TestCase):
         state = compute_runtime_state({}, self.result, self.trial)
         self.assertNotEqual(state["verdict"], "pending")
 
+    def test_zero_review_placeholder_requires_corroboration(self):
+        receipt = {
+            "status": "REVIEW_REQUIRED",
+            "reward": 0,
+            "review": {"reason": "see review-error.json"},
+            "diagnostics": {"status": "SCIENTIFIC_REVIEW_REQUIRED", "checks": [{"passed": True}]},
+        }
+        report = self.trial / "verifier/verification.json"
+        report.write_text(json.dumps(receipt))
+        (self.trial / "verifier/review-error.json").write_text(
+            json.dumps({"error_code": "EXAMPLE_REVIEW_ERROR", "status": "REVIEW_REQUIRED"})
+        )
+        self.result["verifier_result"]["rewards"] = {"reward": 0}
+        state = compute_runtime_state({}, self.result, self.trial)
+        self.assertEqual(
+            (state["verdict"], state["score_produced"], state["reward_metrics"]["reward"]),
+            ("pending", False, 0),
+        )
+        self.assertIn("EXAMPLE_REVIEW_ERROR", state["review_receipts"][0]["reason"])
+        receipt["diagnostics"]["checks"][0]["passed"] = False
+        report.write_text(json.dumps(receipt))
+        self.assertEqual(compute_runtime_state({}, self.result, self.trial)["verdict"], "failed")
+
+    def test_invalid_evaluator_zero_preserves_raw_metric(self):
+        (self.trial / "verifier/verification.json").write_text(
+            json.dumps({"status": "ENV_INVALID", "reward": 0})
+        )
+        self.result["verifier_result"]["rewards"] = {"reward": 0}
+        state = compute_runtime_state({}, self.result, self.trial)
+        self.assertEqual(
+            (state["verdict"], state["score_produced"], state["reward_metrics"]["reward"]),
+            ("errored", False, 0),
+        )
+        self.assertFalse(state["review_required"])
+
     def test_plain_stdout_review_request(self):
         (self.trial / "verifier/verification.json").unlink()
         (self.trial / "verifier/test-stdout.txt").write_text(

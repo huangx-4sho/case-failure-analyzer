@@ -13,7 +13,8 @@ _PACKAGED_INPUT_FAILURE = re.compile(
 )
 _DEPENDENCY_PREFLIGHT_FAILURE = re.compile(
     r"protected source missing/corrupt:\s*[\w./-]+|"
-    r"protected reference integrity mismatch\b|"
+    r"(?:protected|scientific) reference integrity mismatch\b|"
+    r"corrupt/missing evaluator reference\s+[\w./-]+|"
     r"integrity failure:\s*assets/[\w./-]+|"
     r"tests/refs\.json missing or malformed\b",
     re.IGNORECASE,

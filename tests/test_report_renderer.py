@@ -422,6 +422,26 @@ class TestJobSummaryRenderer(unittest.TestCase):
             ],
         }
 
+    def test_unresolved_trial_shows_recorded_check_and_source_in_every_edition(self):
+        row = self.sample_job_summary["trials"][1]
+        row.update(
+            category="unknown",
+            code="UNKNOWN_INSUFFICIENT_EVIDENCE",
+            recorded_event={
+                "kind": "rejection",
+                "name": "fraction",
+                "detail": "0.125 exceeds the comparison tolerance",
+                "source": "verifier/result.json",
+                "pointer": "$.checks[2]",
+            },
+        )
+        for lang in ("en", "zh", "bilingual"):
+            md = render_job_summary_markdown(self.sample_job_summary, lang=lang)
+            trial = next(line for line in md.splitlines() if line.startswith("| `trial_02_fail`"))
+            self.assertIn("0.125", trial)
+            self.assertIn("verifier/result.json $.checks[2]", trial)
+            self.assertIn("`unknown`", trial)
+
     def test_job_summary_bilingual_edition(self) -> None:
         md = render_job_summary_markdown(self.sample_job_summary, lang="bilingual")
         self.assertIn("# Multi-Trial Batch Execution Summary / 多 Trial 批处理执行汇总", md)
@@ -562,7 +582,7 @@ class TestJobSummaryRenderer(unittest.TestCase):
     def test_job_summary_no_absolute_paths(self) -> None:
         """Verifies job_summary.md does not leak absolute paths from job_dir."""
         data = {
-            "job_dir": "/Users/hx/workspace/benchmarks/job_run_123",
+            "job_dir": "/Users/example-user/benchmarks/job_run_123",
             "batch_statistics": {"total_trials": 1, "verdict_counts": {"passed": 1}},
             "trials": [{"trial_name": "t1", "verdict": "passed"}],
         }
@@ -828,8 +848,8 @@ class TestReportEdgeCasesAndContracts(unittest.TestCase):
         ev_pass = {
             "case_id": "c_pass",
             "trial_name": "t_pass",
-            "trial_dir": "/Users/hx/workspace/benchmarks/job/t_pass",
-            "task_dir": "/Users/hx/workspace/benchmarks/tasks/task_01",
+            "trial_dir": "/Users/example-user/benchmarks/job/t_pass",
+            "task_dir": "/Users/example-user/benchmarks/tasks/task_01",
             "artifacts": [{"artifact_id": "art:res", "rel_path": "result.json", "exists": True}],
             "runtime": {
                 "agent_started": True,
@@ -878,8 +898,8 @@ class TestReportEdgeCasesAndContracts(unittest.TestCase):
         ev_fail = {
             "case_id": "c_fail",
             "trial_name": "t_fail",
-            "trial_dir": "/Users/hx/workspace/benchmarks/job/t_fail",
-            "task_dir": "/Users/hx/workspace/benchmarks/tasks/task_01",
+            "trial_dir": "/Users/example-user/benchmarks/job/t_fail",
+            "task_dir": "/Users/example-user/benchmarks/tasks/task_01",
             "artifacts": [
                 {"artifact_id": "art:traj", "rel_path": "agent/trajectory.json", "exists": True},
                 {"artifact_id": "art:vlog", "rel_path": "verifier/verify.log", "exists": True},
@@ -952,8 +972,8 @@ class TestReportEdgeCasesAndContracts(unittest.TestCase):
         ev_err = {
             "case_id": "c_err",
             "trial_name": "t_err",
-            "trial_dir": "/Users/hx/workspace/benchmarks/job/t_err",
-            "task_dir": "/Users/hx/workspace/benchmarks/tasks/task_01",
+            "trial_dir": "/Users/example-user/benchmarks/job/t_err",
+            "task_dir": "/Users/example-user/benchmarks/tasks/task_01",
             "artifacts": [],
             "runtime": {
                 "agent_started": False,

@@ -40,6 +40,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from replay_failure import candidate_tracebacks
 
 #: Hard cap on any single verifier JSON file and the number of files walked.
 MAX_REPORT_BYTES = 4_000_000
@@ -275,6 +276,10 @@ def _diagnostic_message(value: str) -> str:
         and any(k in parsed for k in ("error_type", "status", "reward"))
     ):
         return _text(parsed["message"])
+    if isinstance(parsed, dict) and _status_verdict(parsed.get("status")) == "fail":
+        errors = parsed.get("errors")
+        if isinstance(errors, list) and errors and all(isinstance(e, str) for e in errors):
+            return _text(" | ".join(errors[:3]))
     return value
 
 
@@ -459,6 +464,49 @@ def _collect_from_mapping(
 ) -> None:
     """Flatten one JSON object's check-like structures into `checks`."""
     initial_len = len(checks)
+    criteria_map = data.get("criteria")
+    if isinstance(criteria_map, dict):
+        for name, item in criteria_map.items():
+            if not isinstance(item, dict) or _as_bool(item.get("status")) is None:
+                continue
+            rec = _normalize_check(item, layer="criteria", name=name, source=rel)
+            rec["source_pointer"] = f"{pointer}.criteria[{json.dumps(name)}]"
+            values = item.get("checked_values")
+            if isinstance(values, dict) and rec["ok"] is False:
+                rec["evidence"] = _bounded_json_copy(values)
+                mismatches = values.get("mismatches")
+                if isinstance(mismatches, list) and mismatches:
+                    comparison = mismatches[0]
+                    if isinstance(comparison, dict):
+                        comparison = ", ".join(
+                            f"{k}={_text(v, 70)}" for k, v in list(comparison.items())[:6]
+                        )
+                    rec["detail"] = _text(comparison, 240) + " · " + rec["detail"]
+            checks.append(rec)
+
+    native = data.get("native_score")
+    if isinstance(native, dict) and isinstance(native.get("per_case"), list):
+        for index, item in enumerate(native["per_case"]):
+            if not isinstance(item, dict) or item.get("passed") is not False:
+                continue
+            parts = item.get("parts")
+            if not isinstance(parts, dict) or not item.get("case_id"):
+                continue
+            detail = (
+                "score="
+                + str(item.get("score"))
+                + " · "
+                + ", ".join(f"{k}={v}" for k, v in parts.items() if type(v) in (int, float))
+            )
+            if item.get("missing_native_observations"):
+                detail += " · missing native observations " + _text(
+                    item["missing_native_observations"]
+                )
+            rec = _normalize_check(
+                {**item, "detail": detail}, layer="per_case", name=str(item["case_id"]), source=rel
+            )
+            rec["source_pointer"] = f"{pointer}.native_score.per_case[{index}]"
+            checks.append(rec)
     layers = data.get("layers")
     if isinstance(layers, dict):
         for layer, items in layers.items():
@@ -532,6 +580,11 @@ def _collect_from_mapping(
             if isinstance(item, dict):
                 rec = _normalize_check(item, layer=str(item.get("level") or "checks"), source=rel)
                 if rec:
+                    if (
+                        data.get("protocol_supported") is False
+                        and item.get("status") == "UNSUPPORTED"
+                    ):
+                        rec["ok"] = False
                     rec["source_pointer"] = f"{pointer}.checks[{index}]"
                     checks.append(rec)
 
@@ -545,12 +598,14 @@ def _collect_from_mapping(
             if isinstance(item, str) and item.strip():
                 if item in named:
                     continue
+                decoded = _diagnostic_message(item) if item.lstrip().startswith("{") else item
+                label = decoded.split(":", 1)[0] if key == "problems" else decoded
                 checks.append(
                     {
                         "layer": "reported_failures",
-                        "name": _text(item.split(":", 1)[0] if key == "problems" else item, 160),
+                        "name": _text(label, 160),
                         "ok": False,
-                        "detail": _text(item) if key == "problems" else "",
+                        "detail": _text(decoded) if key == "problems" or decoded != item else "",
                         "source_pointer": f"{pointer}.{key}[{index}]",
                         **({"original_detail": item} if key == "problems" else {}),
                         "core": False,
@@ -599,6 +654,9 @@ def _walk_checks(
     if depth > 4:
         return
     if isinstance(data, dict):
+        numeric = data.get("numeric_evidence")
+        if isinstance(numeric, dict) and _status_verdict(numeric.get("status")) == "fail":
+            _walk_checks(numeric, rel, checks, depth + 1, f"{pointer}.numeric_evidence")
         _collect_from_mapping(data, rel, checks, pointer)
         for key in (
             "scientific_report",
@@ -1008,7 +1066,21 @@ def build_verifier_report(
     if primary.get("schema_version") == "mlrs-verifier-report-1":
         families.add("mlrs")
 
+    replay_receipt = {}
+    if _status_verdict(primary.get("status")) == "fail":
+        for key in ("message", "error", "reason"):
+            value = primary.get(key)
+            if isinstance(value, str) and "Traceback " in value:
+                frames = candidate_tracebacks(value)
+                if frames:
+                    replay_receipt = {
+                        "frame": list(next(reversed(frames.values()))),
+                        "source": "verifier/" + primary_rel,
+                        "pointer": f"$.{key}",
+                    }
+                    break
     return {
+        **({"candidate_replay_exception": replay_receipt} if replay_receipt else {}),
         "schema_family": "+".join(sorted(families)) or "unknown",
         **({"score_breakdown": score_breakdown} if score_breakdown else {}),
         "schema_version": fields["schema_version"],

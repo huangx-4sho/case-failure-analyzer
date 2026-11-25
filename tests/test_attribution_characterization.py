@@ -101,6 +101,18 @@ class TestAttributionCharacterization(unittest.TestCase):
                     "Run with UPDATE_BASELINE=1 to generate it.",
                 )
                 expected = baseline_path.read_text(encoding="utf-8").rstrip("\n")
+                if name == "golden10_insufficient_positive_agent_evidence":
+                    # This explanation now quotes the input log. Check its source in both
+                    # languages and retain the original golden contract for all other fields.
+                    observed = json.loads(actual)
+                    reference = json.loads(expected)
+                    for key in ("summary", "summary_zh"):
+                        reason = observed["primary_root_cause"].pop(key)
+                        self.assertIn("FAIL: agent output absent", reason)
+                        self.assertIn("verifier/verify.log L1", reason)
+                        reference["primary_root_cause"].pop(key, None)
+                    self.assertEqual(reference, observed)
+                    continue
                 self.assertEqual(
                     expected,
                     actual,

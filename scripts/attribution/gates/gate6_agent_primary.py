@@ -202,7 +202,18 @@ def gate6_agent_primary(ctx: AttributionContext) -> Optional[Dict[str, Any]]:
     )
 
     # Subcase 5a: Repeated failed action after unrecovered scientific software error (e.g. SCF nonconvergence)
-    if scientific_retry:
+    replay_contract = next(
+        (c for c in agent_mismatch_contracts if c.get("item") == "candidate_replay_exit"), None
+    )
+    if replay_contract:
+        subcase_id = "candidate_replay_exit"
+        subtype = "replay_implementation_error"
+        code = "AGENT_REPLAY_IMPLEMENTATION_ERROR"
+        summary = replay_contract["details"]
+        fud_ref = replay_contract["event_ref"]
+        ev_refs.append(fud_ref)
+        skill_prescription = None
+    elif scientific_retry:
         subcase_id = "5a"
         rep_sig, first_sci = scientific_retry
         subtype = "error_diagnosis"

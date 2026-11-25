@@ -32,6 +32,48 @@ def escape_md_cell(val: Any) -> str:
     return str(val).replace("\r", " ").replace("\n", " ").replace("|", "\\|").strip()
 
 
+def _event_cell(row: dict, lang: str) -> str:
+    deep = row.get("deep_review") or {}
+    if deep.get("status") in {"traced", "open"}:
+        trace = (deep.get("evidence") or {}).get("trajectory") or {}
+        src = trace.get("event", "")
+        return escape_md_cell(
+            " · ".join(filter(None, (deep["status"], src, deep["mechanism"], deep["gap"])))
+        )
+    event = row.get("recorded_event") or {}
+    if not event:
+        if "recorded_event" in row and row.get("verdict") not in {"passed", "pending"}:
+            return (
+                "Missing a trial-specific rejection or stop record"
+                if lang == "en"
+                else "缺少能定位拒收项或中断点的试次记录"
+            )
+        return "—"
+    detail = str(event["detail"])
+    name = event.get("name")
+    if (
+        name
+        and not name.startswith("{")
+        and name not in {"diagnostic_check", "unnamed_check"}
+        and name not in detail
+    ):
+        detail = f"{name} · {detail}"
+    parts = [detail[:320] + ("…" if len(detail) > 320 else "")]
+    if difference := event.get("field_difference"):
+        parts.append(
+            f"{difference['pointer']} · extra {difference['unexpected_keys']}, missing {difference['missing_keys']}"
+        )
+    if last := event.get("last_tool_event"):
+        parts.append(f"{last['tool']} ({last['event_ref']})")
+        if (seconds := event.get("last_tool_to_finish_seconds")) is not None:
+            parts.append(f"{seconds:g} s before stop" if lang == "en" else f"距中断 {seconds:g} 秒")
+    if downstream := event.get("downstream_check"):
+        parts.append(("Later check" if lang == "en" else "后续检查") + " · " + downstream[:120])
+    if event.get("source"):
+        parts.append(" ".join(filter(None, [event["source"], event.get("pointer")])))
+    return escape_md_cell(" · ".join(parts))
+
+
 def _scoring_coverage(
     batch_stats: Dict[str, Any],
     trials: List[Dict[str, Any]],
@@ -365,32 +407,46 @@ def render_job_summary_markdown(
         lines.append("\n")
 
     # 4. Trial Diagnostics Table
+    unresolved = [row for row in trials if row.get("category") == "unknown"]
+    reviewed = [row["deep_review"] for row in trials if row.get("deep_review")]
+    if reviewed:
+        traced = sum(r["status"] == "traced" for r in reviewed)
+        still_open = sum(r["status"] == "open" for r in reviewed)
+        pending = len(reviewed) - traced - still_open
+        zh = f"深查 {len(reviewed)} 例。已定位决策 {traced}，已审仍有缺口 {still_open}，尚未完成 {pending}。"
+        en = f"Deep review of {len(reviewed)} trials. Traced decisions {traced}, reviewed and open {still_open}, incomplete {pending}."
+        lines.append((zh if lang == "zh" else en if lang == "en" else zh + " " + en) + "\n\n")
+    if unresolved and all("recorded_event" in row for row in unresolved):
+        located = sum(bool((row.get("recorded_event") or {}).get("source")) for row in unresolved)
+        zh = f"自动规则尚未确定 {len(unresolved)} 个 trial 的责任方，其中 {located} 个已有可定位的拒收或中断记录。"
+        en = f"Responsibility remains open for {len(unresolved)} trials. A rejection or interruption was located in {located} of them."
+        lines.append((zh if lang == "zh" else en if lang == "en" else zh + " " + en) + "\n\n")
     if lang == "zh":
         lines.append("## 3. 各 Trial 详细诊断清单\n\n")
         lines.append(
-            "| Trial 名称 | 最终裁定 (Verdict) | 根因分类 (Category) | 根因编码 (Code) | 置信度 (Confidence) | 证据降级 (Evidence) | 诊断报告 (Report) |\n"
-            "|---|:---:|:---:|:---:|:---:|:---:|:---:|\n"
+            "| Trial 名称 | 最终裁定 (Verdict) | 本次中断、拒收或待审依据 | 责任候选 | 根因编码 (Code) | 置信度 (Confidence) | 证据降级 (Evidence) | 诊断报告 (Report) |\n"
+            "|---|:---:|---|:---:|:---:|:---:|:---:|:---:|\n"
         )
     elif lang == "en":
         lines.append("## 3. Trial Diagnostics List\n\n")
         lines.append(
-            "| Trial Name | Verdict | Category | Code | Confidence | Degraded Evidence | Report |\n"
-            "|---|:---:|:---:|:---:|:---:|:---:|:---:|\n"
+            "| Trial Name | Verdict | Recorded interruption, rejection or review | Candidate category | Code | Confidence | Degraded Evidence | Report |\n"
+            "|---|:---:|---|:---:|:---:|:---:|:---:|:---:|\n"
         )
     else:  # bilingual
         lines.append("## 3. 各 Trial 详细诊断清单 (Trial Diagnostics List)\n\n")
         lines.append(
-            "| Trial 名称 (Trial Name) | 最终裁定 (Verdict) | 根因大类 (Category) | 根因编码 (Code) | 置信度 (Confidence) | 证据降级 (Degraded) | 诊断报告 (Report) |\n"
-            "|---|:---:|:---:|:---:|:---:|:---:|:---:|\n"
+            "| Trial 名称 (Trial Name) | 最终裁定 (Verdict) | 运行记录 (Recorded event) | 责任候选 (Candidate category) | 根因编码 (Code) | 置信度 (Confidence) | 证据降级 (Degraded) | 诊断报告 (Report) |\n"
+            "|---|:---:|---|:---:|:---:|:---:|:---:|:---:|\n"
         )
 
     if not trials:
         if lang == "zh":
-            lines.append("| - | - | - | - | - | - | *暂无记录* |\n")
+            lines.append("| - | - | - | - | - | - | - | *暂无记录* |\n")
         elif lang == "en":
-            lines.append("| - | - | - | - | - | - | *No trials recorded* |\n")
+            lines.append("| - | - | - | - | - | - | - | *No trials recorded* |\n")
         else:
-            lines.append("| - | - | - | - | - | - | *暂无记录 / No records* |\n")
+            lines.append("| - | - | - | - | - | - | - | *暂无记录 / No records* |\n")
     else:
         for t in trials:
             t_name = str(t.get("trial_name") or "unknown")
@@ -431,7 +487,7 @@ def render_job_summary_markdown(
             diag_total = int(row_diag.get("warning", 0) or 0) + int(row_diag.get("error", 0) or 0)
             diag_cell = f"⚠️ {diag_total}" if diag_total else "-"
             lines.append(
-                f"| `{escape_md_cell(t_name)}` | {v_str} | {cat_cell} | {code_cell} | {conf_cell} | {diag_cell} | {rep_link} |\n"
+                f"| `{escape_md_cell(t_name)}` | {v_str} | {_event_cell(t, lang)} | {cat_cell} | {code_cell} | {conf_cell} | {diag_cell} | {rep_link} |\n"
             )
 
     return "".join(lines)

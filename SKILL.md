@@ -13,7 +13,7 @@ Read saved evidence. Do not run a verifier, simulation, Docker container, or rep
 
 ## Quick audit
 
-For a task number or trial reference, run the audit and answer in the conversation from the printed verdict card.
+For a task number or trial reference, start with the audit and its printed verdict card.
 
 ```bash
 python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang zh
@@ -21,7 +21,11 @@ python3 scripts/cfa.py audit task208 --jobs-root /path/to/benchmark --lang zh
 
 Select `zh`, `en`, or `bilingual` for the requested report language. The task number selects the newest matching trial. The card is written to `summary.md` alongside the full report and `data/`. Use the printed `REPORT_DIR` to find and link the requested edition.
 
-For a failure, give the conclusion level and concrete stopping event or rejected check first. Then give the four peer categories with their evidence-backed statuses. Follow with the selected subtype, code and heuristic confidence, any supported trial-level capability diagnosis, and the report link. `unknown` records insufficient evidence. An unselected rule leaves its category open until evidence rules it out.
+Lead with what happened to the specific submission. Give the affected field, calculation, script line or interrupted operation, the recorded expectation and observation, and their source. Report the responsible party and conclusion level separately. An `unknown` rule result opens an investigation.
+
+For an unexplained rejection, follow the failed check into its native diagnostic. Compare the effective submitted value and its writer with the public contract and the scorer condition. For a numerical mismatch, trace where the two calculations first differ (for example in sign, units, selection, rounding or serialization). For a timeout, inspect the last timed actions, outcomes and missing deliverables. Report the most specific link the records establish. Identify the exact missing link and competing explanations when the earlier cause stays open.
+
+For a batch, the invoking agent completes [default deep review](references/cli.md#default-deep-review) during this request. Run the first audit with `--deep-review-mode host` to use this session. For every rule-unknown trial, read its four-source comparison, follow the original files where excerpts end, and bind the earliest actionable discrepancy to a successful tool step and the recorded rejection. Submit all remaining decisions in one bound review file and rerun the audit to publish them. Reuse validated decisions on later runs. Report the number traced, the number reviewed with specific missing evidence, and any unfinished reviews separately. A prepared comparison packet is unfinished work. A traced mechanism explains the cited check; responsibility across Agent, Case and Verifier is a separate determination.
 
 ## Evidence boundaries
 

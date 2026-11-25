@@ -459,6 +459,14 @@ def locate_failures(evidence, tree, parents, grader, submitted, logs, *, parsed_
     locations = []
     for i, c in enumerate(checks[:32]):
         detail = str(c.get("detail") or c.get("name") or "")
+        replay = report.get("candidate_replay_exception") or {}
+        if (
+            replay
+            and replay["source"] == "verifier/" + (c.get("source") or "")
+            and replay["pointer"] == c.get("source_pointer")
+        ):
+            path, number, statement, exception = replay["frame"]
+            detail = f"{Path(path).name}:{number} · {statement} · {exception}"
         if (
             detail
             and not _GENERIC.fullmatch(detail)
@@ -587,6 +595,17 @@ def failure_detail(evidence, analysis):
         runtime = next((x for x in errors if x.get("error_id") == "err:terminal_api_limit"), None)
     locs = (evidence.get("contract_review") or {}).get("failure_locations") or []
     check = locs[0] if locs else None
+    if code == "AGENT_REPLAY_IMPLEMENTATION_ERROR":
+        for contract in evidence.get("contract_observations") or []:
+            if contract.get("item") == "candidate_replay_exit":
+                check = {
+                    "ref": contract["contract_id"],
+                    "detail": contract["details"],
+                    "source": contract["log_source"],
+                    "pointer": contract["source_pointer"],
+                    "writer_ref": contract["event_ref"],
+                }
+                break
     if category == "verifier":
         refs = set(analysis.get("evidence_refs") or [])
         obs = next(
@@ -619,6 +638,61 @@ def failure_detail(evidence, analysis):
         else None,
         "scoring_event": check,
     }
+
+
+def recorded_event(evidence, analysis):
+    """Compact, source-located diagnosis for a job row, independent of who owns it."""
+    runtime = evidence.get("runtime") or {}
+    if analysis.get("verdict") == "pending":
+        receipts = runtime.get("review_receipts") or []
+        if receipts:
+            receipt = receipts[0]
+            return {
+                "kind": "review",
+                "detail": receipt.get("reason") or receipt["status"],
+                "source": receipt["source_file"],
+                "pointer": receipt["source_pointer"],
+            }
+    location = (analysis.get("causal_assessment") or {}).get("failure_detail") or {}
+    stop = location.get("runtime_event")
+    check = location.get("scoring_event")
+    if stop and stop.get("matched_text"):
+        event = {
+            "kind": "interruption",
+            "detail": stop["matched_text"],
+            "source": stop.get("source_file"),
+            "pointer": stop.get("source_pointer"),
+        }
+        if check:
+            event["downstream_check"] = check["detail"][:300]
+        triage = (analysis.get("failure_manifestation") or {}).get("runtime_triage") or {}
+        last = (triage.get("last_tool_events") or [])[-1:]
+        if last:
+            event["last_tool_event"] = last[0]
+            if "last_tool_to_agent_finish_seconds" in triage:
+                event["last_tool_to_finish_seconds"] = triage["last_tool_to_agent_finish_seconds"]
+        return event
+    if check:
+        event = {
+            k: check[k]
+            for k in ("detail", "source", "pointer", "name", "writer_ref")
+            if check.get(k)
+        }
+        event["kind"] = check.get("stage", "rejection")
+        difference = check.get("key_set_difference")
+        if difference:
+            event["field_difference"] = {
+                k: difference[k] for k in ("source", "pointer", "unexpected_keys", "missing_keys")
+            }
+        field = check.get("submitted_field")
+        if field:
+            event["submitted_field"] = {
+                k: field[k] for k in ("source", "pointer", "value", "truncated") if k in field
+            }
+        if check.get("matching_rule"):
+            event["matching_rule"] = check["matching_rule"]
+        return event
+    return None
 
 
 def render_failure_detail(assessment, lang):
@@ -695,7 +769,9 @@ def render_failure_detail(assessment, lang):
                 )
             else:
                 lines.append(f"> **{label}** · `{source} {schema['pointer']}`")
-        if assessment.get("level") == "observed_failure":
+        if assessment.get("level") == "observed_failure" and (
+            assessment.get("deep_review") or {}
+        ).get("status") not in {"traced", "open"}:
             if field:
                 gap = (
                     "Trace the submitted field to its writer and compare the guard with the public contract."

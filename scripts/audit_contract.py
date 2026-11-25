@@ -798,7 +798,7 @@ def _missing_file(name: str, text: str) -> bool:
     )
 
 
-def _internal_failure(text: str, checked_files: List[str], pytest_scored: bool):
+def _internal_failure(text: str, checked_files: List[str], pytest_scored: bool, candidate_lines=()):
     if pytest_scored:
         return None
     traceback = "Traceback (most recent call last):" in text
@@ -808,7 +808,7 @@ def _internal_failure(text: str, checked_files: List[str], pytest_scored: bool):
     )
     for line, record in reversed(list(enumerate(text.splitlines(), 1))):
         match = re.fullmatch(exceptions, record)
-        if not match:
+        if not match or line in candidate_lines:
             continue
         detail = match.group("detail")
         if re.search(r"(?:/tmp/|/tests/|refs\.json|verify\.py)", detail) or (
@@ -825,6 +825,7 @@ def audit_contract(
     *,
     runtime: Optional[Dict[str, Any]] = None,
     verifier_sources=None,
+    verifier_report=None,
 ) -> Dict[str, Any]:
     from deliverable_audit import captured_container_path
     from runtime_state import compute_runtime_state, score_was_produced
@@ -1000,6 +1001,32 @@ def audit_contract(
         )
         cid += 1
 
+    from replay_failure import bound_replay_contract, candidate_tracebacks
+
+    candidate_frames = candidate_tracebacks(verify_log_text)
+    frames = []
+    replay_receipt = (verifier_report or {}).get("candidate_replay_exception")
+    if replay_receipt:
+        frames.append(
+            (replay_receipt["frame"], replay_receipt["source"], replay_receipt["pointer"])
+        )
+    elif not (verifier_report or {}).get("primary_report"):
+        frames.extend(
+            (frame, log_source, f"L{n}") for n, frame in reversed(candidate_frames.items())
+        )
+    for frame, source, pointer in frames:
+        contract = bound_replay_contract(
+            frame,
+            (normalized_traj or {}).get("events") or [],
+            trial_dir,
+            instruction_text,
+            source,
+            pointer,
+        )
+        if contract:
+            contract_observations.append(contract)
+            break
+
     # 4. Record Verifier failure message, detect verifier internal crash, & correlate with hazards
     if verify_log_text:
         verifier_observations.append(
@@ -1022,6 +1049,7 @@ def audit_contract(
                 or "short test summary info" in verify_log_text
             )
             and bool(re.search(r"^FAILED\s+", verify_log_text, re.MULTILINE)),
+            candidate_frames,
         )
         if crash:
             line, message = crash

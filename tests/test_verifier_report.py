@@ -69,6 +69,37 @@ class VerifierReportNormalizationTests(unittest.TestCase):
         self.assertIsNone(build_verifier_report(self.trial))
         self.assertIsNone(build_verifier_report(None))
 
+    def test_nested_numeric_rejection_beats_failed_wrapper_and_pending_sibling(self):
+        _write(
+            self.trial,
+            "verification.json",
+            {
+                "status": "FAIL",
+                "checks": [{"name": "numeric_replay", "passed": False}],
+                "numeric_evidence": {
+                    "status": "FAIL",
+                    "criteria": {
+                        "block_mass": {
+                            "status": "FAIL",
+                            "summary": "block comparison",
+                            "checked_values": {
+                                "mismatches": [{"reported": 0.75, "expected": 0.25}]
+                            },
+                        },
+                        "interpretation": {
+                            "status": "JUDGE_REQUIRED",
+                            "summary": "awaiting review",
+                        },
+                    },
+                },
+            },
+        )
+        checks = build_verifier_report(self.trial)["failed_checks"]
+        self.assertEqual(checks[0]["name"], "block_mass")
+        self.assertEqual(checks[0]["source_pointer"], '$.numeric_evidence.criteria["block_mass"]')
+        self.assertIn("0.25", checks[0]["detail"])
+        self.assertNotIn("interpretation", [c["name"] for c in checks])
+
     def test_layered_report_exposes_named_check_and_deviation(self) -> None:
         """33-wpd-loop trial 215 shape: `core/verify.json` + envelope."""
         _write(

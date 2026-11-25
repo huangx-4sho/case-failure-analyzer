@@ -17,6 +17,7 @@ Pipeline:
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import re
@@ -52,6 +53,8 @@ from render_report import (
     render_skill_prescription_markdown,
 )
 from render_verdict import build_verdict_card, render_verdict_card_markdown
+from attribution.failure_location import recorded_event
+from deep_review import investigate, compact_review, load_reviews
 from runtime_state import resolve_trajectory_path, score_was_produced
 from contract_review import audit_contract_review
 from scientific_contract_review import audit_scientific_contracts
@@ -319,7 +322,9 @@ def _is_unscored_evaluator_fault(report: Dict[str, Any]) -> bool:
         return False
     if report.get("scorable") is True or report.get("eligible_for_success_ranking") is True:
         return False
-    if report.get("reward") is not None:
+    if report.get("reward") is not None and not (
+        status == "ENV_INVALID" and report.get("reward_scope") == "invalid_evaluation"
+    ):
         return False
     origin = report.get("failure_origin")
     if isinstance(origin, dict):
@@ -361,6 +366,7 @@ def _attach_unscored_verifier_fault(
                 preflight = True
                 break
     if not preflight and str(report.get("status") or "").upper() in {
+        "ENV_INVALID",
         "INFRA_ERROR",
         "ENVIRONMENT_ERROR",
     }:
@@ -532,12 +538,14 @@ def collect_case_evidence(
     )
 
     verifier_sources = collect_verifier_sources(task_dir)
+    verifier_report = build_verifier_report(trial_dir)
     contract_res = audit_contract(
         task_dir=task_dir,
         trial_dir=trial_dir,
         normalized_traj=norm_traj,
         runtime=trial_inv.get("runtime"),
         verifier_sources=verifier_sources,
+        verifier_report=verifier_report,
     )
 
     dependencies = collect_scoring_dependency_observations(
@@ -546,7 +554,6 @@ def collect_case_evidence(
     if dependencies:
         contract_res["verifier_observations"] = dependencies + contract_res["verifier_observations"]
 
-    verifier_report = build_verifier_report(trial_dir)
     runtime = trial_inv["runtime"]
     if verifier_report is not None and runtime.get("reward_scope"):
         verifier_report["reward_scope"] = runtime["reward_scope"]
@@ -1069,6 +1076,9 @@ def analyze_single_trial(
     max_log_bytes: int = 120000,
     replay_mode: str = "none",
     lang: str = "bilingual",
+    deep_mode: str = "host",
+    decisions=None,
+    previous_analysis: Optional[Path] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], str, Optional[str]]:
     if replay_mode != "none":
         run_isolated_verifier_replay(
@@ -1083,6 +1093,17 @@ def analyze_single_trial(
     )
 
     analysis = build_causal_attribution(evidence, norm_traj, contract_res, cand_hyps)
+    if analysis["primary_root_cause"]["category"] == "unknown":
+        previous = None
+        if previous_analysis and previous_analysis.is_file() and not previous_analysis.is_symlink():
+            try:
+                saved = json.loads(previous_analysis.read_text(encoding="utf-8"))
+                previous = saved.get("causal_assessment", {}).get("deep_review")
+            except (OSError, ValueError, AttributeError):
+                pass
+        analysis["causal_assessment"]["deep_review"] = investigate(
+            evidence, analysis, decisions or {}, mode=deep_mode, lang=lang, cached=previous
+        )
     report_md = render_report_markdown(evidence, analysis, lang=lang)
 
     ok, val_errors = validate_all(evidence, analysis, report_md)
@@ -1467,6 +1488,9 @@ def compute_batch_statistics(summary_rows: List[Dict[str, Any]]) -> Dict[str, An
 
     return {
         "total_trials": len(summary_rows),
+        "deep_review_counts": dict(
+            Counter(row["deep_review"]["status"] for row in summary_rows if row.get("deep_review"))
+        ),
         "agent_started_count": agent_started_count,
         "verifier_started_count": verifier_started_count,
         # Three-state scoring coverage: trials whose verifier never ran are NOT
@@ -1497,7 +1521,7 @@ def main(*, refresh_index: bool = True) -> None:
         required=False,
         default=None,
         help=(
-            "Short task reference (e.g. 'task208', '208', 'task 208__jaekojA'). "
+            "Short task reference (e.g. 'task208', '208', 'task 208__example'). "
             "Resolves the trial under --jobs-root and writes task<id>.* reports "
             "into the task's failure-report/ folder."
         ),
@@ -1523,6 +1547,21 @@ def main(*, refresh_index: bool = True) -> None:
         "--task", required=False, type=Path, default=None, help="Task definition directory path"
     )
     parser.add_argument("--trial", default="all", help="Specific trial name or 'all'")
+    parser.add_argument(
+        "--trial-list", type=Path, help="Audit this exact set of archived trial names, one per line"
+    )
+    parser.add_argument(
+        "--deep-review-mode",
+        choices=("auto", "host"),
+        default=os.environ.get("CFA_DEEP_REVIEW_MODE", "auto"),
+        help="Unknown trials receive automatic semantic review. In host mode the invoking agent supplies the decisions.",
+    )
+    parser.add_argument(
+        "--deep-reviews",
+        type=Path,
+        help="Source-cited decisions from the invoking agent, bound to the current audits.",
+    )
+
     parser.add_argument(
         "--output",
         required=False,
@@ -1703,6 +1742,20 @@ def main(*, refresh_index: bool = True) -> None:
         include_session_files=args.include_session_files,
     )
     trials = discovery.get("trials") or []
+    if args.trial_list:
+        if args.trial != "all" or task_ref:
+            parser.error("--trial-list requires job path mode and cannot be combined with --trial")
+        try:
+            selected = [s.strip() for s in args.trial_list.read_text().splitlines() if s.strip()]
+        except OSError as exc:
+            parser.error(str(exc))
+        if not selected or len(selected) != len(set(selected)):
+            parser.error("--trial-list must contain distinct trial names")
+        by_name = {inv["trial_name"]: inv for inv in trials}
+        missing = sorted(set(selected) - by_name.keys())
+        if missing:
+            parser.error("frozen trials missing from this job: " + ", ".join(missing))
+        trials = [by_name[name] for name in selected]
     job_dir = Path(discovery["job_dir"])
     task_dir_path = Path(discovery["task_dir"]) if discovery.get("task_dir") else None
 
@@ -1729,6 +1782,10 @@ def main(*, refresh_index: bool = True) -> None:
     )
 
     validate_output_writable(args.output)
+    try:
+        decisions = load_reviews(args.deep_reviews)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
 
     staging_dir = Path(tempfile.mkdtemp(prefix="cfa_staging_"))
     verdict_stdout: Optional[str] = None
@@ -1758,6 +1815,10 @@ def main(*, refresh_index: bool = True) -> None:
                     max_log_bytes=args.max_log_bytes,
                     replay_mode=args.replay,
                     lang=args.lang,
+                    decisions=decisions,
+                    deep_mode=args.deep_review_mode,
+                    previous_analysis=args.output
+                    / ("data/analysis.json" if basename else "analysis.json"),
                 )
                 _report_diagnostics(ev)
                 card: Optional[Dict[str, Any]] = None
@@ -1851,6 +1912,11 @@ def main(*, refresh_index: bool = True) -> None:
                         max_log_bytes=args.max_log_bytes,
                         replay_mode=args.replay,
                         lang=args.lang,
+                        decisions=decisions,
+                        deep_mode=args.deep_review_mode,
+                        previous_analysis=args.output
+                        / t_out.relative_to(staging_dir)
+                        / "analysis.json",
                     )
                     _report_diagnostics(ev)
                     card = None
@@ -1890,6 +1956,13 @@ def main(*, refresh_index: bool = True) -> None:
                             "category": an["primary_root_cause"]["category"],
                             "code": an["primary_root_cause"]["code"],
                             "confidence": an["primary_root_cause"]["confidence"],
+                            "conclusion_level": an["causal_assessment"]["level"],
+                            "recorded_event": recorded_event(ev, an),
+                            **(
+                                {"deep_review": compact_review(deep)}
+                                if (deep := an["causal_assessment"].get("deep_review"))
+                                else {}
+                            ),
                             **_summary_diagnostic_fields(ev),
                         }
                     )

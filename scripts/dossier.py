@@ -192,7 +192,7 @@ def _public_requirements(task, artifacts, terms):
         and (
             entry.get("rel_path") in {"instruction.md", "task.toml"}
             or entry.get("rel_path", "").startswith("environment/assets/")
-            and Path(entry["rel_path"]).suffix.lower() in {".md", ".json"}
+            and Path(entry["rel_path"]).suffix.lower() in {".md", ".json", ".yaml", ".yml", ".txt"}
             and "solution" not in Path(entry["rel_path"]).parts
         )
     ]
@@ -346,6 +346,14 @@ def _submission_slices(
                     fields.append({"line": 1, "columns": table.fieldnames[:30]})
                 # Match literal, nontrivial row identifiers in the rejection.
                 for row in table:
+                    if table.line_num == 2 and not cited:
+                        fields.append(
+                            {
+                                "line": 2,
+                                "sample_only": True,
+                                "text": _excerpt(json.dumps(row, ensure_ascii=False), 950),
+                            }
+                        )
                     ids = [
                         value
                         for value in row.values()

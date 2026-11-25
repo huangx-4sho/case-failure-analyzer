@@ -45,6 +45,7 @@ REVIEWED_CODES = {
     "AGENT_TASK_UNDERSTANDING": ("agent", "task_understanding"),
     "AGENT_PLANNING": ("agent", "planning"),
     "AGENT_TOOL_USE": ("agent", "tool_use"),
+    "AGENT_REPLAY_IMPLEMENTATION_ERROR": ("agent", "replay_implementation_error"),
     "AGENT_RESULT_VALIDATION": ("agent", "result_validation"),
     "AGENT_SELF_CHECK_GAP": ("agent", "self_check_gap"),
     "AGENT_PATH_OR_DEPENDENCY_DISCOVERY": ("agent", "path_or_dependency_discovery"),
@@ -914,6 +915,12 @@ def validate_assessment(
         errors.append("contract review differs from saved evidence")
     if "failure_detail" in a and a["failure_detail"] != failure_detail(evidence, analysis):
         errors.append("failure detail differs from the saved runtime or scoring record")
+    if "deep_review" in a:
+        from deep_review import validation_error
+
+        error = validation_error(a["deep_review"], evidence, review_root is not None)
+        if error:
+            errors.append("DEEP_REVIEW: " + error)
     manifestation = analysis.get("failure_manifestation")
     if isinstance(manifestation, dict) and "runtime_triage" in manifestation:
         from attribution.runtime_triage import build_runtime_triage
@@ -979,25 +986,41 @@ def render_assessment(analysis: Dict[str, Any], lang: str = "zh") -> str:
     labels = {
         "not_applicable": ("通过试次，无失败归因", "Passed; no failure attribution"),
         "observed_failure": ("已观察到失败，原因未确定", "Failure observed; cause unresolved"),
-        "candidate_cause": (
-            "候选原因，现有证据审查尚不充分",
-            "Candidate cause; existing evidence review incomplete",
-        ),
+        "candidate_cause": ("候选原因", "Candidate cause"),
         "evidence_supported_cause": (
             "现有证据及结构化审查支持的本次原因",
             "This-trial cause supported by existing evidence and structured review",
         ),
     }
+    if (a.get("failure_detail") or {}).get("scoring_event"):
+        labels["observed_failure"] = (
+            "已定位拒收项，上游责任待定",
+            "Rejection located, upstream cause open",
+        )
+    if a.get("defect_verification") == "verified_in_trial":
+        labels["candidate_cause"] = (
+            "已核实具体缺陷，整体归因仍为候选",
+            "Specific defect verified, overall attribution provisional",
+        )
     if analysis.get("verdict") == "pending":
         labels["not_applicable"] = (
             "待独立复核，暂无失败归因",
             "Pending independent review; no failure attribution",
         )
     en = lang == "en"
+    if (a.get("deep_review") or {}).get("status") == "traced":
+        labels["observed_failure"] = (
+            "本项拒绝已追到具体决策，责任归属单列",
+            "Decision traced for this rejection; responsibility assessed separately",
+        )
     label = labels.get(a.get("level"), ("旧版归因，尚未审查", "Legacy attribution; unreviewed"))[
         int(en)
     ]
     result = f"> **{'Conclusion level' if en else '结论等级'}**: {label}\n"
+    if a.get("deep_review"):
+        from deep_review import render_review
+
+        result += render_review(a["deep_review"], lang)
     location = render_failure_detail(a, lang)
     if location:
         result += location + "\n"

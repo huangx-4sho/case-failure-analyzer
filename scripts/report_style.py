@@ -222,6 +222,7 @@ SUBTYPE_LABELS = {
     "definition_ambiguity": ("定义歧义复核", "Definition review"),
     "representation_shape_disagreement": ("分组结构差异复核", "Group-shape review"),
     "result_validation": ("结果未复核", "Result not validated"),
+    "replay_implementation_error": ("提交程序重放异常", "Submitted program failed during replay"),
     "self_check_gap": ("自检覆盖不足", "Self-verification coverage gap"),
     "task_understanding": ("任务理解偏差", "Task misunderstood"),
     "hidden_contract": ("隐含契约未满足", "Hidden contract unmet"),

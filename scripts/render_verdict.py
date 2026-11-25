@@ -100,7 +100,14 @@ def _failure_reason(evidence: Dict[str, Any], analysis: Dict[str, Any]) -> str:
     checks repeat the same explanation, the check names are grouped so the
     answer shows *which* checks failed without printing the same detail thrice.
     """
+    deep = (analysis.get("causal_assessment") or {}).get("deep_review") or {}
+    if deep.get("status") in {"traced", "open"}:
+        return deep["mechanism"]
     location = (analysis.get("causal_assessment") or {}).get("failure_detail") or {}
+    if analysis.get("verdict") == "pending":
+        receipts = (evidence.get("runtime") or {}).get("review_receipts") or []
+        if receipts and receipts[0].get("reason"):
+            return _text(receipts[0]["reason"])
     interruption = location.get("runtime_event") or {}
     if (analysis.get("primary_root_cause") or {}).get("category") == "infra" and interruption.get(
         "matched_text"
@@ -430,6 +437,13 @@ def build_verdict_card(
         "verdict": analysis.get("verdict"),
         "scored": scored,
         **(
+            {"review_reason": runtime["review_receipts"][0]["reason"]}
+            if analysis.get("verdict") == "pending"
+            and runtime.get("review_receipts")
+            and runtime["review_receipts"][0].get("reason")
+            else {}
+        ),
+        **(
             {
                 "reward_scope": runtime["reward_scope"],
                 "reward_metrics": runtime.get("reward_metrics") or {},
@@ -481,11 +495,17 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
     if card.get("verdict") == "pending":
         completeness = card.get("reward_scope") == "evidence_completeness_only"
         value = (card.get("reward_metrics") or {}).get("reward")
+        reason = (
+            source_quotation(card["review_reason"], lang) + "\n"
+            if card.get("review_reason")
+            else ""
+        )
         if lang == "en":
             return (
                 f"# {card['task_id']} — Pending Review\n\n"
                 "**Verdict**: `pending` · **Scored**: `false`\n\n"
                 "The verifier requested independent review. The final verdict is pending.\n"
+                + reason
                 + (
                     f"\nThe recorded reward `{value}` measures evidence completeness.\n"
                     if completeness
@@ -496,6 +516,7 @@ def render_verdict_card_markdown(card: Dict[str, Any], lang: str = "zh") -> str:
             f"# {card['task_id']} — 待复核 (Pending Review)\n\n"
             "**裁定**: `pending` · **已评分**: `false`\n\n"
             "评分器已请求独立复核，最终裁定待定。\n"
+            + reason
             + (f"\n记录分数 `{value}` 衡量证据完整性。\n" if completeness else "")
         )
     conf = prc.get("confidence")

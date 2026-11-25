@@ -1069,7 +1069,8 @@ def _render_chinese_bilingual_core(
         or manifestation.get("scoring_reached") is not False,
     )
     attribution = _attribution_sentence(prc, internal_cause, "zh")
-    lines.append(_failure_callout(manifestation, attribution, lang))
+    deep = (analysis.get("causal_assessment") or {}).get("deep_review") or {}
+    lines.append(_failure_callout(manifestation, deep.get("mechanism") or attribution, lang))
 
     # 2. 失败证据链
     lines.append(f"## {section_title(2, lang)}\n")
@@ -1375,7 +1376,10 @@ def _render_english_edition(
     if integrity_warn:
         lines.append(integrity_warn)
 
-    lines.append(_failure_callout(manifestation_line, attribution_line, "en"))
+    deep = (analysis.get("causal_assessment") or {}).get("deep_review") or {}
+    lines.append(
+        _failure_callout(manifestation_line, deep.get("mechanism") or attribution_line, "en")
+    )
 
     # 2. Failure Evidence Chain
     lines.append(f"## {section_title(2, 'en')}\n")

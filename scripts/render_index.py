@@ -107,7 +107,11 @@ def _load_task_metadata(task_dir: Path) -> Optional[Dict[str, Any]]:
         "subtype": prc.get("subtype") or "—",
         "code": prc.get("code") or "—",
         "confidence": prc.get("confidence"),
+        "deep_review_status": (
+            (analysis.get("causal_assessment") or {}).get("deep_review") or {}
+        ).get("status"),
         "failure_reason": payload.get("failure_reason")
+        or ((analysis.get("causal_assessment") or {}).get("deep_review") or {}).get("mechanism")
         or prc.get("summary")
         or "仅采集证据，尚未审查归因 / Collected evidence; attribution not reviewed",
         "has_data_dir": (task_dir / "data").is_dir(),
@@ -256,6 +260,12 @@ def render_index_markdown(cases: List[Dict[str, Any]], updated_time: Optional[st
         )
 
     lines.append("")
+    states = [r["deep_review_status"] for r in cases_sorted if r.get("deep_review_status")]
+    if states:
+        incomplete = sum(status not in {"traced", "open"} for status in states)
+        lines.append(
+            f"深查 {len(states)} · 已定位决策 {states.count('traced')} · 已审仍缺证据 {states.count('open')} · 未完成 {incomplete}"
+        )
     return "\n".join(lines)
 
 
